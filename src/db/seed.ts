@@ -8,28 +8,31 @@ const EFFECTIVE_FROM = '2026-01-01T00:00:00.000Z';
 // Flutter app bisa menyimpan ID ini tanpa khawatir berubah.
 const ID = {
   region: { jakarta: '10000001-0000-4000-8000-000000000001' },
-  branch: { ancol: '20000001-0000-4000-8000-000000000001', utara: '20000001-0000-4000-8000-000000000002' },
+  branch: {
+    kedoya: '20000001-0000-4000-8000-000000000001',
+    selatan: '20000001-0000-4000-8000-000000000002',
+  },
   service: {
-    premiumHaircut: '30000001-0000-4000-8000-000000000001',
-    executiveHaircut: '30000001-0000-4000-8000-000000000002',
-    skinFade: '30000001-0000-4000-8000-000000000003',
-    beardTrim: '30000001-0000-4000-8000-000000000004',
-    hairWashStyling: '30000001-0000-4000-8000-000000000005',
-    hairColoringConsultation: '30000001-0000-4000-8000-000000000006',
-    kidsHaircut: '30000001-0000-4000-8000-000000000007',
+    haircut: '30000001-0000-4000-8000-000000000001',
+    haircutAndShave: '30000001-0000-4000-8000-000000000002',
+    hairColoring: '30000001-0000-4000-8000-000000000003',
+    hairSpa: '30000001-0000-4000-8000-000000000004',
+    moustacheTrim: '30000001-0000-4000-8000-000000000005',
+    faceShave: '30000001-0000-4000-8000-000000000006',
+    hairWashing: '30000001-0000-4000-8000-000000000007',
   },
   staff: {
     hq: '40000001-0000-4000-8000-000000000001',
-    adminAncol: '40000001-0000-4000-8000-000000000002',
-    adminUtara: '40000001-0000-4000-8000-000000000003',
-    budi: '40000001-0000-4000-8000-000000000004',
-    andi: '40000001-0000-4000-8000-000000000005',
+    adminKedoya: '40000001-0000-4000-8000-000000000002',
+    adminSelatan: '40000001-0000-4000-8000-000000000003',
+    davies: '40000001-0000-4000-8000-000000000004',
+    barron: '40000001-0000-4000-8000-000000000005',
     reza: '40000001-0000-4000-8000-000000000006',
     dimas: '40000001-0000-4000-8000-000000000007',
   },
   barber: {
-    budi: '50000001-0000-4000-8000-000000000001',
-    andi: '50000001-0000-4000-8000-000000000002',
+    davies: '50000001-0000-4000-8000-000000000001',
+    barron: '50000001-0000-4000-8000-000000000002',
     reza: '50000001-0000-4000-8000-000000000003',
     dimas: '50000001-0000-4000-8000-000000000004',
   },
@@ -78,7 +81,6 @@ async function upsertBy(table: string, match: RecordData, data: RecordData) {
   const existing = await findOne(table, match);
 
   if (existing) {
-    // Never overwrite the primary key — strip `id` from update payload
     const { id: _id, ...updateData } = data;
     const { data: rows, error } = await applyMatch(
       supabase.from(table).update(updateData).select('*'),
@@ -170,30 +172,33 @@ async function seedRegionsAndBranches() {
     name: 'Jakarta'
   });
 
-  const ancol = await upsertBy('branches', { name: 'Bomb Barbershop Jakarta Ancol' }, {
-    id: ID.branch.ancol,
+  // Cabang utama — alamat resmi dari bombbarbershop.com
+  const kedoya = await upsertBy('branches', { id: ID.branch.kedoya }, {
+    id: ID.branch.kedoya,
     region_id: jakarta.id,
-    name: 'Bomb Barbershop Jakarta Ancol',
-    address: 'Jl. Lodan Raya No. 1, Jakarta Utara',
-    phone: '021-22770012',
-    latitude: -6.175796912710608,
-    longitude: 106.59936380485594,
+    name: 'Bomb Barbershop Kedoya',
+    address: 'Jl. Taman Ratu Indah Blk. BB1 No.3A 3, RT.3/RW.11, Kedoya Utara, Jakarta Barat 11520',
+    phone: '6281322096650',
+    latitude: -6.186800,
+    longitude: 106.752000,
     is_active: true
   });
 
-  const utara = await upsertBy('branches', { name: 'Bomb Barbershop Jakarta Utara' }, {
-    id: ID.branch.utara,
+  // Cabang kedua — demo (sesuai company profile "2+ branches")
+  const selatan = await upsertBy('branches', { id: ID.branch.selatan }, {
+    id: ID.branch.selatan,
     region_id: jakarta.id,
-    name: 'Bomb Barbershop Jakarta Utara',
-    address: 'Jl. Boulevard Raya, Kelapa Gading, Jakarta Utara',
-    phone: '021-22770088',
-    latitude: -6.175796912710608,
-    longitude: 106.59936380485594,
+    name: 'Bomb Barbershop Jakarta Selatan',
+    address: 'Jl. Melawai Raya No. 5, Blok M, Kebayoran Baru, Jakarta Selatan 12160',
+    phone: '6281322096651',
+    latitude: -6.244500,
+    longitude: 106.798100,
     is_active: true
   });
 
-  const branches = { ancol, utara };
+  const branches = { kedoya, selatan };
 
+  // Jam operasional: 10:00–21:00 setiap hari (sesuai website bombbarbershop.com)
   for (const branch of Object.values(branches) as any[]) {
     for (const day of [0, 1, 2, 3, 4, 5, 6]) {
       await upsertBy('branch_operating_hours', {
@@ -202,20 +207,20 @@ async function seedRegionsAndBranches() {
       }, {
         branch_id: branch.id,
         day_of_week: day,
-        open_time: day === 0 ? '10:00:00' : '09:00:00',
-        close_time: [5, 6].includes(day) ? '22:00:00' : '21:00:00'
+        open_time: '10:00:00',
+        close_time: '21:00:00'
       });
     }
   }
 
   await upsertRowsBy('branch_photos', [
     {
-      match: { branch_id: ancol.id, url: 'http://localhost:3000/public/uploads/branches/photo-1585747860715-2ba37e788b70.webp' },
-      data: { branch_id: ancol.id, url: 'http://localhost:3000/public/uploads/branches/photo-1585747860715-2ba37e788b70.webp', sort_order: 1 }
+      match: { branch_id: kedoya.id, url: 'http://localhost:3000/public/uploads/branches/photo-1585747860715-2ba37e788b70.webp' },
+      data: { branch_id: kedoya.id, url: 'http://localhost:3000/public/uploads/branches/photo-1585747860715-2ba37e788b70.webp', sort_order: 1 }
     },
     {
-      match: { branch_id: utara.id, url: 'http://localhost:3000/public/uploads/branches/photo-1503951914875-452162b0f3f1.webp' },
-      data: { branch_id: utara.id, url: 'http://localhost:3000/public/uploads/branches/photo-1503951914875-452162b0f3f1.webp', sort_order: 1 }
+      match: { branch_id: selatan.id, url: 'http://localhost:3000/public/uploads/branches/photo-1503951914875-452162b0f3f1.webp' },
+      data: { branch_id: selatan.id, url: 'http://localhost:3000/public/uploads/branches/photo-1503951914875-452162b0f3f1.webp', sort_order: 1 }
     }
   ]);
 
@@ -225,34 +230,35 @@ async function seedRegionsAndBranches() {
 async function seedStaff(roleByName: Record<string, any>, branches: Record<string, any>, passwordHash: string) {
   console.log('Seeding staff users, roles, and barber profiles...');
 
+  // Staff: Jordan (owner dari website), Davies & Barron (barbers dari website), + demo staff
   const staffRows = await upsertRowsBy('staff_users', [
     {
-      match: { email: 'hq@bombbarbers.com' },
-      data: { id: ID.staff.hq, full_name: 'HQ Super Admin', email: 'hq@bombbarbers.com', phone: '628110000001', password_hash: passwordHash, is_active: true }
+      match: { id: ID.staff.hq },
+      data: { id: ID.staff.hq, full_name: 'Jordan', email: 'jordan@bombbarbershop.com', phone: '6281322096650', password_hash: passwordHash, is_active: true }
     },
     {
-      match: { email: 'admin.ancol@bombbarbers.com' },
-      data: { id: ID.staff.adminAncol, full_name: 'Nadia Ancol Admin', email: 'admin.ancol@bombbarbers.com', phone: '628110000101', password_hash: passwordHash, is_active: true }
+      match: { id: ID.staff.adminKedoya },
+      data: { id: ID.staff.adminKedoya, full_name: 'Nadia Kedoya Admin', email: 'admin.kedoya@bombbarbershop.com', phone: '6281322096652', password_hash: passwordHash, is_active: true }
     },
     {
-      match: { email: 'admin.utara@bombbarbers.com' },
-      data: { id: ID.staff.adminUtara, full_name: 'Reno Utara Admin', email: 'admin.utara@bombbarbers.com', phone: '628110000102', password_hash: passwordHash, is_active: true }
+      match: { id: ID.staff.adminSelatan },
+      data: { id: ID.staff.adminSelatan, full_name: 'Reno Selatan Admin', email: 'admin.selatan@bombbarbershop.com', phone: '6281322096653', password_hash: passwordHash, is_active: true }
     },
     {
-      match: { email: 'budi@bombbarbers.com' },
-      data: { id: ID.staff.budi, full_name: 'Budi Santoso', email: 'budi@bombbarbers.com', phone: '628110001001', password_hash: passwordHash, is_active: true }
+      match: { id: ID.staff.davies },
+      data: { id: ID.staff.davies, full_name: 'Davies', email: 'davies@bombbarbershop.com', phone: '6281322096654', password_hash: passwordHash, is_active: true }
     },
     {
-      match: { email: 'andi@bombbarbers.com' },
-      data: { id: ID.staff.andi, full_name: 'Andi Pratama', email: 'andi@bombbarbers.com', phone: '628110001002', password_hash: passwordHash, is_active: true }
+      match: { id: ID.staff.barron },
+      data: { id: ID.staff.barron, full_name: 'Barron', email: 'barron@bombbarbershop.com', phone: '6281322096655', password_hash: passwordHash, is_active: true }
     },
     {
-      match: { email: 'reza@bombbarbers.com' },
-      data: { id: ID.staff.reza, full_name: 'Reza Mahendra', email: 'reza@bombbarbers.com', phone: '628110001003', password_hash: passwordHash, is_active: true }
+      match: { id: ID.staff.reza },
+      data: { id: ID.staff.reza, full_name: 'Reza Mahendra', email: 'reza@bombbarbershop.com', phone: '6281322096656', password_hash: passwordHash, is_active: true }
     },
     {
-      match: { email: 'dimas@bombbarbers.com' },
-      data: { id: ID.staff.dimas, full_name: 'Dimas Wicaksono', email: 'dimas@bombbarbers.com', phone: '628110001004', password_hash: passwordHash, is_active: true }
+      match: { id: ID.staff.dimas },
+      data: { id: ID.staff.dimas, full_name: 'Dimas Wicaksono', email: 'dimas@bombbarbershop.com', phone: '6281322096657', password_hash: passwordHash, is_active: true }
     }
   ]);
 
@@ -260,16 +266,16 @@ async function seedStaff(roleByName: Record<string, any>, branches: Record<strin
 
   await upsertRowsBy('staff_user_roles', [
     {
-      match: { staff_user_id: staffByEmail['hq@bombbarbers.com'].id, role_id: roleByName.super_admin.id, branch_id: null },
-      data: { staff_user_id: staffByEmail['hq@bombbarbers.com'].id, role_id: roleByName.super_admin.id, branch_id: null }
+      match: { staff_user_id: staffByEmail['jordan@bombbarbershop.com'].id, role_id: roleByName.super_admin.id, branch_id: null },
+      data: { staff_user_id: staffByEmail['jordan@bombbarbershop.com'].id, role_id: roleByName.super_admin.id, branch_id: null }
     },
     {
-      match: { staff_user_id: staffByEmail['admin.ancol@bombbarbers.com'].id, role_id: roleByName.branch_admin.id, branch_id: branches.ancol.id },
-      data: { staff_user_id: staffByEmail['admin.ancol@bombbarbers.com'].id, role_id: roleByName.branch_admin.id, branch_id: branches.ancol.id }
+      match: { staff_user_id: staffByEmail['admin.kedoya@bombbarbershop.com'].id, role_id: roleByName.branch_admin.id, branch_id: branches.kedoya.id },
+      data: { staff_user_id: staffByEmail['admin.kedoya@bombbarbershop.com'].id, role_id: roleByName.branch_admin.id, branch_id: branches.kedoya.id }
     },
     {
-      match: { staff_user_id: staffByEmail['admin.utara@bombbarbers.com'].id, role_id: roleByName.branch_admin.id, branch_id: branches.utara.id },
-      data: { staff_user_id: staffByEmail['admin.utara@bombbarbers.com'].id, role_id: roleByName.branch_admin.id, branch_id: branches.utara.id }
+      match: { staff_user_id: staffByEmail['admin.selatan@bombbarbershop.com'].id, role_id: roleByName.branch_admin.id, branch_id: branches.selatan.id },
+      data: { staff_user_id: staffByEmail['admin.selatan@bombbarbershop.com'].id, role_id: roleByName.branch_admin.id, branch_id: branches.selatan.id }
     }
   ]);
 
@@ -289,13 +295,13 @@ async function seedStaff(roleByName: Record<string, any>, branches: Record<strin
 
   const barbers = await upsertRowsBy('barbers', [
     {
-      match: { staff_user_id: staffByEmail['budi@bombbarbers.com'].id, branch_id: branches.ancol.id },
+      match: { id: ID.barber.davies },
       data: {
-        id: ID.barber.budi,
-        staff_user_id: staffByEmail['budi@bombbarbers.com'].id,
-        branch_id: branches.ancol.id,
-        display_name: 'Budi Fade Master',
-        bio: 'Spesialis skin fade, taper, dan classic gentleman cut.',
+        id: ID.barber.davies,
+        staff_user_id: staffByEmail['davies@bombbarbershop.com'].id,
+        branch_id: branches.kedoya.id,
+        display_name: 'Davies',
+        bio: 'Spesialis haircut presisi, skin fade, dan classic gentleman cut. Berpengalaman 5+ tahun.',
         rating_avg: '4.85',
         rating_count: 124,
         live_status: 'available',
@@ -304,14 +310,14 @@ async function seedStaff(roleByName: Record<string, any>, branches: Record<strin
       }
     },
     {
-      match: { staff_user_id: staffByEmail['andi@bombbarbers.com'].id, branch_id: branches.ancol.id },
+      match: { id: ID.barber.barron },
       data: {
-        id: ID.barber.andi,
-        staff_user_id: staffByEmail['andi@bombbarbers.com'].id,
-        branch_id: branches.ancol.id,
-        display_name: 'Andi Classic',
-        bio: 'Rapi untuk executive cut, beard trim, dan hair wash styling.',
-        rating_avg: '4.74',
+        id: ID.barber.barron,
+        staff_user_id: staffByEmail['barron@bombbarbershop.com'].id,
+        branch_id: branches.kedoya.id,
+        display_name: 'Barron',
+        bio: 'Stylist senior, ahli hair coloring, hair spa treatment, dan grooming transformation.',
+        rating_avg: '4.80',
         rating_count: 98,
         live_status: 'available',
         service_radius_km: 10,
@@ -319,13 +325,13 @@ async function seedStaff(roleByName: Record<string, any>, branches: Record<strin
       }
     },
     {
-      match: { staff_user_id: staffByEmail['reza@bombbarbers.com'].id, branch_id: branches.utara.id },
+      match: { id: ID.barber.reza },
       data: {
         id: ID.barber.reza,
-        staff_user_id: staffByEmail['reza@bombbarbers.com'].id,
-        branch_id: branches.utara.id,
-        display_name: 'Reza Texture Pro',
-        bio: 'Fokus pada textured crop, modern mullet, dan styling natural.',
+        staff_user_id: staffByEmail['reza@bombbarbershop.com'].id,
+        branch_id: branches.selatan.id,
+        display_name: 'Reza',
+        bio: 'Fokus pada moustache trim, beard grooming, dan face shave dengan teknik straight razor.',
         rating_avg: '4.68',
         rating_count: 87,
         live_status: 'available',
@@ -334,14 +340,14 @@ async function seedStaff(roleByName: Record<string, any>, branches: Record<strin
       }
     },
     {
-      match: { staff_user_id: staffByEmail['dimas@bombbarbers.com'].id, branch_id: branches.utara.id },
+      match: { id: ID.barber.dimas },
       data: {
         id: ID.barber.dimas,
-        staff_user_id: staffByEmail['dimas@bombbarbers.com'].id,
-        branch_id: branches.utara.id,
-        display_name: 'Dimas Colorist',
-        bio: 'Konsultasi warna rambut, grooming pria, dan style transformation.',
-        rating_avg: '4.80',
+        staff_user_id: staffByEmail['dimas@bombbarbershop.com'].id,
+        branch_id: branches.selatan.id,
+        display_name: 'Dimas',
+        bio: 'Barber serba bisa: haircut, hair washing, dan styling untuk aktivitas profesional harian.',
+        rating_avg: '4.72',
         rating_count: 64,
         live_status: 'available',
         service_radius_km: 7,
@@ -374,15 +380,15 @@ async function seedCustomers(passwordHash: string) {
 
   const customers = await upsertRowsBy('customers', [
     {
-      match: { phone: '6281290001001' },
+      match: { id: ID.customer.raka },
       data: { id: ID.customer.raka, full_name: 'Raka Pratama', phone: '6281290001001', email: 'raka.customer@example.com', password_hash: passwordHash, points_balance: 120, is_active: true }
     },
     {
-      match: { phone: '6281290001002' },
+      match: { id: ID.customer.dewi },
       data: { id: ID.customer.dewi, full_name: 'Dewi Lestari', phone: '6281290001002', email: 'dewi.customer@example.com', password_hash: passwordHash, points_balance: 80, is_active: true }
     },
     {
-      match: { phone: '6281290001003' },
+      match: { id: ID.customer.fajar },
       data: { id: ID.customer.fajar, full_name: 'Fajar Nugroho', phone: '6281290001003', email: 'fajar.customer@example.com', password_hash: passwordHash, points_balance: 35, is_active: true }
     }
   ]);
@@ -393,81 +399,82 @@ async function seedCustomers(passwordHash: string) {
 async function seedServices(regions: Record<string, any>, branches: Record<string, any>) {
   console.log('Seeding services and prices...');
 
+  // Layanan sesuai menu resmi di bombbarbershop.com
   const services = await upsertRowsBy('services', [
     {
-      match: { name: 'Premium Haircut' },
+      match: { id: ID.service.haircut },
       data: {
-        id: ID.service.premiumHaircut,
-        name: 'Premium Haircut',
-        description: 'Potong rambut premium, hair wash, blow dry, dan pomade finishing.',
+        id: ID.service.haircut,
+        name: 'Haircut',
+        description: 'Potong rambut presisi yang disesuaikan dengan bentuk wajah, gaya personal, dan preferensi grooming.',
         default_duration_min: 45,
         image_url: 'http://localhost:3000/public/uploads/services/photo-1599351431202-1e0f0137899a.webp',
         is_active: true
       }
     },
     {
-      match: { name: 'Executive Haircut' },
+      match: { id: ID.service.haircutAndShave },
       data: {
-        id: ID.service.executiveHaircut,
-        name: 'Executive Haircut',
-        description: 'Potongan rapi untuk kebutuhan kerja, meeting, dan event formal.',
-        default_duration_min: 40,
+        id: ID.service.haircutAndShave,
+        name: 'Haircut & Shave',
+        description: 'Paket grooming lengkap: potong rambut profesional dipadukan dengan shave bersih menggunakan straight razor.',
+        default_duration_min: 60,
         image_url: 'http://localhost:3000/public/uploads/services/photo-1517832606299-7ae9b720a186.webp',
         is_active: true
       }
     },
     {
-      match: { name: 'Skin Fade' },
+      match: { id: ID.service.hairColoring },
       data: {
-        id: ID.service.skinFade,
-        name: 'Skin Fade',
-        description: 'Fade detail dari nol dengan blending halus dan garis natural.',
-        default_duration_min: 60,
-        image_url: 'http://localhost:3000/public/uploads/services/photo-1622287162716-f311baa1a2b8.webp',
-        is_active: true
-      }
-    },
-    {
-      match: { name: 'Beard Trim' },
-      data: {
-        id: ID.service.beardTrim,
-        name: 'Beard Trim',
-        description: 'Rapikan janggut, kumis, dan contour wajah dengan presisi.',
-        default_duration_min: 30,
-        image_url: 'http://localhost:3000/public/uploads/services/photo-1621605815971-fbc98d665033.webp',
-        is_active: true
-      }
-    },
-    {
-      match: { name: 'Hair Wash & Styling' },
-      data: {
-        id: ID.service.hairWashStyling,
-        name: 'Hair Wash & Styling',
-        description: 'Keramas, tonic ringan, blow dry, dan styling untuk aktivitas harian.',
-        default_duration_min: 25,
-        image_url: 'http://localhost:3000/public/uploads/services/photo-1522337360788-8b13dee7a37e.webp',
-        is_active: true
-      }
-    },
-    {
-      match: { name: 'Hair Coloring Consultation' },
-      data: {
-        id: ID.service.hairColoringConsultation,
-        name: 'Hair Coloring Consultation',
-        description: 'Konsultasi warna rambut, bleaching plan, dan estimasi treatment.',
+        id: ID.service.hairColoring,
+        name: 'Hair Coloring',
+        description: 'Pewarnaan rambut profesional untuk memperbarui, mempertegas, atau mentransformasi tampilan dengan produk premium.',
         default_duration_min: 90,
         image_url: 'http://localhost:3000/public/uploads/services/photo-1562322140-8baeececf3df.webp',
         is_active: true
       }
     },
     {
-      match: { name: 'Kids Haircut' },
+      match: { id: ID.service.hairSpa },
       data: {
-        id: ID.service.kidsHaircut,
-        name: 'Kids Haircut',
-        description: 'Potong rambut anak dengan proses yang cepat, ramah, dan nyaman.',
+        id: ID.service.hairSpa,
+        name: 'Hair Spa Treatment',
+        description: 'Perawatan intensif rambut dan kulit kepala: deep conditioning, scalp massage, dan treatment nutrisi.',
+        default_duration_min: 60,
+        image_url: 'http://localhost:3000/public/uploads/services/photo-1622287162716-f311baa1a2b8.webp',
+        is_active: true
+      }
+    },
+    {
+      match: { id: ID.service.moustacheTrim },
+      data: {
+        id: ID.service.moustacheTrim,
+        name: 'Moustache Trim',
+        description: 'Rapikan kumis dan janggut dengan presisi menggunakan teknik barbering klasik dan garis natural.',
+        default_duration_min: 30,
+        image_url: 'http://localhost:3000/public/uploads/services/photo-1621605815971-fbc98d665033.webp',
+        is_active: true
+      }
+    },
+    {
+      match: { id: ID.service.faceShave },
+      data: {
+        id: ID.service.faceShave,
+        name: 'Face Shave',
+        description: 'Cukur wajah bersih dengan straight razor, hot towel treatment, dan after-shave balm premium.',
         default_duration_min: 30,
         image_url: 'http://localhost:3000/public/uploads/services/photo-1605497788044-5a32c7078486.webp',
+        is_active: true
+      }
+    },
+    {
+      match: { id: ID.service.hairWashing },
+      data: {
+        id: ID.service.hairWashing,
+        name: 'Hair Washing',
+        description: 'Keramas dengan shampoo premium, tonic perawatan ringan, blow dry, dan styling untuk aktivitas harian.',
+        default_duration_min: 25,
+        image_url: 'http://localhost:3000/public/uploads/services/photo-1522337360788-8b13dee7a37e.webp',
         is_active: true
       }
     }
@@ -475,14 +482,15 @@ async function seedServices(regions: Record<string, any>, branches: Record<strin
 
   const byName = Object.fromEntries((services as any[]).map((service) => [service.name, service]));
 
+  // Harga default sesuai website bombbarbershop.com (dalam rupiah)
   const defaultPrices: Record<string, number> = {
-    'Premium Haircut': 75000,
-    'Executive Haircut': 65000,
-    'Skin Fade': 90000,
-    'Beard Trim': 40000,
-    'Hair Wash & Styling': 30000,
-    'Hair Coloring Consultation': 150000,
-    'Kids Haircut': 45000
+    'Haircut': 300000,
+    'Haircut & Shave': 400000,
+    'Hair Coloring': 400000,
+    'Hair Spa Treatment': 380000,
+    'Moustache Trim': 350000,
+    'Face Shave': 200000,
+    'Hair Washing': 240000
   };
 
   for (const [serviceName, price] of Object.entries(defaultPrices)) {
@@ -500,18 +508,18 @@ async function seedServices(regions: Record<string, any>, branches: Record<strin
     });
   }
 
+  // Hair Coloring bisa mencapai Rp500k (range 400k–500k dari website) di cabang Selatan
   await upsertRowsBy('service_prices', [
     {
-      match: { service_id: byName['Premium Haircut'].id, branch_id: branches.ancol.id },
-      data: { service_id: byName['Premium Haircut'].id, branch_id: branches.ancol.id, region_id: null, price_amount: 80000, effective_from: EFFECTIVE_FROM, effective_to: null }
-    },
-    {
-      match: { service_id: byName['Skin Fade'].id, branch_id: branches.ancol.id },
-      data: { service_id: byName['Skin Fade'].id, branch_id: branches.ancol.id, region_id: null, price_amount: 95000, effective_from: EFFECTIVE_FROM, effective_to: null }
-    },
-    {
-      match: { service_id: byName['Premium Haircut'].id, branch_id: branches.utara.id },
-      data: { service_id: byName['Premium Haircut'].id, branch_id: branches.utara.id, region_id: null, price_amount: 90000, effective_from: EFFECTIVE_FROM, effective_to: null }
+      match: { service_id: byName['Hair Coloring'].id, branch_id: branches.selatan.id },
+      data: {
+        service_id: byName['Hair Coloring'].id,
+        branch_id: branches.selatan.id,
+        region_id: null,
+        price_amount: 500000,
+        effective_from: EFFECTIVE_FROM,
+        effective_to: null
+      }
     }
   ]);
 
@@ -524,15 +532,15 @@ async function seedProducts(branches: Record<string, any>) {
   const products = await upsertRowsBy('products', [
     {
       match: { sku: 'BB-POMADE-MATTE-75' },
-      data: { sku: 'BB-POMADE-MATTE-75', name: 'Bomb Matte Pomade 75g', description: 'Pomade matte finish untuk daily styling.', base_price: 65000 }
+      data: { sku: 'BB-POMADE-MATTE-75', name: 'Bomb Matte Pomade 75g', description: 'Pomade matte finish untuk daily styling pria.', base_price: 95000 }
     },
     {
       match: { sku: 'BB-HAIRTONIC-100' },
-      data: { sku: 'BB-HAIRTONIC-100', name: 'Bomb Hair Tonic 100ml', description: 'Hair tonic ringan setelah haircut.', base_price: 55000 }
+      data: { sku: 'BB-HAIRTONIC-100', name: 'Bomb Hair Tonic 100ml', description: 'Hair tonic ringan untuk perawatan setelah haircut.', base_price: 75000 }
     },
     {
       match: { sku: 'BB-SHAMPOO-250' },
-      data: { sku: 'BB-SHAMPOO-250', name: 'Bomb Daily Shampoo 250ml', description: 'Shampoo harian untuk rambut pria.', base_price: 85000 }
+      data: { sku: 'BB-SHAMPOO-250', name: 'Bomb Daily Shampoo 250ml', description: 'Shampoo premium harian untuk rambut pria.', base_price: 110000 }
     }
   ]);
 
@@ -558,10 +566,10 @@ async function seedContent(branches: Record<string, any>, barbers: Record<string
 
   await upsertRowsBy('promotions', [
     {
-      match: { title: 'Fresh Cut, Fresh Look' },
+      match: { title: 'Crafting Style. Building Confidence.' },
       data: {
-        title: 'Fresh Cut, Fresh Look',
-        subtitle: 'Booking premium haircut langsung dari aplikasi Bomb Barbershop.',
+        title: 'Crafting Style. Building Confidence.',
+        subtitle: 'Haircut presisi mulai Rp300.000 di Bomb Barbershop. Booking langsung dari aplikasi.',
         image_url: 'http://localhost:3000/public/uploads/promotions/photo-1503951914875-452162b0f3f1.webp',
         target_url: '/booking',
         is_active: true,
@@ -571,12 +579,12 @@ async function seedContent(branches: Record<string, any>, barbers: Record<string
       }
     },
     {
-      match: { title: 'Fade Week di Ancol' },
+      match: { title: 'Haircut & Shave Experience' },
       data: {
-        title: 'Fade Week di Ancol',
-        subtitle: 'Pilih barber favorit dan cek slot tersedia untuk skin fade.',
+        title: 'Haircut & Shave Experience',
+        subtitle: 'Paket grooming lengkap dengan straight razor. Rp400.000 di cabang Kedoya.',
         image_url: 'http://localhost:3000/public/uploads/promotions/photo-1622287162716-f311baa1a2b8.webp',
-        target_url: `/branches/${branches.ancol.id}/services`,
+        target_url: `/branches/${branches.kedoya.id}/services`,
         is_active: true,
         sort_order: 2,
         starts_at: EFFECTIVE_FROM,
@@ -584,12 +592,12 @@ async function seedContent(branches: Record<string, any>, barbers: Record<string
       }
     },
     {
-      match: { title: 'Beard Trim Specialist' },
+      match: { title: 'Hair Coloring by Barron' },
       data: {
-        title: 'Beard Trim Specialist',
-        subtitle: 'Rapikan beard style dengan barber pilihan cabang terdekat.',
+        title: 'Hair Coloring by Barron',
+        subtitle: 'Transformasi warna rambut dengan stylist senior. Konsultasi gratis sebelum treatment.',
         image_url: 'http://localhost:3000/public/uploads/promotions/photo-1621605815971-fbc98d665033.webp',
-        target_url: '/services?search=beard',
+        target_url: '/services?search=coloring',
         is_active: true,
         sort_order: 3,
         starts_at: EFFECTIVE_FROM,
@@ -600,35 +608,35 @@ async function seedContent(branches: Record<string, any>, barbers: Record<string
 
   await upsertRowsBy('barber_portfolios', [
     {
-      match: { barber_id: barbers['Budi Fade Master'].id, image_url: 'http://localhost:3000/public/uploads/portfolios/photo-1599351431202-1e0f0137899a.webp' },
-      data: { barber_id: barbers['Budi Fade Master'].id, image_url: 'http://localhost:3000/public/uploads/portfolios/photo-1599351431202-1e0f0137899a.webp', caption: 'Clean fade dengan tekstur natural.' }
+      match: { barber_id: barbers['Davies'].id, image_url: 'http://localhost:3000/public/uploads/portfolios/photo-1599351431202-1e0f0137899a.webp' },
+      data: { barber_id: barbers['Davies'].id, image_url: 'http://localhost:3000/public/uploads/portfolios/photo-1599351431202-1e0f0137899a.webp', caption: 'Clean haircut presisi dengan finishing natural.' }
     },
     {
-      match: { barber_id: barbers['Budi Fade Master'].id, image_url: 'http://localhost:3000/public/uploads/portfolios/photo-1622286342621-4bd786c2447c.webp' },
-      data: { barber_id: barbers['Budi Fade Master'].id, image_url: 'http://localhost:3000/public/uploads/portfolios/photo-1622286342621-4bd786c2447c.webp', caption: 'Classic cut rapi untuk tampilan kantor.' }
+      match: { barber_id: barbers['Davies'].id, image_url: 'http://localhost:3000/public/uploads/portfolios/photo-1622286342621-4bd786c2447c.webp' },
+      data: { barber_id: barbers['Davies'].id, image_url: 'http://localhost:3000/public/uploads/portfolios/photo-1622286342621-4bd786c2447c.webp', caption: 'Classic gentleman cut — rapi untuk kebutuhan profesional.' }
     },
     {
-      match: { barber_id: barbers['Andi Classic'].id, image_url: 'http://localhost:3000/public/uploads/portfolios/photo-1621605815971-fbc98d665033.webp' },
-      data: { barber_id: barbers['Andi Classic'].id, image_url: 'http://localhost:3000/public/uploads/portfolios/photo-1621605815971-fbc98d665033.webp', caption: 'Beard trim presisi dengan garis natural.' }
+      match: { barber_id: barbers['Barron'].id, image_url: 'http://localhost:3000/public/uploads/portfolios/photo-1621605815971-fbc98d665033.webp' },
+      data: { barber_id: barbers['Barron'].id, image_url: 'http://localhost:3000/public/uploads/portfolios/photo-1621605815971-fbc98d665033.webp', caption: 'Hair coloring transformation — hasil natural dan tahan lama.' }
     },
     {
-      match: { barber_id: barbers['Reza Texture Pro'].id, image_url: 'http://localhost:3000/public/uploads/portfolios/photo-1517832606299-7ae9b720a186.webp' },
-      data: { barber_id: barbers['Reza Texture Pro'].id, image_url: 'http://localhost:3000/public/uploads/portfolios/photo-1517832606299-7ae9b720a186.webp', caption: 'Textured crop dengan styling ringan.' }
+      match: { barber_id: barbers['Reza'].id, image_url: 'http://localhost:3000/public/uploads/portfolios/photo-1517832606299-7ae9b720a186.webp' },
+      data: { barber_id: barbers['Reza'].id, image_url: 'http://localhost:3000/public/uploads/portfolios/photo-1517832606299-7ae9b720a186.webp', caption: 'Moustache trim presisi dengan garis wajah yang tegas.' }
     }
   ]);
 
   const raka = customers['raka.customer@example.com'];
   await upsertRowsBy('notifications', [
     {
-      match: { recipient_id: raka.id, type: 'promo', title: 'Fade Week sudah aktif' },
+      match: { recipient_id: raka.id, type: 'promo', title: 'Haircut & Shave — Grooming Terlengkap' },
       data: {
         user_id: raka.id,
         recipient_id: raka.id,
         recipient_type: 'customer',
         type: 'promo',
-        title: 'Fade Week sudah aktif',
-        message: 'Nikmati slot skin fade bersama Budi Fade Master di cabang Ancol.',
-        body: 'Nikmati slot skin fade bersama Budi Fade Master di cabang Ancol.',
+        title: 'Haircut & Shave — Grooming Terlengkap',
+        message: 'Coba paket Haircut & Shave bersama Davies di Bomb Barbershop Kedoya. Rp400.000 all-in.',
+        body: 'Coba paket Haircut & Shave bersama Davies di Bomb Barbershop Kedoya. Rp400.000 all-in.',
         is_read: false,
         sent_at: new Date().toISOString()
       }
@@ -653,32 +661,33 @@ async function seedOperationalData(context: {
   const tomorrow = addDays(now, 1);
   const nextDay = addDays(now, 2);
 
+  // Appointment selesai kemarin: Raka — Haircut + Moustache Trim di Kedoya oleh Davies
   const completedAppointment = await upsertBy('appointments', {
-    branch_id: branches.ancol.id,
+    branch_id: branches.kedoya.id,
     customer_id: customers['raka.customer@example.com'].id,
-    scheduled_at: atJakartaTime(yesterday, '16:00:00')
+    scheduled_at: atJakartaTime(yesterday, '14:00:00')
   }, {
-    branch_id: branches.ancol.id,
-    barber_id: barbers['Budi Fade Master'].id,
+    branch_id: branches.kedoya.id,
+    barber_id: barbers['Davies'].id,
     customer_id: customers['raka.customer@example.com'].id,
     source: 'online_booking',
     status: 'completed',
-    scheduled_at: atJakartaTime(yesterday, '16:00:00'),
+    scheduled_at: atJakartaTime(yesterday, '14:00:00'),
     queue_position: null,
-    checked_in_at: atJakartaTime(yesterday, '15:55:00'),
-    started_at: atJakartaTime(yesterday, '16:03:00'),
-    completed_at: atJakartaTime(yesterday, '16:49:00'),
+    checked_in_at: atJakartaTime(yesterday, '13:55:00'),
+    started_at: atJakartaTime(yesterday, '14:03:00'),
+    completed_at: atJakartaTime(yesterday, '15:20:00'),
     customer_media_urls: []
   });
 
   await upsertRowsBy('appointment_services', [
     {
-      match: { appointment_id: completedAppointment.id, service_id: services['Premium Haircut'].id },
-      data: { appointment_id: completedAppointment.id, service_id: services['Premium Haircut'].id, price_amount: 80000, duration_min: 45 }
+      match: { appointment_id: completedAppointment.id, service_id: services['Haircut'].id },
+      data: { appointment_id: completedAppointment.id, service_id: services['Haircut'].id, price_amount: 300000, duration_min: 45 }
     },
     {
-      match: { appointment_id: completedAppointment.id, service_id: services['Beard Trim'].id },
-      data: { appointment_id: completedAppointment.id, service_id: services['Beard Trim'].id, price_amount: 40000, duration_min: 30 }
+      match: { appointment_id: completedAppointment.id, service_id: services['Moustache Trim'].id },
+      data: { appointment_id: completedAppointment.id, service_id: services['Moustache Trim'].id, price_amount: 350000, duration_min: 30 }
     }
   ]);
 
@@ -689,97 +698,103 @@ async function seedOperationalData(context: {
     appointment_id: completedAppointment.id,
     product_id: products['BB-POMADE-MATTE-75'].id,
     quantity: 1,
-    unit_price: 65000
+    unit_price: 95000
   });
 
+  // service_amount: 300k + 350k = 650k; product: 95k; service_fee: 5k; delivery_fee: 0 (in-store); tip: 50k
+  // total: 650k + 95k + 5k + 0 + 50k = 800k
   const payment = await upsertBy('payments', { appointment_id: completedAppointment.id }, {
     appointment_id: completedAppointment.id,
-    branch_id: branches.ancol.id,
-    total_amount: 190000,
-    service_amount: 120000,
-    product_amount: 65000,
-    discount_amount: 10000,
-    tip_amount: 15000,
+    branch_id: branches.kedoya.id,
+    total_amount: 800000,
+    service_amount: 650000,
+    product_amount: 95000,
+    service_fee: 5000,
+    delivery_fee: 0,
+    discount_amount: 0,
+    tip_amount: 50000,
     method: 'qris',
     status: 'paid',
     gateway_reference: 'QRIS-DEMO-0001',
-    paid_at: atJakartaTime(yesterday, '16:52:00')
+    paid_at: atJakartaTime(yesterday, '15:23:00')
   });
 
   await upsertBy('invoices', { payment_id: payment.id }, {
     payment_id: payment.id,
     invoice_number: `INV-${dateOnly(yesterday).replace(/-/g, '')}-0001`,
-    issued_at: atJakartaTime(yesterday, '16:53:00'),
+    issued_at: atJakartaTime(yesterday, '15:24:00'),
     pdf_url: null
   });
 
+  // Komisi dari service amount 650k: barber 40% = 260k, branch 40% = 260k, HQ 20% = 130k; tip 50k ke barber
   await upsertBy('commission_entries', { appointment_id: completedAppointment.id }, {
     appointment_id: completedAppointment.id,
     commission_rule_id: globalRule.id,
-    base_amount: 120000,
-    barber_share: 48000,
-    branch_share: 48000,
-    hq_share: 24000,
-    tip_amount: 15000,
-    calculated_at: atJakartaTime(yesterday, '16:54:00')
+    base_amount: 650000,
+    barber_share: 260000,
+    branch_share: 260000,
+    hq_share: 130000,
+    tip_amount: 50000,
+    calculated_at: atJakartaTime(yesterday, '15:25:00')
   });
 
   await upsertBy('reviews', { appointment_id: completedAppointment.id }, {
     appointment_id: completedAppointment.id,
     customer_id: customers['raka.customer@example.com'].id,
-    barber_id: barbers['Budi Fade Master'].id,
+    barber_id: barbers['Davies'].id,
     rating: '5.00',
-    comment: 'Fade rapi, booking tepat waktu, dan pomade finish bagus.'
+    comment: 'Haircut dan moustache trim rapi banget. Davies sangat profesional dan detail.'
   });
 
+  // Appointment aktif hari ini: Dewi — Hair Washing di Kedoya oleh Barron (walk-in)
   const inQueueAppointment = await upsertBy('appointments', {
-    branch_id: branches.ancol.id,
+    branch_id: branches.kedoya.id,
     customer_id: customers['dewi.customer@example.com'].id,
-    scheduled_at: atJakartaTime(now, '10:00:00')
+    scheduled_at: atJakartaTime(now, '10:30:00')
   }, {
-    branch_id: branches.ancol.id,
-    barber_id: barbers['Andi Classic'].id,
+    branch_id: branches.kedoya.id,
+    barber_id: barbers['Barron'].id,
     customer_id: customers['dewi.customer@example.com'].id,
     source: 'walk_in',
     status: 'in_queue',
-    scheduled_at: atJakartaTime(now, '10:00:00'),
+    scheduled_at: atJakartaTime(now, '10:30:00'),
     queue_position: 1,
-    checked_in_at: atJakartaTime(now, '09:55:00'),
+    checked_in_at: atJakartaTime(now, '10:25:00'),
     customer_media_urls: []
   });
 
   await upsertBy('appointment_services', {
     appointment_id: inQueueAppointment.id,
-    service_id: services['Hair Wash & Styling'].id
+    service_id: services['Hair Washing'].id
   }, {
     appointment_id: inQueueAppointment.id,
-    service_id: services['Hair Wash & Styling'].id,
-    price_amount: 30000,
+    service_id: services['Hair Washing'].id,
+    price_amount: 240000,
     duration_min: 25
   });
 
   await upsertBy('check_ins', { appointment_id: inQueueAppointment.id }, {
     appointment_id: inQueueAppointment.id,
     method: 'manual',
-    location_lat: -6.260721,
-    location_lng: 106.813911,
-    checked_in_at: atJakartaTime(now, '09:55:00')
+    location_lat: -6.186800,
+    location_lng: 106.752000,
+    checked_in_at: atJakartaTime(now, '10:25:00')
   });
 
-  // Andi sedang mengerjakan order — update live_status sesuai appointment aktif
-  await upsertBy('barbers', { id: barbers['Andi Classic'].id }, { live_status: 'serving' });
+  await upsertBy('barbers', { id: barbers['Barron'].id }, { live_status: 'serving' });
 
+  // Appointment confirmed besok: Fajar — Haircut & Shave di Kedoya oleh Davies
   const confirmedAppointment = await upsertBy('appointments', {
-    branch_id: branches.ancol.id,
+    branch_id: branches.kedoya.id,
     customer_id: customers['fajar.customer@example.com'].id,
-    scheduled_at: atJakartaTime(tomorrow, '10:00:00')
+    scheduled_at: atJakartaTime(tomorrow, '11:00:00')
   }, {
-    branch_id: branches.ancol.id,
-    barber_id: barbers['Budi Fade Master'].id,
+    branch_id: branches.kedoya.id,
+    barber_id: barbers['Davies'].id,
     customer_id: customers['fajar.customer@example.com'].id,
     source: 'online_booking',
     status: 'confirmed',
-    scheduled_at: atJakartaTime(tomorrow, '10:00:00'),
+    scheduled_at: atJakartaTime(tomorrow, '11:00:00'),
     queue_position: 2,
     customer_media_urls: [
       'http://localhost:3000/public/uploads/appointments/photo-1517832606299-7ae9b720a186.webp'
@@ -788,11 +803,11 @@ async function seedOperationalData(context: {
 
   await upsertBy('appointment_services', {
     appointment_id: confirmedAppointment.id,
-    service_id: services['Skin Fade'].id
+    service_id: services['Haircut & Shave'].id
   }, {
     appointment_id: confirmedAppointment.id,
-    service_id: services['Skin Fade'].id,
-    price_amount: 95000,
+    service_id: services['Haircut & Shave'].id,
+    price_amount: 400000,
     duration_min: 60
   });
 
@@ -800,85 +815,86 @@ async function seedOperationalData(context: {
     appointment_id: confirmedAppointment.id,
     status: 'active',
     consent_given_at: new Date().toISOString(),
-    expires_at: atJakartaTime(tomorrow, '12:00:00')
+    expires_at: atJakartaTime(tomorrow, '13:00:00')
   });
 
+  // Appointment pending lusa: Raka — Hair Coloring di Selatan oleh Reza
   const pendingAppointment = await upsertBy('appointments', {
-    branch_id: branches.utara.id,
+    branch_id: branches.selatan.id,
     customer_id: customers['raka.customer@example.com'].id,
-    scheduled_at: atJakartaTime(nextDay, '11:30:00')
+    scheduled_at: atJakartaTime(nextDay, '13:00:00')
   }, {
-    branch_id: branches.utara.id,
-    barber_id: barbers['Reza Texture Pro'].id,
+    branch_id: branches.selatan.id,
+    barber_id: barbers['Reza'].id,
     customer_id: customers['raka.customer@example.com'].id,
     source: 'online_booking',
     status: 'pending',
-    scheduled_at: atJakartaTime(nextDay, '11:30:00'),
+    scheduled_at: atJakartaTime(nextDay, '13:00:00'),
     queue_position: 1,
     customer_media_urls: []
   });
 
   await upsertBy('appointment_services', {
     appointment_id: pendingAppointment.id,
-    service_id: services['Executive Haircut'].id
+    service_id: services['Hair Coloring'].id
   }, {
     appointment_id: pendingAppointment.id,
-    service_id: services['Executive Haircut'].id,
-    price_amount: 65000,
-    duration_min: 40
+    service_id: services['Hair Coloring'].id,
+    price_amount: 500000,
+    duration_min: 90
   });
 
   await upsertBy('cash_drawer_sessions', {
-    branch_id: branches.ancol.id,
-    opened_at: atJakartaTime(now, '08:45:00')
+    branch_id: branches.kedoya.id,
+    opened_at: atJakartaTime(now, '09:45:00')
   }, {
-    branch_id: branches.ancol.id,
-    opened_at: atJakartaTime(now, '08:45:00'),
+    branch_id: branches.kedoya.id,
+    opened_at: atJakartaTime(now, '09:45:00'),
     closed_at: null,
-    starting_cash: 1000000,
+    starting_cash: 2000000,
     ending_cash: null,
-    expected_cash: 1030000,
+    expected_cash: 2240000,
     difference: null,
     status: 'open'
   });
 
   await upsertBy('branch_expenses', {
-    branch_id: branches.ancol.id,
+    branch_id: branches.kedoya.id,
     expense_date: dateOnly(now),
-    description: 'Pembelian towel dan disinfectant harian'
+    description: 'Pembelian produk perawatan rambut dan towel harian'
   }, {
-    branch_id: branches.ancol.id,
+    branch_id: branches.kedoya.id,
     expense_date: dateOnly(now),
-    amount: 275000,
-    description: 'Pembelian towel dan disinfectant harian'
+    amount: 450000,
+    description: 'Pembelian produk perawatan rambut dan towel harian'
   });
 
   await upsertBy('daily_branch_summaries', {
-    branch_id: branches.ancol.id,
+    branch_id: branches.kedoya.id,
     summary_date: dateOnly(yesterday)
   }, {
-    branch_id: branches.ancol.id,
+    branch_id: branches.kedoya.id,
     summary_date: dateOnly(yesterday),
-    total_revenue: 190000,
+    total_revenue: 800000,
     total_appointments: 1,
     walk_in_count: 0,
     booking_count: 1,
     no_show_count: 0,
-    hq_share_total: 24000,
-    branch_share_total: 48000
+    hq_share_total: 130000,
+    branch_share_total: 260000
   });
 
   await upsertBy('barber_daily_stats', {
-    barber_id: barbers['Budi Fade Master'].id,
-    branch_id: branches.ancol.id,
+    barber_id: barbers['Davies'].id,
+    branch_id: branches.kedoya.id,
     summary_date: dateOnly(yesterday)
   }, {
-    barber_id: barbers['Budi Fade Master'].id,
-    branch_id: branches.ancol.id,
+    barber_id: barbers['Davies'].id,
+    branch_id: branches.kedoya.id,
     summary_date: dateOnly(yesterday),
     heads_count: 1,
-    revenue: 120000,
-    commission_earned: 63000,
+    revenue: 650000,
+    commission_earned: 310000,
     avg_rating: '5.00'
   });
 
@@ -887,19 +903,19 @@ async function seedOperationalData(context: {
       match: { entity_type: 'payment', entity_id: payment.id, action: 'payment_paid' },
       data: {
         actor_type: 'staff',
-        actor_id: staffByEmail['admin.ancol@bombbarbers.com'].id,
+        actor_id: staffByEmail['admin.kedoya@bombbarbershop.com'].id,
         action: 'payment_paid',
         entity_type: 'payment',
         entity_id: payment.id,
         before: { status: 'pending' },
-        after: { status: 'paid', total_amount: 190000, method: 'qris' }
+        after: { status: 'paid', total_amount: 800000, service_fee: 5000, delivery_fee: 0, method: 'qris' }
       }
     },
     {
       match: { entity_type: 'appointment', entity_id: completedAppointment.id, action: 'appointment_completed' },
       data: {
         actor_type: 'staff',
-        actor_id: staffByEmail['admin.ancol@bombbarbers.com'].id,
+        actor_id: staffByEmail['admin.kedoya@bombbarbershop.com'].id,
         action: 'appointment_completed',
         entity_type: 'appointment',
         entity_id: completedAppointment.id,
@@ -920,8 +936,8 @@ async function seedOperationalData(context: {
     recipient_type: 'customer',
     type: 'booking_confirmed',
     title: 'Booking kamu sudah dikonfirmasi',
-    message: 'Skin Fade di Bomb Barbershop Jakarta Ancol sudah dikonfirmasi untuk besok pukul 10.00.',
-    body: 'Skin Fade di Bomb Barbershop Jakarta Ancol sudah dikonfirmasi untuk besok pukul 10.00.',
+    message: 'Haircut & Shave di Bomb Barbershop Kedoya sudah dikonfirmasi untuk besok pukul 11.00 bersama Davies.',
+    body: 'Haircut & Shave di Bomb Barbershop Kedoya sudah dikonfirmasi untuk besok pukul 11.00 bersama Davies.',
     is_read: false,
     sent_at: new Date().toISOString()
   });
@@ -958,6 +974,12 @@ async function main() {
 
   console.log('\nSeeding completed successfully.');
   console.log('Demo password for all seeded staff and customers:', DEMO_PASSWORD);
+  console.log('\nDemo credentials:');
+  console.log('  HQ Owner  : jordan@bombbarbershop.com');
+  console.log('  Admin     : admin.kedoya@bombbarbershop.com');
+  console.log('  Barber    : davies@bombbarbershop.com / barron@bombbarbershop.com');
+  console.log('  Customer  : raka.customer@example.com');
+  console.log('  Password  :', DEMO_PASSWORD);
 }
 
 main().catch((err) => {

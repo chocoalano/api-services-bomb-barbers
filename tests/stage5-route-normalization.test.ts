@@ -63,7 +63,7 @@ beforeAll(async () => {
 
   // Barber login via canonical route
   const br = await hit('POST', `${API}/barbers/auth/login`, undefined, {
-    email: 'budi@bombbarbers.com',
+    email: 'davies@bombbarbershop.com',
     password: PASS
   });
   barberToken = br.body?.data?.accessToken ?? '';
@@ -351,7 +351,7 @@ describe('Customer appointments — canonical vs deprecated', () => {
 describe('POST /api/v1/barbers/auth/login — canonical', () => {
   it('login barber berhasil dengan 200', async () => {
     const { status } = await hit('POST', `${API}/barbers/auth/login`, undefined, {
-      email: 'budi@bombbarbers.com',
+      email: 'davies@bombbarbershop.com',
       password: PASS
     });
     expect(status).toBe(200);
@@ -359,7 +359,7 @@ describe('POST /api/v1/barbers/auth/login — canonical', () => {
 
   it('tidak ada header Deprecation', async () => {
     const { headers } = await hit('POST', `${API}/barbers/auth/login`, undefined, {
-      email: 'budi@bombbarbers.com',
+      email: 'davies@bombbarbershop.com',
       password: PASS
     });
     expect(isDeprecated(headers)).toBe(false);
@@ -371,7 +371,7 @@ describe('POST /api/v1/barbers/auth/login — canonical', () => {
 describe('POST /api/v1/barber/auth/login — deprecated', () => {
   it('masih mengembalikan 200', async () => {
     const { status } = await hit('POST', `${API}/barber/auth/login`, undefined, {
-      email: 'budi@bombbarbers.com',
+      email: 'davies@bombbarbershop.com',
       password: PASS
     });
     expect(status).toBe(200);
@@ -379,7 +379,7 @@ describe('POST /api/v1/barber/auth/login — deprecated', () => {
 
   it('Deprecation: true, Link ke /barbers/auth/login', async () => {
     const { headers } = await hit('POST', `${API}/barber/auth/login`, undefined, {
-      email: 'budi@bombbarbers.com',
+      email: 'davies@bombbarbershop.com',
       password: PASS
     });
     expect(isDeprecated(headers)).toBe(true);
@@ -390,7 +390,7 @@ describe('POST /api/v1/barber/auth/login — deprecated', () => {
 describe('POST /api/v1/staff/auth/login — deprecated', () => {
   it('masih mengembalikan 200', async () => {
     const { status } = await hit('POST', `${API}/staff/auth/login`, undefined, {
-      email: 'budi@bombbarbers.com',
+      email: 'davies@bombbarbershop.com',
       password: PASS
     });
     expect(status).toBe(200);
@@ -398,7 +398,7 @@ describe('POST /api/v1/staff/auth/login — deprecated', () => {
 
   it('Deprecation: true, Link ke /barbers/auth/login', async () => {
     const { headers } = await hit('POST', `${API}/staff/auth/login`, undefined, {
-      email: 'budi@bombbarbers.com',
+      email: 'davies@bombbarbershop.com',
       password: PASS
     });
     expect(isDeprecated(headers)).toBe(true);

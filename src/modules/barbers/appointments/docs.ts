@@ -21,7 +21,7 @@ const appointmentParams = t.Object({
 const queueOrderExample = {
   id: BARBER_EXAMPLES.appointmentId,
   customer_name: 'Budi Santoso',
-  service_name: 'Premium Haircut + Hair Wash',
+  service_name: 'Haircut + Hair Washing',
   price: 105000,
   distance: '2.4 km',
   eta: '18 menit',

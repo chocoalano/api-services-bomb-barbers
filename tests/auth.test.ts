@@ -9,9 +9,9 @@ describe('Auth Module', () => {
   let staffId = '';
   let inactiveStaffId = '';
   const testPhone = '081234567000';
-  const testCustomerEmail = 'testcustomer@bombbarbers.com';
-  const testStaffEmail = 'teststaff@bombbarbers.com';
-  const testInactiveEmail = 'inactive@bombbarbers.com';
+  const testCustomerEmail = 'testcustomer@bombbarbershop.com';
+  const testStaffEmail = 'teststaff@bombbarbershop.com';
+  const testInactiveEmail = 'inactive@bombbarbershop.com';
   const password = 'Password123!';
 
   beforeAll(async () => {

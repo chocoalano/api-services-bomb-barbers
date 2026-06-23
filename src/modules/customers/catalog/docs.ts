@@ -37,7 +37,7 @@ const barberExample = {
 
 const serviceExample = {
   id: CUSTOMER_EXAMPLES.serviceId,
-  name: 'Premium Haircut',
+  name: 'Haircut',
   description: 'Potong rambut, konsultasi gaya, keramas, dan styling.',
   default_duration_min: 45,
   price_amount: 85000,

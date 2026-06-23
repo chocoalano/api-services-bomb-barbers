@@ -41,7 +41,7 @@ const barberExample = {
 
 const serviceExample = {
   id: ADMIN_EXAMPLES.serviceId,
-  name: 'Premium Haircut',
+  name: 'Haircut',
   description: 'Potong rambut premium termasuk konsultasi dan styling.',
   image_url: 'https://api.bombbarbershop.com/public/uploads/service/premium-haircut.webp',
   default_duration_min: 45,
@@ -340,7 +340,7 @@ export const adminCatalogDocs = {
 
   createService: {
     body: t.Object({
-      name: t.String({ minLength: 2, maxLength: 255, examples: ['Premium Haircut'] }),
+      name: t.String({ minLength: 2, maxLength: 255, examples: ['Haircut'] }),
       default_duration_min: t.Integer({
         minimum: 1,
         description: 'Durasi default layanan dalam menit.',
@@ -360,9 +360,9 @@ export const adminCatalogDocs = {
         examples: [true]
       }))
     }, requestExamples(
-      { name: 'Premium Haircut', default_duration_min: 45 },
+      { name: 'Haircut', default_duration_min: 45 },
       {
-        name: 'Premium Haircut',
+        name: 'Haircut',
         default_duration_min: 45,
         description: 'Potong rambut premium termasuk konsultasi dan styling.',
         image_url: 'https://api.bombbarbershop.com/public/uploads/service/premium-haircut.webp',
@@ -384,7 +384,7 @@ export const adminCatalogDocs = {
   updateService: {
     params: idParams('UUID layanan.', ADMIN_EXAMPLES.serviceId),
     body: t.Object({
-      name: t.Optional(t.String({ minLength: 2, examples: ['Premium Haircut Plus'] })),
+      name: t.Optional(t.String({ minLength: 2, examples: ['Haircut Plus'] })),
       default_duration_min: t.Optional(t.Integer({ minimum: 1, examples: [60] })),
       description: t.Optional(t.String({ examples: ['Termasuk haircut, wash, dan styling.'] })),
       image_url: t.Optional(t.String({
@@ -393,9 +393,9 @@ export const adminCatalogDocs = {
       })),
       is_active: t.Optional(t.Boolean({ examples: [true] }))
     }, requestExamples(
-      { name: 'Premium Haircut Plus' },
+      { name: 'Haircut Plus' },
       {
-        name: 'Premium Haircut Plus',
+        name: 'Haircut Plus',
         default_duration_min: 60,
         description: 'Termasuk haircut, wash, dan styling.',
         image_url: 'https://api.bombbarbershop.com/public/uploads/service/premium-haircut-plus.webp',
@@ -409,7 +409,7 @@ export const adminCatalogDocs = {
       required: ['path id', 'minimal satu field body', 'Authorization: Bearer <access_token>', "permission 'manage_service'"],
       optional: ['name', 'default_duration_min', 'description', 'image_url', 'is_active'],
       successMessage: 'Service diupdate',
-      successData: { ...serviceExample, name: 'Premium Haircut Plus', default_duration_min: 60 },
+      successData: { ...serviceExample, name: 'Haircut Plus', default_duration_min: 60 },
       errors: commonMutationErrors
     })
   },

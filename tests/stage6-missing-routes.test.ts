@@ -78,7 +78,7 @@ beforeAll(async () => {
 
   // Login barber
   const br = await req('POST', `${API}/barbers/auth/login`, undefined, {
-    email: 'budi@bombbarbers.com',
+    email: 'davies@bombbarbershop.com',
     password: PASS
   });
   barberToken = br.body?.data?.accessToken ?? '';
@@ -87,10 +87,10 @@ beforeAll(async () => {
   const { data: cust } = await supabase.from('customers').select('id').eq('email', 'fajar.customer@example.com').single();
   customerId = cust!.id;
 
-  const { data: budiStaff } = await supabase.from('staff_users').select('id').eq('email', 'budi@bombbarbers.com').single();
-  const { data: budiBarber } = await supabase.from('barbers').select('id, branch_id').eq('staff_user_id', budiStaff!.id).single();
-  barberId = budiBarber!.id;
-  branchId = budiBarber!.branch_id;
+  const { data: daviesStaff } = await supabase.from('staff_users').select('id').eq('email', 'davies@bombbarbershop.com').single();
+  const { data: daviesBarber } = await supabase.from('barbers').select('id, branch_id').eq('staff_user_id', daviesStaff!.id).single();
+  barberId = daviesBarber!.id;
+  branchId = daviesBarber!.branch_id;
 
   // Insert test notifications for fajar (user_id is required and uses customer id)
   const { data: n1 } = await supabase.from('notifications').insert({

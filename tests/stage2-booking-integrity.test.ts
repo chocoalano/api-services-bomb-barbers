@@ -67,7 +67,7 @@ beforeAll(async () => {
   const { data: staff } = await supabase
     .from('staff_users')
     .select('id')
-    .eq('email', 'budi@bombbarbers.com')
+    .eq('email', 'davies@bombbarbershop.com')
     .single();
   barberStaffId = staff!.id;
 
@@ -92,7 +92,7 @@ beforeAll(async () => {
   const { data: service } = await supabase
     .from('services')
     .select('id')
-    .eq('name', 'Premium Haircut')
+    .eq('name', 'Haircut')
     .eq('is_active', true)
     .is('deleted_at', null)
     .single();

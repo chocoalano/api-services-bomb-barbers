@@ -9,7 +9,7 @@ import {
 
 let branchId = '';
 let barberId = '';
-let budiStaffId = '';
+let daviesStaffId = '';
 let customerId = '';
 const appointmentIds: string[] = [];
 
@@ -21,16 +21,16 @@ beforeAll(async () => {
     .single();
   customerId = fajar!.id;
 
-  const { data: budiStaff } = await supabase
+  const { data: daviesStaff } = await supabase
     .from('staff_users')
     .select('id')
-    .eq('email', 'budi@bombbarbers.com')
+    .eq('email', 'davies@bombbarbershop.com')
     .single();
-  budiStaffId = budiStaff!.id;
+  daviesStaffId = daviesStaff!.id;
   const { data: budi } = await supabase
     .from('barbers')
     .select('id, branch_id')
-    .eq('staff_user_id', budiStaff!.id)
+    .eq('staff_user_id', daviesStaff!.id)
     .single();
   barberId = budi!.id;
   branchId = budi!.branch_id;
@@ -62,11 +62,11 @@ describe('Concurrent appointment status update', () => {
     appointmentIds.push(apt!.id);
 
     await AppointmentLifecycleService.transition(apt!.id, 'confirmed', {
-      actor: { type: 'staff', id: budiStaffId, role: 'barber' },
+      actor: { type: 'staff', id: daviesStaffId, role: 'barber' },
       reason: 'Order diterima barber'
     });
     await AppointmentLifecycleService.transition(apt!.id, 'confirmed', {
-      actor: { type: 'staff', id: budiStaffId, role: 'barber' },
+      actor: { type: 'staff', id: daviesStaffId, role: 'barber' },
       reason: 'Retry penerimaan order yang sama'
     });
 
@@ -104,7 +104,7 @@ describe('Concurrent appointment status update', () => {
 
     await expect(
       AppointmentLifecycleService.transition(apt!.id, 'pending', {
-        actor: { type: 'staff', id: budiStaffId, role: 'admin' },
+        actor: { type: 'staff', id: daviesStaffId, role: 'admin' },
         reason: 'Percobaan transisi tidak valid'
       })
     ).rejects.toThrow('tidak diizinkan');
@@ -248,7 +248,7 @@ describe('Appointment timeout logic', () => {
 
     const versionBefore = Number(newApt.version);
     await AppointmentLifecycleService.transition(newApt.id, 'confirmed', {
-      actor: { type: 'staff', id: budiStaffId, role: 'barber' },
+      actor: { type: 'staff', id: daviesStaffId, role: 'barber' },
       reason: 'Order diterima barber'
     });
 

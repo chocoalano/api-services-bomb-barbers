@@ -764,6 +764,15 @@ CREATE TABLE IF NOT EXISTS "admin_notification_settings" (
   "updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 
+-- Migration: 20260623120000_add_payment_fees.sql
+-- ----------------------------------------
+-- Menambahkan biaya layanan (platform fee) dan ongkir (delivery fee)
+-- sebagai kolom terpisah agar bisa dilaporkan dan diaudit per-transaksi.
+
+ALTER TABLE "payments"
+  ADD COLUMN IF NOT EXISTS "service_fee" bigint DEFAULT 0 NOT NULL,
+  ADD COLUMN IF NOT EXISTS "delivery_fee" bigint DEFAULT 0 NOT NULL;
+
 -- ============================================
 -- END PASTE HERE
 -- ============================================

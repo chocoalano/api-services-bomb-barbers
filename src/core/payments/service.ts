@@ -65,6 +65,8 @@ type CreatePaymentPayload = {
   product_amount?: number;
   discount_amount?: number;
   tip_amount?: number;
+  service_fee?: number;
+  delivery_fee?: number;
   gateway_reference?: string;
 };
 
@@ -82,8 +84,10 @@ export class PaymentService {
     const productAmount = payload.product_amount || 0;
     const discountAmount = payload.discount_amount || 0;
     const tipAmount = payload.tip_amount || 0;
+    const serviceFee = payload.service_fee ?? 5000;
+    const deliveryFee = payload.delivery_fee ?? 0;
 
-    const totalAmount = serviceAmount + productAmount + tipAmount - discountAmount;
+    const totalAmount = serviceAmount + productAmount + serviceFee + deliveryFee + tipAmount - discountAmount;
     if (totalAmount < 0) throw new Error('Total amount tidak boleh negatif');
 
     const paymentRecord: any = {
@@ -91,6 +95,8 @@ export class PaymentService {
       branch_id: apt.branch_id,
       service_amount: serviceAmount,
       product_amount: productAmount,
+      service_fee: serviceFee,
+      delivery_fee: deliveryFee,
       discount_amount: discountAmount,
       tip_amount: tipAmount,
       total_amount: totalAmount,

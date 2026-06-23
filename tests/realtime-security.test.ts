@@ -25,7 +25,7 @@ let fajarCustomerId = '';
 let customerToken = '';
 let otherCustomerToken = '';
 let barberToken = '';
-let andiToken = '';
+let barronToken = '';
 let hqToken = '';
 let createdSessionId = '';
 let noSessionCreatedId = '';
@@ -81,15 +81,15 @@ beforeAll(async () => {
     password
   });
   barberToken = await login('/api/v1/barber/auth/login', {
-    email: 'budi@bombbarbers.com',
+    email: 'davies@bombbarbershop.com',
     password
   });
-  andiToken = await login('/api/v1/barber/auth/login', {
-    email: 'andi@bombbarbers.com',
+  barronToken = await login('/api/v1/barber/auth/login', {
+    email: 'barron@bombbarbershop.com',
     password
   });
   hqToken = await login('/api/v1/staff/auth/login', {
-    email: 'hq@bombbarbers.com',
+    email: 'jordan@bombbarbershop.com',
     password
   });
 
@@ -100,15 +100,15 @@ beforeAll(async () => {
     .single();
   fajarCustomerId = fajar!.id;
 
-  const { data: budiStaff } = await supabase
+  const { data: daviesStaff } = await supabase
     .from('staff_users')
     .select('id')
-    .eq('email', 'budi@bombbarbers.com')
+    .eq('email', 'davies@bombbarbershop.com')
     .single();
   const { data: budi } = await supabase
     .from('barbers')
     .select('id, branch_id')
-    .eq('staff_user_id', budiStaff!.id)
+    .eq('staff_user_id', daviesStaff!.id)
     .single();
 
   const appointmentPayload: Record<string, unknown> = {
@@ -296,7 +296,7 @@ describe('Realtime customer-barber security', () => {
 
 describe('Otorisasi room — penolakan peserta tidak sah', () => {
   it('menolak barber yang bergabung ke room appointment barber lain', async () => {
-    const andiSocket = await connect(andiToken);
+    const andiSocket = await connect(barronToken);
     const response = await emitWithAck<any>(andiSocket, 'join_appointment', appointmentId);
 
     expect(response.success).toBe(false);

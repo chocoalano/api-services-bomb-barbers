@@ -31,7 +31,7 @@ export const contentDocs = {
         {
           id: '13131313-1313-4313-8313-131313131313',
           title: 'Promo Grooming Weekend',
-          subtitle: 'Diskon 20% untuk Premium Haircut',
+          subtitle: 'Diskon 20% untuk Haircut & Shave',
           image_url: 'https://api.bombbarbershop.com/public/uploads/promotion/weekend.webp',
           target_url: 'bombbarbershop://services/88888888-8888-4888-8888-888888888888',
           starts_at: '2026-06-20T00:00:00.000Z',

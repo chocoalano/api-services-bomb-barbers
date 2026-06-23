@@ -69,7 +69,7 @@ const appointmentExample = {
   services: [
     {
       id: CUSTOMER_EXAMPLES.serviceId,
-      name: 'Premium Haircut',
+      name: 'Haircut',
       description: 'Potong rambut, konsultasi gaya, keramas, dan styling.',
       image_url: 'https://api.bombbarbershop.com/public/uploads/service/premium-haircut.webp',
       price: 85000,
@@ -82,7 +82,7 @@ const appointmentExample = {
       id: CUSTOMER_EXAMPLES.serviceId,
       item_type: 'service',
       service_id: CUSTOMER_EXAMPLES.serviceId,
-      name: 'Premium Haircut',
+      name: 'Haircut',
       description: 'Potong rambut, konsultasi gaya, keramas, dan styling.',
       image_url: 'https://api.bombbarbershop.com/public/uploads/service/premium-haircut.webp',
       quantity: 1,

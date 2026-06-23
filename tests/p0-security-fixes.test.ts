@@ -20,7 +20,7 @@ const API = '/api/v1';
 // ── Seed constants ─────────────────────────────────────────────────────────────
 const ANCOL_BRANCH  = '20000001-0000-4000-8000-000000000001';
 const BRANCH_B      = '20000001-0000-4000-8000-000000000002';
-const ANCOL_BARBER  = '50000001-0000-4000-8000-000000000002'; // Andi Classic — ANCOL
+const ANCOL_BARBER  = '50000001-0000-4000-8000-000000000002'; // Barron — Kedoya
 const OTHER_BARBER  = '50000001-0000-4000-8000-000000000003'; // Reza — BRANCH_B
 const ANCOL_SERVICE = '30000001-0000-4000-8000-000000000001';
 const CUSTOMER_ID   = '60000001-0000-4000-8000-000000000003'; // fajar
@@ -278,7 +278,7 @@ describe('Fix 2: PUT /hq/barbers/:id — branch scope resolver', () => {
     // ANCOL_BARBER ada di ANCOL_BRANCH → scopedToken (scoped ke ANCOL) bisa update
     const { status } = await req(
       'PUT', `${API}/hq/barbers/${ANCOL_BARBER}`, scopedToken,
-      { display_name: 'Andi Classic' }   // restore nama asli
+      { display_name: 'Barron' }   // restore nama asli
     );
     expect(status).toBe(200);
   });

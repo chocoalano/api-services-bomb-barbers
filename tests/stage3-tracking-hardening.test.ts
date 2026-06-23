@@ -26,8 +26,8 @@ const DEST_LNG = 106.8096;
 
 let customerToken = '';
 let otherCustomerToken = '';
-let budiToken = '';
-let andiToken = '';
+let daviesToken = '';
+let barronToken = '';
 
 let customerId = '';
 let barberId = '';
@@ -114,20 +114,20 @@ beforeAll(async () => {
   // Login as all test actors
   customerToken = await login(`${API}/customer/auth/login`, 'fajar.customer@example.com');
   otherCustomerToken = await login(`${API}/customer/auth/login`, 'raka.customer@example.com');
-  budiToken = await login(`${API}/barber/auth/login`, 'budi@bombbarbers.com');
-  andiToken = await login(`${API}/barber/auth/login`, 'andi@bombbarbers.com');
+  daviesToken = await login(`${API}/barber/auth/login`, 'davies@bombbarbershop.com');
+  barronToken = await login(`${API}/barber/auth/login`, 'barron@bombbarbershop.com');
 
   // Resolve IDs
   const { data: fajar } = await supabase
     .from('customers').select('id').eq('email', 'fajar.customer@example.com').single();
   customerId = fajar!.id;
 
-  const { data: budiStaff } = await supabase
-    .from('staff_users').select('id').eq('email', 'budi@bombbarbers.com').single();
-  const { data: budiBarber } = await supabase
-    .from('barbers').select('id, branch_id').eq('staff_user_id', budiStaff!.id).single();
-  barberId = budiBarber!.id;
-  branchId = budiBarber!.branch_id;
+  const { data: daviesStaff } = await supabase
+    .from('staff_users').select('id').eq('email', 'davies@bombbarbershop.com').single();
+  const { data: daviesBarber } = await supabase
+    .from('barbers').select('id, branch_id').eq('staff_user_id', daviesStaff!.id).single();
+  barberId = daviesBarber!.id;
+  branchId = daviesBarber!.branch_id;
 
   // Ensure branch has coordinates so geofence validation is deterministic
   const { data: branch } = await supabase
@@ -442,7 +442,7 @@ describe('GET /barber/appointments/:id', () => {
     const { status, body } = await req(
       'GET',
       `${API}/barber/appointments/${barberDetailAptId}`,
-      budiToken
+      daviesToken
     );
 
     expect(status).toBe(200);
@@ -457,7 +457,7 @@ describe('GET /barber/appointments/:id', () => {
     const { status } = await req(
       'GET',
       `${API}/barber/appointments/${barberDetailAptId}`,
-      andiToken
+      barronToken
     );
 
     expect(status).toBe(404);
@@ -476,7 +476,7 @@ describe('GET /barber/appointments/:id/tracking', () => {
     const { status, body } = await req(
       'GET',
       `${API}/barber/appointments/${homeServiceAptId}/tracking`,
-      budiToken
+      daviesToken
     );
 
     expect(status).toBe(200);
@@ -491,7 +491,7 @@ describe('GET /barber/appointments/:id/tracking', () => {
     const { status } = await req(
       'GET',
       `${API}/barber/appointments/${homeServiceAptId}/tracking`,
-      andiToken
+      barronToken
     );
 
     expect(status).toBe(403);
@@ -505,7 +505,7 @@ describe('Geofence arrive barber (home_service)', () => {
     const { status, body } = await req(
       'PATCH',
       `${API}/barber/appointments/${arriveHomeNoGpsAptId}/arrive`,
-      budiToken
+      daviesToken
       // tidak ada body
     );
 
@@ -520,7 +520,7 @@ describe('Geofence arrive barber (home_service)', () => {
     const { status, body } = await req(
       'PATCH',
       `${API}/barber/appointments/${arriveHomeOutsideAptId}/arrive`,
-      budiToken,
+      daviesToken,
       { lat: outsideLat, lng: DEST_LNG }
     );
 
@@ -533,7 +533,7 @@ describe('Geofence arrive barber (home_service)', () => {
     const { status, body } = await req(
       'PATCH',
       `${API}/barber/appointments/${arriveHomeInsideAptId}/arrive`,
-      budiToken,
+      daviesToken,
       { lat: DEST_LAT, lng: DEST_LNG }
     );
 
@@ -546,7 +546,7 @@ describe('Geofence arrive barber (home_service)', () => {
     const { status, body } = await req(
       'PATCH',
       `${API}/barber/appointments/${arriveInStoreAptId}/arrive`,
-      budiToken
+      daviesToken
       // tidak ada body, in_store tidak memerlukan GPS
     );
 

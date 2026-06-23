@@ -33,7 +33,7 @@ export const adminDocs = {
       successData: [{
         id: ADMIN_EXAMPLES.staffId,
         full_name: 'Nadia Ancol Admin',
-        email: 'admin.ancol@bombbarbers.com',
+        email: 'admin.kedoya@bombbarbershop.com',
         phone: '628110000101',
         is_active: true,
         created_at: '2026-06-01T08:00:00.000Z',

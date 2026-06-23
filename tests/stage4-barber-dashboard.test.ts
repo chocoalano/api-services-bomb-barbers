@@ -22,7 +22,7 @@ import { RealtimeTrackingService } from '../src/core/tracking/service';
 const API = '/api/v1';
 const PASS = 'password123';
 
-let budiToken = '';
+let daviesToken = '';
 let barberId = '';
 let branchId = '';
 let customerId = '';
@@ -82,17 +82,17 @@ const setLegacyEta = async (appointmentId: string, payload: object) => {
 beforeAll(async () => {
   // Login
   const loginRes = await req('POST', `${API}/barber/auth/login`, undefined, {
-    email: 'budi@bombbarbers.com',
+    email: 'davies@bombbarbershop.com',
     password: PASS
   });
   if (!loginRes.body?.data?.accessToken) throw new Error(`Login gagal: ${JSON.stringify(loginRes.body)}`);
-  budiToken = loginRes.body.data.accessToken;
+  daviesToken = loginRes.body.data.accessToken;
 
   // Resolve IDs
-  const { data: budiStaff } = await supabase.from('staff_users').select('id').eq('email', 'budi@bombbarbers.com').single();
-  const { data: budiBarber } = await supabase.from('barbers').select('id, branch_id').eq('staff_user_id', budiStaff!.id).single();
-  barberId = budiBarber!.id;
-  branchId = budiBarber!.branch_id;
+  const { data: daviesStaff } = await supabase.from('staff_users').select('id').eq('email', 'davies@bombbarbershop.com').single();
+  const { data: daviesBarber } = await supabase.from('barbers').select('id, branch_id').eq('staff_user_id', daviesStaff!.id).single();
+  barberId = daviesBarber!.id;
+  branchId = daviesBarber!.branch_id;
 
   const { data: customer } = await supabase.from('customers').select('id').eq('email', 'fajar.customer@example.com').single();
   customerId = customer!.id;
@@ -138,7 +138,7 @@ afterAll(async () => {
 
 describe('GET /barber/queue — kelengkapan field Stage 4', () => {
   it('mengembalikan fulfillment_type untuk tiap item queue', async () => {
-    const { status, body } = await req('GET', `${API}/barber/queue`, budiToken);
+    const { status, body } = await req('GET', `${API}/barber/queue`, daviesToken);
 
     expect(status).toBe(200);
     const items: any[] = body.data ?? [];
@@ -148,38 +148,38 @@ describe('GET /barber/queue — kelengkapan field Stage 4', () => {
   });
 
   it('mengembalikan service_address untuk home_service', async () => {
-    const { body } = await req('GET', `${API}/barber/queue`, budiToken);
+    const { body } = await req('GET', `${API}/barber/queue`, daviesToken);
     const homeItem = (body.data ?? []).find((i: any) => i.id === homeServiceAptId);
     expect(homeItem?.service_address).toBe('Jl. Merdeka No. 10, Jakarta Pusat');
   });
 
   it('mengembalikan destination_location sebagai { lat, lng } untuk home_service', async () => {
-    const { body } = await req('GET', `${API}/barber/queue`, budiToken);
+    const { body } = await req('GET', `${API}/barber/queue`, daviesToken);
     const homeItem = (body.data ?? []).find((i: any) => i.id === homeServiceAptId);
     expect(homeItem?.destination_location).toEqual({ lat: -6.2442, lng: 106.8096 });
   });
 
   it('mengembalikan location_notes untuk home_service', async () => {
-    const { body } = await req('GET', `${API}/barber/queue`, budiToken);
+    const { body } = await req('GET', `${API}/barber/queue`, daviesToken);
     const homeItem = (body.data ?? []).find((i: any) => i.id === homeServiceAptId);
     expect(homeItem?.location_notes).toBe('Lantai 3, unit 301');
   });
 
   it('mengembalikan customer_media_urls sebagai array', async () => {
-    const { body } = await req('GET', `${API}/barber/queue`, budiToken);
+    const { body } = await req('GET', `${API}/barber/queue`, daviesToken);
     const homeItem = (body.data ?? []).find((i: any) => i.id === homeServiceAptId);
     expect(Array.isArray(homeItem?.customer_media_urls)).toBe(true);
     expect(homeItem?.customer_media_urls.length).toBe(2);
   });
 
   it('mengembalikan journey_status', async () => {
-    const { body } = await req('GET', `${API}/barber/queue`, budiToken);
+    const { body } = await req('GET', `${API}/barber/queue`, daviesToken);
     const homeItem = (body.data ?? []).find((i: any) => i.id === homeServiceAptId);
     expect(homeItem?.journey_status).toBe('en_route');
   });
 
   it('address queue home_service menggunakan service_address (bukan alamat branch/customer)', async () => {
-    const { body } = await req('GET', `${API}/barber/queue`, budiToken);
+    const { body } = await req('GET', `${API}/barber/queue`, daviesToken);
     const homeItem = (body.data ?? []).find((i: any) => i.id === homeServiceAptId);
     expect(homeItem?.address).toBe('Jl. Merdeka No. 10, Jakarta Pusat');
   });
@@ -197,7 +197,7 @@ describe('GET /barber/queue — ETA dari tracking route', () => {
     };
     await setTrackingRoute(homeServiceAptId, route);
 
-    const { body } = await req('GET', `${API}/barber/queue`, budiToken);
+    const { body } = await req('GET', `${API}/barber/queue`, daviesToken);
     const homeItem = (body.data ?? []).find((i: any) => i.id === homeServiceAptId);
 
     expect(homeItem?.eta_minutes).toBe(12);
@@ -212,7 +212,7 @@ describe('GET /barber/queue — ETA dari tracking route', () => {
     // Hanya set legacy key, TIDAK set tracking route
     await setLegacyEta(homeServiceAptId, { eta_minutes: 99, distance_km: 99.9 });
 
-    const { body } = await req('GET', `${API}/barber/queue`, budiToken);
+    const { body } = await req('GET', `${API}/barber/queue`, daviesToken);
     const homeItem = (body.data ?? []).find((i: any) => i.id === homeServiceAptId);
 
     // Legacy key tidak boleh dibaca — ETA harus "Belum tersedia" atau fallback status
@@ -228,7 +228,7 @@ describe('GET /barber/queue — ETA dari tracking route', () => {
 
 describe('GET /barber/dashboard/today — earnings tidak ambigu', () => {
   it('menggunakan barber_share_including_tip (bukan commission_earned)', async () => {
-    const { status, body } = await req('GET', `${API}/barber/dashboard/today`, budiToken);
+    const { status, body } = await req('GET', `${API}/barber/dashboard/today`, daviesToken);
 
     expect(status).toBe(200);
     expect(body.data).toHaveProperty('barber_share_including_tip');
@@ -237,13 +237,13 @@ describe('GET /barber/dashboard/today — earnings tidak ambigu', () => {
   });
 
   it('field tip_amount ada (bukan tips_earned)', async () => {
-    const { body } = await req('GET', `${API}/barber/dashboard/today`, budiToken);
+    const { body } = await req('GET', `${API}/barber/dashboard/today`, daviesToken);
     expect(body.data).toHaveProperty('tip_amount');
     expect(body.data).not.toHaveProperty('tips_earned');
   });
 
   it('total_earnings sama dengan barber_share_including_tip (tidak ada double-count)', async () => {
-    const { body } = await req('GET', `${API}/barber/dashboard/today`, budiToken);
+    const { body } = await req('GET', `${API}/barber/dashboard/today`, daviesToken);
     const d = body.data;
     // total_earnings = barber_share (sudah termasuk tip) — tidak ditambah tip_amount lagi
     expect(d.total_earnings).toBe(d.barber_share_including_tip);
@@ -254,7 +254,7 @@ describe('GET /barber/dashboard/today — earnings tidak ambigu', () => {
 
 describe('GET /barber/appointments/history — riwayat dengan pagination', () => {
   it('hanya mengembalikan terminal status (completed, cancelled, no_show)', async () => {
-    const { status, body } = await req('GET', `${API}/barber/appointments/history`, budiToken);
+    const { status, body } = await req('GET', `${API}/barber/appointments/history`, daviesToken);
 
     expect(status).toBe(200);
     const items: any[] = body.data ?? [];
@@ -263,7 +263,7 @@ describe('GET /barber/appointments/history — riwayat dengan pagination', () =>
   });
 
   it('mengembalikan pagination meta (page, limit, total, total_pages)', async () => {
-    const { body } = await req('GET', `${API}/barber/appointments/history`, budiToken);
+    const { body } = await req('GET', `${API}/barber/appointments/history`, daviesToken);
     expect(body.meta).toHaveProperty('page');
     expect(body.meta).toHaveProperty('limit');
     expect(body.meta).toHaveProperty('total');
@@ -275,7 +275,7 @@ describe('GET /barber/appointments/history — riwayat dengan pagination', () =>
     const { body } = await req(
       'GET',
       `${API}/barber/appointments/history?page=1&limit=2`,
-      budiToken
+      daviesToken
     );
 
     expect(body.data.length).toBeLessThanOrEqual(2);
@@ -283,8 +283,8 @@ describe('GET /barber/appointments/history — riwayat dengan pagination', () =>
   });
 
   it('halaman berbeda mengembalikan item berbeda', async () => {
-    const page1 = await req('GET', `${API}/barber/appointments/history?page=1&limit=2`, budiToken);
-    const page2 = await req('GET', `${API}/barber/appointments/history?page=2&limit=2`, budiToken);
+    const page1 = await req('GET', `${API}/barber/appointments/history?page=1&limit=2`, daviesToken);
+    const page2 = await req('GET', `${API}/barber/appointments/history?page=2&limit=2`, daviesToken);
 
     const ids1: string[] = (page1.body.data ?? []).map((i: any) => i.id);
     const ids2: string[] = (page2.body.data ?? []).map((i: any) => i.id);
@@ -297,17 +297,17 @@ describe('GET /barber/appointments/history — riwayat dengan pagination', () =>
   });
 
   it('menolak limit yang tidak valid', async () => {
-    const { status } = await req('GET', `${API}/barber/appointments/history?limit=abc`, budiToken);
+    const { status } = await req('GET', `${API}/barber/appointments/history?limit=abc`, daviesToken);
     expect(status).toBe(400);
   });
 
   it('menolak page yang tidak valid', async () => {
-    const { status } = await req('GET', `${API}/barber/appointments/history?page=0`, budiToken);
+    const { status } = await req('GET', `${API}/barber/appointments/history?page=0`, daviesToken);
     expect(status).toBe(400);
   });
 
   it('item riwayat mengandung field penting (id, status, fulfillment_type, price)', async () => {
-    const { body } = await req('GET', `${API}/barber/appointments/history?limit=1`, budiToken);
+    const { body } = await req('GET', `${API}/barber/appointments/history?limit=1`, daviesToken);
     const item = (body.data ?? [])[0];
     if (item) {
       expect(item).toHaveProperty('id');
@@ -323,7 +323,7 @@ describe('GET /barber/appointments/history — riwayat dengan pagination', () =>
 
 describe('GET /barber/stats/daily — pagination statistik harian', () => {
   it('mengembalikan pagination meta', async () => {
-    const { status, body } = await req('GET', `${API}/barber/stats/daily`, budiToken);
+    const { status, body } = await req('GET', `${API}/barber/stats/daily`, daviesToken);
 
     expect(status).toBe(200);
     expect(body.meta).toHaveProperty('page');
@@ -333,13 +333,13 @@ describe('GET /barber/stats/daily — pagination statistik harian', () => {
   });
 
   it('limit query param membatasi jumlah baris', async () => {
-    const { body } = await req('GET', `${API}/barber/stats/daily?limit=5`, budiToken);
+    const { body } = await req('GET', `${API}/barber/stats/daily?limit=5`, daviesToken);
     expect(body.data.length).toBeLessThanOrEqual(5);
     expect(body.meta.limit).toBe(5);
   });
 
   it('stats row menyertakan alias barber_share_including_tip', async () => {
-    const { body } = await req('GET', `${API}/barber/stats/daily?limit=1`, budiToken);
+    const { body } = await req('GET', `${API}/barber/stats/daily?limit=1`, daviesToken);
     const row = (body.data ?? [])[0];
     if (row) {
       expect(row).toHaveProperty('barber_share_including_tip');
@@ -349,7 +349,7 @@ describe('GET /barber/stats/daily — pagination statistik harian', () => {
   });
 
   it('menolak limit tidak valid (< 1)', async () => {
-    const { status } = await req('GET', `${API}/barber/stats/daily?limit=0`, budiToken);
+    const { status } = await req('GET', `${API}/barber/stats/daily?limit=0`, daviesToken);
     expect(status).toBe(400);
   });
 });
@@ -358,7 +358,7 @@ describe('GET /barber/stats/daily — pagination statistik harian', () => {
 
 describe('GET /barber/commissions — pagination komisi', () => {
   it('mengembalikan pagination meta', async () => {
-    const { status, body } = await req('GET', `${API}/barber/commissions`, budiToken);
+    const { status, body } = await req('GET', `${API}/barber/commissions`, daviesToken);
 
     expect(status).toBe(200);
     expect(body.meta).toHaveProperty('page');
@@ -368,13 +368,13 @@ describe('GET /barber/commissions — pagination komisi', () => {
   });
 
   it('limit query param membatasi jumlah baris', async () => {
-    const { body } = await req('GET', `${API}/barber/commissions?limit=3`, budiToken);
+    const { body } = await req('GET', `${API}/barber/commissions?limit=3`, daviesToken);
     expect(body.data.length).toBeLessThanOrEqual(3);
     expect(body.meta.limit).toBe(3);
   });
 
   it('komisi row menyertakan alias barber_share_including_tip', async () => {
-    const { body } = await req('GET', `${API}/barber/commissions?limit=1`, budiToken);
+    const { body } = await req('GET', `${API}/barber/commissions?limit=1`, daviesToken);
     const row = (body.data ?? [])[0];
     if (row) {
       expect(row).toHaveProperty('barber_share_including_tip');
@@ -383,7 +383,7 @@ describe('GET /barber/commissions — pagination komisi', () => {
   });
 
   it('menolak page tidak valid', async () => {
-    const { status } = await req('GET', `${API}/barber/commissions?page=-1`, budiToken);
+    const { status } = await req('GET', `${API}/barber/commissions?page=-1`, daviesToken);
     expect(status).toBe(400);
   });
 });
@@ -392,7 +392,7 @@ describe('GET /barber/commissions — pagination komisi', () => {
 
 describe('GET /barber/portfolio — pagination portfolio', () => {
   it('mengembalikan pagination meta', async () => {
-    const { status, body } = await req('GET', `${API}/barber/portfolio`, budiToken);
+    const { status, body } = await req('GET', `${API}/barber/portfolio`, daviesToken);
 
     expect(status).toBe(200);
     expect(body.meta).toHaveProperty('page');
@@ -402,18 +402,18 @@ describe('GET /barber/portfolio — pagination portfolio', () => {
   });
 
   it('data adalah array', async () => {
-    const { body } = await req('GET', `${API}/barber/portfolio`, budiToken);
+    const { body } = await req('GET', `${API}/barber/portfolio`, daviesToken);
     expect(Array.isArray(body.data)).toBe(true);
   });
 
   it('limit query param dihormati', async () => {
-    const { body } = await req('GET', `${API}/barber/portfolio?limit=2`, budiToken);
+    const { body } = await req('GET', `${API}/barber/portfolio?limit=2`, daviesToken);
     expect(body.data.length).toBeLessThanOrEqual(2);
     expect(body.meta.limit).toBe(2);
   });
 
   it('menolak limit tidak valid', async () => {
-    const { status } = await req('GET', `${API}/barber/portfolio?limit=xyz`, budiToken);
+    const { status } = await req('GET', `${API}/barber/portfolio?limit=xyz`, daviesToken);
     expect(status).toBe(400);
   });
 });

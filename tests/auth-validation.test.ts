@@ -14,7 +14,7 @@ describe('Customer auth validation', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        email: 'pelanggan@bombbarbers.com',
+        email: 'pelanggan@bombbarbershop.com',
         password: 'Password123!'
       })
     }));
@@ -54,7 +54,7 @@ describe('Customer auth validation', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        email: 'pelanggan@bombbarbers.com',
+        email: 'pelanggan@bombbarbershop.com',
         phone: '',
         password: 'Password123!'
       })

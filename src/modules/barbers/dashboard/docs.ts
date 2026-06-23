@@ -10,7 +10,7 @@ import {
 const currentOrderExample = {
   id: BARBER_EXAMPLES.appointmentId,
   customer_name: 'Budi Santoso',
-  service_name: 'Premium Haircut',
+  service_name: 'Haircut',
   price: 85000,
   distance: '2.4 km',
   eta: '18 menit',

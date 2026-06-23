@@ -10,6 +10,8 @@ export const paymentDocs = {
       product_amount: t.Optional(t.Number()),
       discount_amount: t.Optional(t.Number()),
       tip_amount: t.Optional(t.Number()),
+      service_fee: t.Optional(t.Integer({ minimum: 0, description: 'Biaya layanan platform (default 5000).' })),
+      delivery_fee: t.Optional(t.Integer({ minimum: 0, description: 'Ongkir home service (default 0 untuk in-store).' })),
       gateway_reference: t.Optional(t.String())
     }),
     detail: { tags: ['Admin Payments'], summary: 'Create Payment' }
@@ -38,6 +40,14 @@ export const paymentDocs = {
       tip_amount: t.Optional(t.Integer({
         minimum: 0,
         description: 'Nominal tip dalam rupiah penuh. Gunakan integer, bukan pecahan desimal.'
+      })),
+      service_fee: t.Optional(t.Integer({
+        minimum: 0,
+        description: 'Biaya layanan platform. Jika tidak dikirim, backend menggunakan default Rp5.000.'
+      })),
+      delivery_fee: t.Optional(t.Integer({
+        minimum: 0,
+        description: 'Ongkir home service dalam rupiah. Hanya relevan jika fulfillment_type=home_service. Default 0 untuk in-store.'
       }))
     }),
     detail: { tags: ['Customer Payments'], summary: 'Inisiasi Pembayaran Customer', description: 'Menginisiasi pembayaran aman untuk satu appointment milik pelanggan yang sedang login. Endpoint ini menghitung ulang total tagihan dari snapshot layanan di backend, menambahkan tip jika ada, membuat record payment, mencatat audit finansial, lalu mengembalikan payment_url, redirect_url, dan token gateway bila provider seperti Midtrans menghasilkan sesi pembayaran.' }

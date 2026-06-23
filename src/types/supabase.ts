@@ -1452,6 +1452,8 @@ export type Database = {
           paid_at: string | null
           product_amount: number
           service_amount: number
+          service_fee: number
+          delivery_fee: number
           status: string
           tip_amount: number | null
           total_amount: number
@@ -1467,6 +1469,8 @@ export type Database = {
           paid_at?: string | null
           product_amount: number
           service_amount: number
+          service_fee?: number
+          delivery_fee?: number
           status: string
           tip_amount?: number | null
           total_amount: number
@@ -1482,6 +1486,8 @@ export type Database = {
           paid_at?: string | null
           product_amount?: number
           service_amount?: number
+          service_fee?: number
+          delivery_fee?: number
           status?: string
           tip_amount?: number | null
           total_amount?: number

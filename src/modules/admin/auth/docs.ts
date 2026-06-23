@@ -10,7 +10,7 @@ import {
 const adminProfileExample = {
   id: ADMIN_EXAMPLES.staffId,
   full_name: 'Nadia Admin Cabang',
-  email: 'admin.ancol@bombbarbers.com',
+  email: 'admin.kedoya@bombbarbershop.com',
   phone: '628110000101',
   is_active: true,
   created_at: '2026-06-01T08:00:00.000Z',
@@ -28,7 +28,7 @@ export const adminAuthDocs = {
       email: t.String({
         format: 'email',
         description: 'Email akun staff admin yang aktif.',
-        examples: ['admin.ancol@bombbarbers.com']
+        examples: ['admin.kedoya@bombbarbershop.com']
       }),
       password: t.String({
         minLength: 8,
@@ -37,11 +37,11 @@ export const adminAuthDocs = {
       })
     }, requestExamples(
       {
-        email: 'admin.ancol@bombbarbers.com',
+        email: 'admin.kedoya@bombbarbershop.com',
         password: 'Password123!'
       },
       {
-        email: 'admin.ancol@bombbarbers.com',
+        email: 'admin.kedoya@bombbarbershop.com',
         password: 'Password123!'
       }
     )),
