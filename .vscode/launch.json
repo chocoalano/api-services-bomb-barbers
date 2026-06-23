@@ -1,0 +1,51 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "bun",
+      "request": "launch",
+      "name": "Debug API Server",
+      "program": "${workspaceFolder}/src/server.ts",
+      "cwd": "${workspaceFolder}",
+      "watchMode": true,
+      "stopOnEntry": false,
+      "internalConsoleOptions": "neverOpen",
+      "env": {
+        "NODE_ENV": "development",
+        "APP_PORT": "3000"
+      }
+    },
+    {
+      "type": "bun",
+      "request": "launch",
+      "name": "Run API Server",
+      "program": "${workspaceFolder}/src/server.ts",
+      "cwd": "${workspaceFolder}",
+      "watchMode": true,
+      "noDebug": true,
+      "internalConsoleOptions": "neverOpen",
+      "env": {
+        "NODE_ENV": "development",
+        "APP_PORT": "3000"
+      }
+    },
+    {
+      "type": "bun",
+      "request": "launch",
+      "name": "Debug Current File",
+      "program": "${file}",
+      "cwd": "${workspaceFolder}",
+      "watchMode": false,
+      "stopOnEntry": false,
+      "internalConsoleOptions": "neverOpen"
+    },
+    {
+      "type": "bun",
+      "request": "attach",
+      "name": "Attach Bun Inspector",
+      "url": "ws://localhost:6499/",
+      "stopOnEntry": false,
+      "internalConsoleOptions": "neverOpen"
+    }
+  ]
+}

@@ -1,0 +1,128 @@
+{
+  "meta": {
+    "title": "Bomb Barbershop Admin API Map",
+    "version": "2026-06-22",
+    "base_url": "http://localhost:3000",
+    "namespaces": ["/api/v1/admin", "/api/v1/hq"]
+  },
+  "admin_routes": [
+    { "domain": "auth", "method": "POST", "path": "/api/v1/admin/auth/login", "auth": "public", "permission": null },
+    { "domain": "auth", "method": "POST", "path": "/api/v1/admin/auth/refresh", "auth": "refresh_token", "permission": null },
+    { "domain": "auth", "method": "POST", "path": "/api/v1/admin/auth/logout", "auth": "refresh_token", "permission": null },
+    { "domain": "auth", "method": "GET", "path": "/api/v1/admin/me", "auth": "bearer", "permission": null },
+
+    { "domain": "appointments", "method": "POST", "path": "/api/v1/admin/branches/:branchId/walk-ins", "auth": "bearer", "permission": "branch_scope", "note": "Idempotency-Key required" },
+    { "domain": "appointments", "method": "GET", "path": "/api/v1/admin/branches/:branchId/queue", "auth": "bearer", "permission": "branch_scope" },
+    { "domain": "appointments", "method": "PATCH", "path": "/api/v1/admin/appointments/:id/status", "auth": "bearer", "permission": "appointment_scope" },
+    { "domain": "appointments", "method": "PATCH", "path": "/api/v1/admin/appointments/:id/barber", "auth": "bearer", "permission": "appointment_scope" },
+    { "domain": "appointments", "method": "PATCH", "path": "/api/v1/admin/appointments/:id/destination", "auth": "bearer", "permission": "appointment_scope", "note": "home_service only; pending/confirmed/in_queue/in_service; rejects null or 0.0 coords; audit logged" },
+
+    { "domain": "barbers", "method": "GET", "path": "/api/v1/admin/branches/:branchId/barbers", "auth": "bearer", "permission": "manage_appointment + branch_scope" },
+    { "domain": "barbers", "method": "GET", "path": "/api/v1/admin/branches/:branchId/barbers/:barberId/schedule", "auth": "bearer", "permission": "manage_appointment + branch_scope" },
+    { "domain": "barbers", "method": "PATCH", "path": "/api/v1/admin/branches/:branchId/barbers/:barberId/status", "auth": "bearer", "permission": "manage_appointment + branch_scope" },
+
+    { "domain": "dashboard", "method": "GET", "path": "/api/v1/admin/branches/:branchId/dashboard/today", "auth": "bearer", "permission": "branch_scope" },
+    { "domain": "dashboard", "method": "GET", "path": "/api/v1/admin/branches/:branchId/appointments/summary", "auth": "bearer", "permission": "branch_scope" },
+    { "domain": "dashboard", "method": "GET", "path": "/api/v1/admin/branches/:branchId/payments/summary", "auth": "bearer", "permission": "branch_scope" },
+    { "domain": "dashboard", "method": "GET", "path": "/api/v1/admin/branches/:branchId/commissions/summary", "auth": "bearer", "permission": "branch_scope" },
+
+    { "domain": "commissions", "method": "POST", "path": "/api/v1/admin/appointments/:id/calculate-commission", "auth": "bearer", "permission": "appointment_scope" },
+    { "domain": "commissions", "method": "GET", "path": "/api/v1/admin/appointments/:id/commission", "auth": "bearer", "permission": "appointment_scope" },
+    { "domain": "commissions", "method": "GET", "path": "/api/v1/admin/branches/:branchId/commissions", "auth": "bearer", "permission": "branch_scope" },
+
+    { "domain": "payments", "method": "POST", "path": "/api/v1/admin/appointments/:id/payments", "auth": "bearer", "permission": "appointment_scope" },
+    { "domain": "payments", "method": "GET", "path": "/api/v1/admin/payments/:id", "auth": "bearer", "permission": "payment_scope" },
+    { "domain": "payments", "method": "GET", "path": "/api/v1/admin/branches/:branchId/payments", "auth": "bearer", "permission": "branch_scope" },
+
+    { "domain": "expenses", "method": "GET", "path": "/api/v1/admin/expenses/branches/:branchId", "auth": "bearer", "permission": "branch_scope" },
+    { "domain": "expenses", "method": "POST", "path": "/api/v1/admin/expenses/branches/:branchId", "auth": "bearer", "permission": "branch_scope" },
+    { "domain": "expenses", "method": "PUT", "path": "/api/v1/admin/expenses/branches/:branchId/:expenseId", "auth": "bearer", "permission": "branch_scope" },
+    { "domain": "expenses", "method": "DELETE", "path": "/api/v1/admin/expenses/branches/:branchId/:expenseId", "auth": "bearer", "permission": "branch_scope" },
+
+    { "domain": "realtime", "method": "GET", "path": "/api/v1/admin/branches/:branchId/realtime-queue", "auth": "bearer", "permission": "branch_scope", "note": "SSE stream; event: queue_update" },
+
+    { "domain": "audit", "method": "GET", "path": "/api/v1/admin/audit-logs", "auth": "bearer", "permission": "view_audit_log" }
+  ],
+  "hq_routes": [
+    { "domain": "dashboard", "method": "GET", "path": "/api/v1/hq/dashboard/today", "auth": "bearer", "permission": "super_admin" },
+    { "domain": "dashboard", "method": "GET", "path": "/api/v1/hq/branches/summary", "auth": "bearer", "permission": "super_admin" },
+
+    { "domain": "analytics", "method": "GET", "path": "/api/v1/hq/analytics/branches", "auth": "bearer", "permission": "super_admin" },
+
+    { "domain": "reports", "method": "GET", "path": "/api/v1/hq/reports/revenue/export", "auth": "bearer", "permission": "super_admin", "note": "returns text/csv" },
+    { "domain": "reports", "method": "GET", "path": "/api/v1/hq/reports/commission/export", "auth": "bearer", "permission": "super_admin", "note": "returns text/csv" },
+
+    { "domain": "branches", "method": "POST", "path": "/api/v1/hq/branches", "auth": "bearer", "permission": "manage_branch" },
+    { "domain": "branches", "method": "PUT", "path": "/api/v1/hq/branches/:id", "auth": "bearer", "permission": "manage_branch" },
+    { "domain": "branches", "method": "DELETE", "path": "/api/v1/hq/branches/:id", "auth": "bearer", "permission": "manage_branch" },
+
+    { "domain": "barbers", "method": "POST", "path": "/api/v1/hq/barbers", "auth": "bearer", "permission": "manage_barber" },
+    { "domain": "barbers", "method": "PUT", "path": "/api/v1/hq/barbers/:id", "auth": "bearer", "permission": "manage_barber" },
+    { "domain": "barbers", "method": "DELETE", "path": "/api/v1/hq/barbers/:id", "auth": "bearer", "permission": "manage_barber" },
+
+    { "domain": "services", "method": "POST", "path": "/api/v1/hq/services", "auth": "bearer", "permission": "manage_service" },
+    { "domain": "services", "method": "PUT", "path": "/api/v1/hq/services/:id", "auth": "bearer", "permission": "manage_service" },
+    { "domain": "services", "method": "DELETE", "path": "/api/v1/hq/services/:id", "auth": "bearer", "permission": "manage_service" },
+
+    { "domain": "service_prices", "method": "POST", "path": "/api/v1/hq/service-prices", "auth": "bearer", "permission": "manage_service" },
+    { "domain": "service_prices", "method": "PUT", "path": "/api/v1/hq/service-prices/:id", "auth": "bearer", "permission": "manage_service" },
+    { "domain": "service_prices", "method": "DELETE", "path": "/api/v1/hq/service-prices/:id", "auth": "bearer", "permission": "manage_service" },
+
+    { "domain": "rbac", "method": "GET", "path": "/api/v1/hq/roles", "auth": "bearer", "permission": "manage_staff" },
+    { "domain": "rbac", "method": "POST", "path": "/api/v1/hq/roles", "auth": "bearer", "permission": "manage_staff" },
+    { "domain": "rbac", "method": "GET", "path": "/api/v1/hq/permissions", "auth": "bearer", "permission": "manage_staff" },
+    { "domain": "rbac", "method": "POST", "path": "/api/v1/hq/staff-users/:id/roles", "auth": "bearer", "permission": "manage_staff" },
+    { "domain": "rbac", "method": "DELETE", "path": "/api/v1/hq/staff-users/:id/roles/:roleId", "auth": "bearer", "permission": "manage_staff" },
+
+    { "domain": "media", "method": "POST", "path": "/api/v1/hq/media/upload", "auth": "bearer", "permission": "manage_service", "note": "multipart/form-data; public bucket" }
+  ],
+  "webhook_routes": [
+    { "domain": "payments", "method": "POST", "path": "/api/v1/webhooks/payments/:provider", "auth": "public", "note": "signature verified" },
+    { "domain": "payments", "method": "POST", "path": "/api/v1/payments/webhook", "auth": "public", "note": "signature verified" },
+    { "domain": "payments", "method": "POST", "path": "/api/v1/payments/webhook/:provider", "auth": "public", "note": "signature verified" }
+  ],
+  "rbac_model": {
+    "roles": [
+      {
+        "name": "branch_admin",
+        "scope": "per_branch",
+        "permissions": ["manage_appointment", "manage_payment", "manage_commission", "view_audit_log"]
+      },
+      {
+        "name": "super_admin",
+        "scope": "global",
+        "permissions": ["manage_appointment", "manage_payment", "manage_commission", "view_audit_log", "manage_barber", "manage_branch", "manage_service", "manage_staff"]
+      }
+    ],
+    "scope_resolution": {
+      "branch_scope": "reads :branchId from path; verifies staff has a role covering that branch",
+      "appointment_scope": "reads appointments.branch_id from DB; then applies branch_scope check",
+      "global": "staff with any role where branch_id IS NULL bypasses branch scope checks"
+    }
+  },
+  "appointment_status_flow": {
+    "admin_transitions": {
+      "from_pending": ["confirmed", "in_queue", "cancelled", "no_show"],
+      "from_confirmed": ["in_queue", "in_service", "cancelled", "no_show"],
+      "from_in_queue": ["in_service", "cancelled", "no_show"],
+      "from_in_service": ["completed", "cancelled"],
+      "terminal": ["completed", "cancelled", "no_show"]
+    },
+    "destination_modifiable_statuses": ["pending", "confirmed", "in_queue", "in_service"]
+  },
+  "realtime": {
+    "sse": {
+      "endpoint": "/api/v1/admin/branches/:branchId/realtime-queue",
+      "event": "queue_update",
+      "interval_sec": 5,
+      "data_shape": "appointment[] with barber_id, status, eta.eta_minutes"
+    }
+  },
+  "gaps": [
+    "GET /api/v1/admin/branches/:branchId/barbers does not paginate — may be slow for large branches",
+    "GET /api/v1/admin/audit-logs has no cursor pagination — limit 500 max",
+    "PATCH /api/v1/admin/appointments/:id/destination is admin-only; there is no bulk destination update",
+    "No endpoint to bulk-cancel appointments (e.g., for barber time-off)",
+    "SSE realtime-queue does not support browser native EventSource with auth header — requires polyfill or token-in-query"
+  ]
+}

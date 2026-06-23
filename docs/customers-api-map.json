@@ -1,0 +1,87 @@
+{
+  "version": "2026-06-22",
+  "basePath": "/api/v1/customers",
+  "canonicalRouteCount": 38,
+  "responseEnvelope": {
+    "success": "boolean",
+    "message": "string",
+    "data": "unknown|null",
+    "errors": "unknown|null",
+    "meta": "unknown|null"
+  },
+  "routes": [
+    { "domain": "auth", "method": "POST", "path": "/api/v1/customers/auth/register", "auth": "public" },
+    { "domain": "auth", "method": "POST", "path": "/api/v1/customers/auth/login", "auth": "public" },
+    { "domain": "auth", "method": "POST", "path": "/api/v1/customers/auth/refresh", "auth": "refresh_token_body" },
+    { "domain": "auth", "method": "POST", "path": "/api/v1/customers/auth/logout", "auth": "refresh_token_body" },
+    { "domain": "profile", "method": "GET", "path": "/api/v1/customers/me", "auth": "customer_bearer" },
+    { "domain": "profile", "method": "PATCH", "path": "/api/v1/customers/me", "auth": "customer_bearer" },
+
+    { "domain": "catalog", "method": "GET", "path": "/api/v1/customers/catalog/branches", "auth": "public" },
+    { "domain": "catalog", "method": "GET", "path": "/api/v1/customers/catalog/branches/:id", "auth": "public" },
+    { "domain": "catalog", "method": "GET", "path": "/api/v1/customers/catalog/branches/:id/barbers", "auth": "public" },
+    { "domain": "catalog", "method": "GET", "path": "/api/v1/customers/catalog/branches/:id/services", "auth": "public" },
+    { "domain": "catalog", "method": "GET", "path": "/api/v1/customers/catalog/branches/:id/services/:serviceId/price", "auth": "public" },
+    { "domain": "availability", "method": "GET", "path": "/api/v1/customers/catalog/branches/:id/available-slots", "auth": "public" },
+
+    { "domain": "appointments", "method": "POST", "path": "/api/v1/customers/appointments", "auth": "customer_bearer", "requiredHeaders": ["Idempotency-Key"] },
+    { "domain": "appointments", "method": "GET", "path": "/api/v1/customers/appointments", "auth": "customer_bearer" },
+    { "domain": "appointments", "method": "GET", "path": "/api/v1/customers/appointments/:id", "auth": "customer_bearer" },
+    { "domain": "appointments", "method": "POST", "path": "/api/v1/customers/appointments/:id/cancel", "auth": "customer_bearer" },
+    { "domain": "appointments", "method": "PATCH", "path": "/api/v1/customers/appointments/:id/status", "auth": "customer_bearer", "note": "customer may only set cancelled" },
+    { "domain": "appointments", "method": "PATCH", "path": "/api/v1/customers/appointments/:id/destination", "auth": "customer_bearer", "note": "home_service only; pending/confirmed/in_queue; rejects null or 0.0 coords" },
+
+    { "domain": "tracking", "method": "POST", "path": "/api/v1/customers/appointments/:id/tracking/start", "auth": "customer_bearer" },
+    { "domain": "tracking", "method": "GET", "path": "/api/v1/customers/appointments/:id/tracking/eta", "auth": "customer_bearer" },
+    { "domain": "tracking", "method": "PATCH", "path": "/api/v1/customers/appointments/:id/tracking/location", "auth": "customer_bearer" },
+    { "domain": "tracking", "method": "PATCH", "path": "/api/v1/customers/appointments/:id/tracking/eta", "auth": "customer_bearer", "legacy": true },
+    { "domain": "tracking", "method": "POST", "path": "/api/v1/customers/appointments/:id/tracking/revoke", "auth": "customer_bearer" },
+    { "domain": "tracking", "method": "POST", "path": "/api/v1/customers/appointments/:id/check-in", "auth": "customer_bearer" },
+
+    { "domain": "chat", "method": "GET", "path": "/api/v1/customers/appointments/:id/chat", "auth": "customer_bearer" },
+    { "domain": "chat", "method": "POST", "path": "/api/v1/customers/appointments/:id/chat", "auth": "customer_bearer" },
+
+    { "domain": "payments", "method": "GET", "path": "/api/v1/customers/payments/:id", "auth": "customer_bearer" },
+    { "domain": "payments", "method": "GET", "path": "/api/v1/customers/appointments/:id/payment", "auth": "customer_bearer" },
+    { "domain": "payments", "method": "POST", "path": "/api/v1/customers/appointments/:id/payments", "auth": "customer_bearer" },
+    { "domain": "invoices", "method": "GET", "path": "/api/v1/customers/invoices/:invoiceNumber", "auth": "customer_bearer", "knownConflict": true },
+
+    { "domain": "reviews", "method": "POST", "path": "/api/v1/customers/appointments/:id/reviews", "auth": "customer_bearer" },
+
+    { "domain": "content", "method": "GET", "path": "/api/v1/customers/content/banners", "auth": "public" },
+    { "domain": "content", "method": "GET", "path": "/api/v1/customers/content/gallery", "auth": "public" },
+    { "domain": "notifications", "method": "GET", "path": "/api/v1/customers/notifications", "auth": "customer_bearer" },
+    { "domain": "notifications", "method": "PATCH", "path": "/api/v1/customers/notifications/read-all", "auth": "customer_bearer" },
+    { "domain": "notifications", "method": "PATCH", "path": "/api/v1/customers/notifications/:id/read", "auth": "customer_bearer" },
+
+    { "domain": "media", "method": "POST", "path": "/api/v1/customers/media/upload", "auth": "customer_bearer", "contentType": "multipart/form-data" },
+    { "domain": "media", "method": "GET", "path": "/api/v1/customers/media/:id/url", "auth": "customer_bearer" },
+    { "domain": "media", "method": "DELETE", "path": "/api/v1/customers/media/:id", "auth": "customer_bearer" }
+  ],
+  "deprecated": {
+    "sunset": "2028-01-01T00:00:00Z",
+    "patterns": [
+      "/api/v1/customer/*",
+      "/api/v1/branches*",
+      "/api/v1/banners",
+      "/api/v1/gallery",
+      "/api/v1/notifications",
+      "/api/v1/media/upload",
+      "/api/v1/invoices/:invoiceNumber"
+    ]
+  },
+  "socket": {
+    "commands": [
+      "join_appointment",
+      "leave_appointment",
+      "push_customer_location"
+    ],
+    "events": [
+      "appointment:status_changed",
+      "appointment:barber_location",
+      "appointment:customer_location",
+      "appointment:chat_message",
+      "auth:expired"
+    ]
+  }
+}

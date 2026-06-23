@@ -1,0 +1,1122 @@
+{
+  "title": "Bomb Barbershop — Barbers API Map",
+  "updated_at": "2026-06-22",
+  "namespace": "/api/v1/barbers",
+  "base_url": "http://localhost:3000",
+  "socket_url": "http://localhost:3001",
+  "swagger_ui": "/docs",
+
+  "auth": {
+    "type": "Bearer",
+    "header": "Authorization",
+    "format": "Bearer <barber_access_token>",
+    "note": "JWT memuat role staff. Endpoint barber memverifikasi profil barber secara mandiri."
+  },
+
+  "response_format": {
+    "success": {
+      "success": true,
+      "message": "string",
+      "data": "object | array | null",
+      "errors": null,
+      "meta": "object | null"
+    },
+    "error": {
+      "success": false,
+      "message": "string",
+      "data": null,
+      "errors": [{ "field": "string", "message": "string" }],
+      "meta": null
+    },
+    "rules": {
+      "401": "Token kedaluwarsa — coba refresh, jika gagal paksa login ulang",
+      "403": "Tidak punya profil barber atau izin aksi",
+      "409": "Konflik jadwal barber (slot sudah terisi)",
+      "timestamps": "ISO 8601 / timestamptz — tampilkan dalam Asia/Jakarta",
+      "currency": "Rupiah penuh tanpa desimal"
+    }
+  },
+
+  "appointment_status_flow": {
+    "statuses": ["pending", "confirmed", "in_queue", "in_service", "completed", "cancelled", "no_show"],
+    "transitions": [
+      { "from": "pending",    "action": "accept",   "to": "confirmed", "ui_alias": "accepted" },
+      { "from": "pending",    "action": "reject",   "to": "cancelled"  },
+      { "from": "confirmed",  "action": "arrive",   "to": "in_queue",  "ui_alias": "arrived"  },
+      { "from": "confirmed",  "action": "no-show",  "to": "no_show"    },
+      { "from": "in_queue",   "action": "start",    "to": "in_service" },
+      { "from": "in_queue",   "action": "no-show",  "to": "no_show"    },
+      { "from": "in_service", "action": "complete", "to": "completed"  }
+    ],
+    "note": "field status di response aksi memakai ui_alias jika ada; field raw_status selalu nilai DB"
+  },
+
+  "routes": [
+    {
+      "domain": "Auth",
+      "method": "POST",
+      "path": "/api/v1/barbers/auth/login",
+      "auth": "public",
+      "summary": "Login barber",
+      "request": {
+        "body": {
+          "email": { "type": "string", "format": "email", "required": true, "example": "andi.barber@bombbarbershop.com" },
+          "password": { "type": "string", "minLength": 1, "required": true, "example": "BombBarber#2026" }
+        }
+      },
+      "response": {
+        "success_status": 200,
+        "data": {
+          "accessToken": "string",
+          "refreshToken": "string"
+        }
+      },
+      "errors": [
+        { "status": 400, "message": "Validasi gagal" },
+        { "status": 401, "message": "Email atau password salah" },
+        { "status": 403, "message": "Akun tidak aktif" },
+        { "status": 429, "message": "Terlalu banyak percobaan login" }
+      ]
+    },
+    {
+      "domain": "Auth",
+      "method": "POST",
+      "path": "/api/v1/barbers/auth/refresh",
+      "auth": "refresh_token",
+      "summary": "Rotasi token barber",
+      "request": {
+        "body": {
+          "refreshToken": { "type": "string", "required": true }
+        }
+      },
+      "response": {
+        "success_status": 200,
+        "data": {
+          "accessToken": "string",
+          "refreshToken": "string"
+        }
+      },
+      "errors": [
+        { "status": 401, "message": "Refresh token tidak valid atau kedaluwarsa" }
+      ]
+    },
+    {
+      "domain": "Auth",
+      "method": "POST",
+      "path": "/api/v1/barbers/auth/logout",
+      "auth": "refresh_token",
+      "summary": "Cabut session barber",
+      "request": {
+        "body": {
+          "refreshToken": { "type": "string", "required": true }
+        }
+      },
+      "response": {
+        "success_status": 200,
+        "data": null
+      },
+      "errors": [
+        { "status": 401, "message": "Refresh token tidak valid" }
+      ]
+    },
+    {
+      "domain": "Profil",
+      "method": "GET",
+      "path": "/api/v1/barbers/me",
+      "auth": "bearer",
+      "summary": "Ambil profil barber",
+      "response": {
+        "success_status": 200,
+        "data": {
+          "id": "string (staff_user_id)",
+          "email": "string",
+          "full_name": "string",
+          "phone": "string | null",
+          "barber": {
+            "id": "string",
+            "display_name": "string",
+            "live_status": "available | serving | on_break | offline",
+            "bio": "string | null",
+            "rating_avg": "number",
+            "rating_count": "number",
+            "branch_id": "string"
+          }
+        }
+      },
+      "errors": [
+        { "status": 401, "message": "Token tidak valid" }
+      ]
+    },
+    {
+      "domain": "Kehadiran",
+      "method": "PATCH",
+      "path": "/api/v1/barbers/me/status",
+      "auth": "bearer",
+      "summary": "Set status kehadiran barber",
+      "request": {
+        "body": {
+          "status": {
+            "type": "string",
+            "enum": ["online", "offline", "unavailable"],
+            "required": true,
+            "note": "Kehadiran aplikasi — terpisah dari live_status antrean"
+          }
+        }
+      },
+      "response": {
+        "success_status": 200,
+        "data": { "status": "string" }
+      },
+      "errors": [
+        { "status": 400, "message": "Status tidak valid" },
+        { "status": 401, "message": "Token tidak valid" },
+        { "status": 403, "message": "Profil barber tidak ditemukan" }
+      ]
+    },
+    {
+      "domain": "Antrean",
+      "method": "GET",
+      "path": "/api/v1/barbers/queue",
+      "auth": "bearer",
+      "summary": "Antrean dan order aktif barber",
+      "response": {
+        "success_status": 200,
+        "data": [
+          {
+            "id": "string",
+            "customer_name": "string",
+            "service_name": "string",
+            "price": "number",
+            "distance": "string | null",
+            "eta": "string | null",
+            "time": "string (HH:MM WIB)",
+            "address": "string | null",
+            "status": "string (ui_alias)",
+            "raw_status": "string (db)"
+          }
+        ]
+      },
+      "errors": [
+        { "status": 400, "message": "Profil barber tidak ditemukan" },
+        { "status": 401, "message": "Token tidak valid" },
+        { "status": 403, "message": "Bukan barber" }
+      ]
+    },
+    {
+      "domain": "Appointment",
+      "method": "GET",
+      "path": "/api/v1/barbers/appointments/history",
+      "auth": "bearer",
+      "summary": "Riwayat appointment barber",
+      "request": {
+        "query": {
+          "page":  { "type": "integer", "minimum": 1, "default": 1 },
+          "limit": { "type": "integer", "minimum": 1, "maximum": 100, "default": 10 }
+        }
+      },
+      "response": {
+        "success_status": 200,
+        "data": {
+          "items": "AppointmentRecord[]",
+          "total": "number",
+          "page": "number",
+          "limit": "number"
+        }
+      },
+      "errors": [
+        { "status": 400, "message": "Profil barber tidak ditemukan" },
+        { "status": 401, "message": "Token tidak valid" },
+        { "status": 403, "message": "Bukan barber" }
+      ]
+    },
+    {
+      "domain": "Appointment",
+      "method": "GET",
+      "path": "/api/v1/barbers/appointments/:id",
+      "auth": "bearer",
+      "summary": "Detail appointment barber",
+      "request": {
+        "params": {
+          "id": { "type": "string", "format": "uuid", "required": true }
+        }
+      },
+      "response": {
+        "success_status": 200,
+        "data": {
+          "id": "string",
+          "branch_id": "string",
+          "barber_id": "string",
+          "customer_id": "string",
+          "source": "online_booking | walk_in",
+          "status": "string (ui_alias)",
+          "raw_status": "string (db)",
+          "scheduled_at": "string (ISO)",
+          "scheduled_end_at": "string | null",
+          "queue_position": "number | null",
+          "started_at": "string | null",
+          "completed_at": "string | null",
+          "cancellation_reason": "string | null",
+          "customer_media_urls": "string[]",
+          "created_at": "string",
+          "updated_at": "string"
+        }
+      },
+      "errors": [
+        { "status": 401, "message": "Token tidak valid" },
+        { "status": 403, "message": "Appointment milik barber lain" },
+        { "status": 404, "message": "Appointment tidak ditemukan" }
+      ]
+    },
+    {
+      "domain": "Appointment",
+      "method": "PATCH",
+      "path": "/api/v1/barbers/appointments/:id/accept",
+      "auth": "bearer",
+      "summary": "Terima order (pending → confirmed)",
+      "request": {
+        "params": {
+          "id": { "type": "string", "format": "uuid", "required": true }
+        }
+      },
+      "response": {
+        "success_status": 200,
+        "data": {
+          "status": "accepted",
+          "raw_status": "confirmed"
+        }
+      },
+      "errors": [
+        { "status": 400, "message": "Pesanan hanya bisa diterima jika statusnya pending" },
+        { "status": 401, "message": "Token tidak valid" },
+        { "status": 403, "message": "Appointment milik barber lain" }
+      ]
+    },
+    {
+      "domain": "Appointment",
+      "method": "POST",
+      "path": "/api/v1/barbers/appointments/:id/reject",
+      "auth": "bearer",
+      "summary": "Tolak order (pending → cancelled)",
+      "request": {
+        "params": {
+          "id": { "type": "string", "format": "uuid", "required": true }
+        },
+        "body": {
+          "reason": { "type": "string", "required": true, "note": "Alasan penolakan wajib diisi" }
+        }
+      },
+      "response": {
+        "success_status": 200,
+        "data": {
+          "status": "cancelled"
+        }
+      },
+      "errors": [
+        { "status": 400, "message": "Order hanya bisa ditolak jika statusnya pending" },
+        { "status": 400, "message": "Alasan penolakan wajib diisi" },
+        { "status": 401, "message": "Token tidak valid" },
+        { "status": 403, "message": "Appointment milik barber lain" }
+      ]
+    },
+    {
+      "domain": "Appointment",
+      "method": "PATCH",
+      "path": "/api/v1/barbers/appointments/:id/no-show",
+      "auth": "bearer",
+      "summary": "Tandai no-show (confirmed|in_queue → no_show)",
+      "request": {
+        "params": {
+          "id": { "type": "string", "format": "uuid", "required": true }
+        }
+      },
+      "response": {
+        "success_status": 200,
+        "data": { "status": "no_show" }
+      },
+      "errors": [
+        { "status": 400, "message": "No-show hanya bisa dicatat jika status confirmed atau in_queue" },
+        { "status": 401, "message": "Token tidak valid" },
+        { "status": 403, "message": "Appointment milik barber lain" }
+      ]
+    },
+    {
+      "domain": "Appointment",
+      "method": "PATCH",
+      "path": "/api/v1/barbers/appointments/:id/arrive",
+      "auth": "bearer",
+      "summary": "Tandai barber tiba (confirmed → in_queue)",
+      "request": {
+        "params": {
+          "id": { "type": "string", "format": "uuid", "required": true }
+        }
+      },
+      "response": {
+        "success_status": 200,
+        "data": {
+          "status": "arrived",
+          "raw_status": "in_queue"
+        }
+      },
+      "errors": [
+        { "status": 400, "message": "Barber hanya bisa menandai tiba jika status order adalah confirmed" },
+        { "status": 401, "message": "Token tidak valid" },
+        { "status": 403, "message": "Appointment milik barber lain" }
+      ]
+    },
+    {
+      "domain": "Appointment",
+      "method": "PATCH",
+      "path": "/api/v1/barbers/appointments/:id/start",
+      "auth": "bearer",
+      "summary": "Mulai pelayanan (in_queue → in_service)",
+      "request": {
+        "params": {
+          "id": { "type": "string", "format": "uuid", "required": true }
+        }
+      },
+      "response": {
+        "success_status": 200,
+        "data": {
+          "status": "in_service",
+          "started_at": "string (ISO)"
+        }
+      },
+      "side_effects": [
+        "live_status barber diperbarui menjadi 'serving' di Redis"
+      ],
+      "errors": [
+        { "status": 400, "message": "Status tidak memungkinkan mulai pelayanan" },
+        { "status": 401, "message": "Token tidak valid" },
+        { "status": 403, "message": "Appointment milik barber lain" }
+      ]
+    },
+    {
+      "domain": "Appointment",
+      "method": "PATCH",
+      "path": "/api/v1/barbers/appointments/:id/complete",
+      "auth": "bearer",
+      "summary": "Selesaikan pelayanan (in_service → completed)",
+      "request": {
+        "params": {
+          "id": { "type": "string", "format": "uuid", "required": true }
+        },
+        "body": {
+          "before_media_url": { "type": "string", "format": "uri", "required": false, "note": "URL dari POST /barbers/media/upload" },
+          "after_media_url":  { "type": "string", "format": "uri", "required": false, "note": "URL dari POST /barbers/media/upload" },
+          "note": "Seluruh body opsional"
+        }
+      },
+      "response": {
+        "success_status": 200,
+        "data": {
+          "status": "completed",
+          "completed_at": "string (ISO)",
+          "customer_media_urls": "string[]"
+        }
+      },
+      "side_effects": [
+        "completed_at diisi",
+        "before/after_media_url digabung ke customer_media_urls",
+        "sesi tracking dihapus dari Redis",
+        "live_status barber dikembalikan menjadi 'available' di Redis"
+      ],
+      "errors": [
+        { "status": 400, "message": "Tidak bisa menyelesaikan pesanan tanpa layanan" },
+        { "status": 401, "message": "Token tidak valid" },
+        { "status": 403, "message": "Appointment milik barber lain" }
+      ]
+    },
+    {
+      "domain": "Tracking",
+      "method": "POST",
+      "path": "/api/v1/barbers/appointments/:id/tracking",
+      "auth": "bearer",
+      "summary": "Kirim lokasi GPS barber (home_service confirmed|in_queue)",
+      "request": {
+        "params": {
+          "id": { "type": "string", "format": "uuid", "required": true }
+        },
+        "body": {
+          "lat":          { "type": "number", "minimum": -90,   "maximum": 90,      "required": true  },
+          "lng":          { "type": "number", "minimum": -180,  "maximum": 180,     "required": true  },
+          "accuracy_m":   { "type": "number", "minimum": 0,     "maximum": 1000,    "required": false },
+          "heading":      { "type": "number", "minimum": 0,     "maximum": 359.999, "required": false },
+          "speed_mps":    { "type": "number", "minimum": 0,     "maximum": 100,     "required": false },
+          "captured_at":  { "type": "string", "format": "date-time", "required": false, "note": "Maksimal 2 menit sebelum request" },
+          "eta_minutes":  { "type": "number", "required": false, "note": "Legacy — diabaikan server" }
+        }
+      },
+      "response": {
+        "success_status": 200,
+        "data": {
+          "barber_location": {
+            "appointment_id": "string",
+            "actor_id": "string",
+            "actor_type": "barber",
+            "lat": "number",
+            "lng": "number",
+            "accuracy_m": "number | null",
+            "speed_mps": "number | null",
+            "captured_at": "string | null",
+            "received_at": "string",
+            "sequence": "number"
+          },
+          "customer_location": {
+            "appointment_id": "string",
+            "actor_type": "customer",
+            "lat": "number",
+            "lng": "number",
+            "sequence": "number"
+          },
+          "route": {
+            "source": "routing_provider | haversine",
+            "distance_km": "number",
+            "eta_minutes": "number",
+            "calculated_at": "string"
+          }
+        }
+      },
+      "errors": [
+        { "status": 400, "message": "Live location barber hanya tersedia untuk appointment home_service" },
+        { "status": 400, "message": "Sesi tracking tidak aktif" },
+        { "status": 400, "message": "Validasi koordinat gagal" },
+        { "status": 401, "message": "Token tidak valid" },
+        { "status": 403, "message": "Barber bukan participant appointment" }
+      ]
+    },
+    {
+      "domain": "Tracking",
+      "method": "GET",
+      "path": "/api/v1/barbers/appointments/:id/tracking",
+      "auth": "bearer",
+      "summary": "Snapshot tracking terkini dari Redis",
+      "request": {
+        "params": {
+          "id": { "type": "string", "format": "uuid", "required": true }
+        }
+      },
+      "response": {
+        "success_status": 200,
+        "data": {
+          "barber_location": "object | null",
+          "customer_location": "object | null",
+          "route": "object | null"
+        }
+      },
+      "errors": [
+        { "status": 401, "message": "Token tidak valid" },
+        { "status": 403, "message": "Barber bukan participant appointment" }
+      ]
+    },
+    {
+      "domain": "Navigasi",
+      "method": "GET",
+      "path": "/api/v1/barbers/appointments/:id/navigation",
+      "auth": "bearer",
+      "summary": "Data navigasi ke lokasi customer",
+      "request": {
+        "params": {
+          "id": { "type": "string", "format": "uuid", "required": true }
+        }
+      },
+      "response": {
+        "success_status": 200,
+        "data": {
+          "destination": {
+            "address": "string | null",
+            "latitude": "number | null",
+            "longitude": "number | null",
+            "notes": "string | null"
+          },
+          "customer_media_urls": "string[]",
+          "route": "object | null",
+          "customer_location": "object | null"
+        }
+      },
+      "errors": [
+        { "status": 401, "message": "Token tidak valid" },
+        { "status": 403, "message": "Appointment milik barber lain" },
+        { "status": 404, "message": "Appointment tidak ditemukan" }
+      ]
+    },
+    {
+      "domain": "Dashboard",
+      "method": "GET",
+      "path": "/api/v1/barbers/dashboard/today",
+      "auth": "bearer",
+      "summary": "Dashboard barber hari ini (Asia/Jakarta)",
+      "response": {
+        "success_status": 200,
+        "data": {
+          "pending_orders": "number",
+          "active_orders": "number",
+          "completed_today": "number",
+          "rating": "number",
+          "current_order": "QueueOrder | null",
+          "total_appointments": "number",
+          "total_completed": "number",
+          "heads_count": "number",
+          "commission_earned": "number",
+          "tips_earned": "number",
+          "total_earnings": "number"
+        }
+      },
+      "notes": [
+        "current_order dipilih berdasarkan prioritas: in_service > in_queue > confirmed > pending, lalu queue_position dan scheduled_at"
+      ],
+      "errors": [
+        { "status": 401, "message": "Token tidak valid" },
+        { "status": 403, "message": "Profil barber tidak ditemukan" },
+        { "status": 500, "message": "Server error" }
+      ]
+    },
+    {
+      "domain": "Dashboard",
+      "method": "GET",
+      "path": "/api/v1/barbers/stats/daily",
+      "auth": "bearer",
+      "summary": "Histori statistik harian barber (barber_daily_stats)",
+      "response": {
+        "success_status": 200,
+        "data": [
+          {
+            "id": "string",
+            "barber_id": "string",
+            "branch_id": "string",
+            "summary_date": "string (YYYY-MM-DD)",
+            "heads_count": "number",
+            "commission_earned": "number",
+            "created_at": "string",
+            "updated_at": "string"
+          }
+        ]
+      },
+      "errors": [
+        { "status": 401, "message": "Token tidak valid" },
+        { "status": 403, "message": "Profil barber tidak ditemukan" }
+      ]
+    },
+    {
+      "domain": "Dashboard",
+      "method": "GET",
+      "path": "/api/v1/barbers/earnings",
+      "auth": "bearer",
+      "summary": "Riwayat pendapatan barber — alias semantis stats/daily",
+      "response": {
+        "success_status": 200,
+        "data": "identik dengan /stats/daily"
+      },
+      "notes": [
+        "Sumber data sama dengan stats/daily (barber_daily_stats)",
+        "Gunakan endpoint ini untuk halaman laporan pendapatan"
+      ],
+      "errors": [
+        { "status": 401, "message": "Token tidak valid" },
+        { "status": 403, "message": "Profil barber tidak ditemukan" }
+      ]
+    },
+    {
+      "domain": "Komisi",
+      "method": "GET",
+      "path": "/api/v1/barbers/commissions",
+      "auth": "bearer",
+      "summary": "Laporan komisi harian barber",
+      "response": {
+        "success_status": 200,
+        "data": [
+          {
+            "id": "string",
+            "barber_id": "string",
+            "branch_id": "string",
+            "summary_date": "string (YYYY-MM-DD)",
+            "heads_count": "number",
+            "commission_earned": "number"
+          }
+        ]
+      },
+      "errors": [
+        { "status": 401, "message": "Token tidak valid" },
+        { "status": 403, "message": "Profil barber tidak ditemukan" },
+        { "status": 500, "message": "Server error" }
+      ]
+    },
+    {
+      "domain": "Chat",
+      "method": "GET",
+      "path": "/api/v1/barbers/appointments/:id/chat",
+      "auth": "bearer",
+      "summary": "Riwayat chat appointment (barber hanya bisa akses appointmentnya sendiri)",
+      "request": {
+        "params": {
+          "id": { "type": "string", "format": "uuid", "required": true }
+        },
+        "query": {
+          "page":  { "type": "integer", "minimum": 1, "default": 1 },
+          "limit": { "type": "integer", "minimum": 1, "maximum": 100, "default": 20 }
+        }
+      },
+      "response": {
+        "success_status": 200,
+        "data": {
+          "items": [
+            {
+              "id": "string",
+              "appointment_id": "string",
+              "sender_id": "string",
+              "sender_role": "barber | customer",
+              "text": "string",
+              "created_at": "string"
+            }
+          ],
+          "total": "number",
+          "page": "number",
+          "limit": "number"
+        }
+      },
+      "errors": [
+        { "status": 401, "message": "Token tidak valid" },
+        { "status": 403, "message": "Appointment milik barber lain" }
+      ]
+    },
+    {
+      "domain": "Chat",
+      "method": "POST",
+      "path": "/api/v1/barbers/appointments/:id/chat",
+      "auth": "bearer",
+      "summary": "Kirim pesan chat ke customer",
+      "request": {
+        "params": {
+          "id": { "type": "string", "format": "uuid", "required": true }
+        },
+        "body": {
+          "text": { "type": "string", "required": true }
+        }
+      },
+      "response": {
+        "success_status": 201,
+        "data": {
+          "id": "string",
+          "appointment_id": "string",
+          "sender_id": "string",
+          "sender_role": "barber",
+          "text": "string",
+          "created_at": "string"
+        }
+      },
+      "side_effects": [
+        "Menyiarkan appointment:chat_message via Socket.IO ke semua participant"
+      ],
+      "errors": [
+        { "status": 400, "message": "Validasi pesan gagal" },
+        { "status": 401, "message": "Token tidak valid" },
+        { "status": 403, "message": "Appointment milik barber lain" }
+      ]
+    },
+    {
+      "domain": "Portfolio",
+      "method": "POST",
+      "path": "/api/v1/barbers/portfolio",
+      "auth": "bearer",
+      "summary": "Upload foto portfolio barber",
+      "request": {
+        "content_type": "multipart/form-data",
+        "body": {
+          "file":    { "type": "file", "accept": ["image/jpeg", "image/png", "image/webp"], "maxSize": "5MB", "required": true },
+          "caption": { "type": "string", "maxLength": 300, "required": false }
+        }
+      },
+      "response": {
+        "success_status": 201,
+        "data": {
+          "id": "string",
+          "barber_id": "string",
+          "image_url": "string",
+          "caption": "string | null",
+          "created_at": "string"
+        }
+      },
+      "notes": [
+        "Gambar dioptimasi ke WebP sebelum disimpan",
+        "Tampil di GET /api/v1/customers/content/gallery"
+      ],
+      "errors": [
+        { "status": 400, "message": "File tidak valid atau profil barber tidak ditemukan" },
+        { "status": 401, "message": "Token tidak valid" },
+        { "status": 422, "message": "Format file tidak didukung atau ukuran melebihi 5 MB" }
+      ]
+    },
+    {
+      "domain": "Portfolio",
+      "method": "GET",
+      "path": "/api/v1/barbers/portfolio",
+      "auth": "bearer",
+      "summary": "Daftar portfolio milik barber yang sedang login",
+      "response": {
+        "success_status": 200,
+        "data": [
+          {
+            "id": "string",
+            "barber_id": "string",
+            "image_url": "string",
+            "caption": "string | null",
+            "created_at": "string"
+          }
+        ]
+      },
+      "errors": [
+        { "status": 400, "message": "Profil barber tidak ditemukan" },
+        { "status": 401, "message": "Token tidak valid" }
+      ]
+    },
+    {
+      "domain": "Portfolio",
+      "method": "DELETE",
+      "path": "/api/v1/barbers/portfolio/:id",
+      "auth": "bearer",
+      "summary": "Hapus item portfolio",
+      "request": {
+        "params": {
+          "id": { "type": "string", "format": "uuid", "required": true }
+        }
+      },
+      "response": {
+        "success_status": 200,
+        "data": null
+      },
+      "errors": [
+        { "status": 401, "message": "Token tidak valid" },
+        { "status": 403, "message": "Portfolio bukan milik barber ini" },
+        { "status": 404, "message": "Portfolio tidak ditemukan" }
+      ]
+    },
+    {
+      "domain": "Media",
+      "method": "POST",
+      "path": "/api/v1/barbers/media/upload",
+      "auth": "bearer",
+      "summary": "Upload media private barber (dokumentasi before/after, referensi)",
+      "request": {
+        "content_type": "multipart/form-data",
+        "body": {
+          "file":    { "type": "file", "accept": ["image/jpeg", "image/png", "image/webp"], "maxSize": "5MB", "required": true },
+          "purpose": {
+            "type": "string",
+            "enum": ["face_reference", "hair_style_reference", "appointment_reference", "general"],
+            "default": "appointment_reference",
+            "required": false
+          }
+        }
+      },
+      "response": {
+        "success_status": 201,
+        "data": {
+          "asset_id": "string",
+          "bucket": "string",
+          "path": "string",
+          "visibility": "private",
+          "signed_url": "string",
+          "public_url": "string",
+          "expires_in": 3600,
+          "content_type": "image/webp",
+          "size": "number",
+          "width": "number",
+          "height": "number"
+        }
+      },
+      "notes": [
+        "public_url adalah alias signed_url, bukan URL permanen",
+        "Simpan asset_id untuk meminta URL baru via GET /media/:id/url",
+        "Gunakan public_url atau signed_url sebagai before_media_url/after_media_url di PATCH /complete"
+      ],
+      "errors": [
+        { "status": 400, "message": "File tidak valid" },
+        { "status": 401, "message": "Token tidak valid" },
+        { "status": 403, "message": "Profil barber tidak ditemukan" },
+        { "status": 422, "message": "Format tidak didukung atau melebihi batas ukuran/dimensi" }
+      ]
+    },
+    {
+      "domain": "Media",
+      "method": "GET",
+      "path": "/api/v1/barbers/media/:id/url",
+      "auth": "bearer",
+      "summary": "Refresh signed URL media yang kedaluwarsa",
+      "request": {
+        "params": {
+          "id": { "type": "string", "format": "uuid", "required": true, "note": "asset_id dari response upload" }
+        }
+      },
+      "response": {
+        "success_status": 200,
+        "data": {
+          "signed_url": "string",
+          "expires_in": 3600
+        }
+      },
+      "errors": [
+        { "status": 401, "message": "Token tidak valid" },
+        { "status": 403, "message": "Media bukan milik barber ini" },
+        { "status": 404, "message": "Media tidak ditemukan" }
+      ]
+    },
+    {
+      "domain": "Media",
+      "method": "DELETE",
+      "path": "/api/v1/barbers/media/:id",
+      "auth": "bearer",
+      "summary": "Hapus media dari storage dan database",
+      "request": {
+        "params": {
+          "id": { "type": "string", "format": "uuid", "required": true }
+        }
+      },
+      "response": {
+        "success_status": 200,
+        "data": null
+      },
+      "errors": [
+        { "status": 401, "message": "Token tidak valid" },
+        { "status": 403, "message": "Media bukan milik barber ini" },
+        { "status": 404, "message": "Media tidak ditemukan" }
+      ]
+    }
+  ],
+
+  "admin_routes": [
+    {
+      "method": "GET",
+      "path": "/api/v1/admin/branches/:branchId/barbers",
+      "auth": "bearer",
+      "permission": "manage_appointment",
+      "scope": "branch",
+      "summary": "Daftar barber cabang dengan live status dan jumlah appointment aktif",
+      "request": {
+        "params": {
+          "branchId": { "type": "string", "format": "uuid", "required": true }
+        }
+      },
+      "response": {
+        "success_status": 200,
+        "data": [
+          {
+            "id": "string",
+            "display_name": "string",
+            "live_status": "available | serving | on_break | offline",
+            "bio": "string | null",
+            "rating_avg": "number",
+            "rating_count": "number",
+            "active_appointment_count": "number",
+            "staff_users": { "full_name": "string", "phone": "string | null" }
+          }
+        ]
+      },
+      "notes": [
+        "live_status diambil dari Redis, fallback ke DB",
+        "active_appointment_count: status pending|confirmed|in_queue|in_service"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/admin/branches/:branchId/barbers/:barberId/schedule",
+      "auth": "bearer",
+      "permission": "manage_appointment",
+      "scope": "branch",
+      "summary": "Kalender appointment barber per tanggal (UTC)",
+      "request": {
+        "params": {
+          "branchId": { "type": "string", "format": "uuid", "required": true },
+          "barberId": { "type": "string", "format": "uuid", "required": true }
+        },
+        "query": {
+          "date": { "type": "string", "format": "date", "example": "2026-06-22", "note": "YYYY-MM-DD UTC; default hari ini" }
+        }
+      },
+      "response": {
+        "success_status": 200,
+        "data": {
+          "barber": { "id": "string", "display_name": "string", "live_status": "string" },
+          "date": "string (YYYY-MM-DD)",
+          "appointments": [
+            {
+              "id": "string",
+              "status": "string",
+              "source": "string",
+              "scheduled_at": "string",
+              "schedule_block_start_at": "string",
+              "schedule_block_end_at": "string",
+              "queue_position": "number | null",
+              "customers": { "id": "string", "full_name": "string", "phone": "string | null" },
+              "appointment_services": [{ "services": { "name": "string", "default_duration_min": "number" } }]
+            }
+          ]
+        }
+      },
+      "notes": ["appointment berstatus cancelled dikecualikan"]
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/v1/admin/branches/:branchId/barbers/:barberId/status",
+      "auth": "bearer",
+      "permission": "manage_appointment",
+      "scope": "branch",
+      "summary": "Override status barber oleh admin (DB + Redis sinkron)",
+      "request": {
+        "params": {
+          "branchId": { "type": "string", "format": "uuid", "required": true },
+          "barberId": { "type": "string", "format": "uuid", "required": true }
+        },
+        "body": {
+          "status": {
+            "type": "string",
+            "enum": ["available", "serving", "on_break", "offline"],
+            "required": true
+          }
+        }
+      },
+      "response": {
+        "success_status": 200,
+        "data": {
+          "barber_id": "string",
+          "status": "string"
+        }
+      },
+      "errors": [
+        { "status": 400, "message": "Status tidak valid" },
+        { "status": 404, "message": "Barber tidak ditemukan di cabang ini" }
+      ]
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/v1/admin/appointments/:id/barber",
+      "auth": "bearer",
+      "permission": "manage_appointment",
+      "scope": "branch (dari appointment)",
+      "summary": "Reassign barber ke appointment aktif",
+      "request": {
+        "params": {
+          "id": { "type": "string", "format": "uuid", "required": true }
+        },
+        "body": {
+          "barber_id": { "type": "string", "format": "uuid", "required": true, "note": "Barber baru harus terdaftar di cabang yang sama" }
+        }
+      },
+      "response": {
+        "success_status": 200,
+        "data": {
+          "id": "string",
+          "barber_id": "string",
+          "status": "string"
+        }
+      },
+      "side_effects": [
+        "Mencatat event BARBER_REASSIGNED di appointment_events",
+        "Mengirim appointment:new_order via Socket.IO ke barber baru",
+        "Mencatat di audit_logs"
+      ],
+      "errors": [
+        { "status": 400, "message": "Appointment tidak dapat di-reassign (status completed/cancelled/no_show)" },
+        { "status": 404, "message": "Barber baru tidak ditemukan di cabang ini" },
+        { "status": 409, "message": "Jadwal barber baru bentrok dengan appointment yang ada" }
+      ]
+    }
+  ],
+
+  "socket": {
+    "connect": {
+      "url": "SOCKET_URL",
+      "options": {
+        "transports": ["websocket"],
+        "auth": { "token": "<barber_access_token>" }
+      }
+    },
+    "commands": [
+      {
+        "event": "join_appointment",
+        "payload": "appointmentId: string",
+        "ack": true,
+        "description": "Bergabung ke room appointment untuk menerima real-time events"
+      },
+      {
+        "event": "leave_appointment",
+        "payload": "appointmentId: string",
+        "ack": true,
+        "description": "Keluar dari room appointment"
+      },
+      {
+        "event": "push_barber_location",
+        "payload": "{ appointment_id, lat, lng, accuracy_m?, heading?, speed_mps?, captured_at? }",
+        "ack": false,
+        "description": "Alias Socket.IO untuk kirim lokasi; preferensikan REST POST /tracking untuk jaminan penyimpanan"
+      }
+    ],
+    "events": [
+      {
+        "event": "appointment:new_order",
+        "description": "Order baru ditugaskan atau reassign dari admin — refresh antrean"
+      },
+      {
+        "event": "appointment:status_changed",
+        "description": "Status appointment berubah — perbarui UI order"
+      },
+      {
+        "event": "appointment:barber_location",
+        "description": "Konfirmasi snapshot lokasi barber terkirim ke participant"
+      },
+      {
+        "event": "appointment:customer_location",
+        "description": "Update lokasi customer (home service)"
+      },
+      {
+        "event": "appointment:chat_message",
+        "description": "Pesan chat baru masuk dari customer"
+      },
+      {
+        "event": "auth:expired",
+        "description": "Token socket kedaluwarsa — lakukan refresh dan reconnect"
+      }
+    ]
+  },
+
+  "deprecated_routes": [
+    { "deprecated": "/api/v1/barber/auth/login",            "canonical": "/api/v1/barbers/auth/login"            },
+    { "deprecated": "/api/v1/barber/auth/refresh",          "canonical": "/api/v1/barbers/auth/refresh"          },
+    { "deprecated": "/api/v1/barber/auth/logout",           "canonical": "/api/v1/barbers/auth/logout"           },
+    { "deprecated": "/api/v1/barber/me",                    "canonical": "/api/v1/barbers/me"                    },
+    { "deprecated": "/api/v1/barber/queue",                 "canonical": "/api/v1/barbers/queue"                 },
+    { "deprecated": "/api/v1/barber/appointments/*",        "canonical": "/api/v1/barbers/appointments/*"        },
+    { "deprecated": "/api/v1/barber/dashboard/today",       "canonical": "/api/v1/barbers/dashboard/today"       },
+    { "deprecated": "/api/v1/barber/stats/daily",           "canonical": "/api/v1/barbers/stats/daily"           },
+    { "deprecated": "/api/v1/barber/earnings",              "canonical": "/api/v1/barbers/earnings"              },
+    { "deprecated": "/api/v1/barber/commissions",           "canonical": "/api/v1/barbers/commissions"           },
+    { "deprecated": "/api/v1/barber/portfolio",             "canonical": "/api/v1/barbers/portfolio"             },
+    { "deprecated": "/api/v1/barber/media/*",               "canonical": "/api/v1/barbers/media/*"              }
+  ],
+  "deprecation_headers": {
+    "Deprecation": "true",
+    "Sunset": "Sat, 01 Jan 2028 00:00:00 GMT",
+    "Link": "</api/v1/barbers/...>; rel=\"canonical\""
+  },
+
+  "gaps": [
+    {
+      "id": 1,
+      "description": "/barbers/earnings dan /barbers/stats/daily tidak mendukung filter rentang tanggal — keduanya mengembalikan seluruh histori"
+    },
+    {
+      "id": 2,
+      "description": "PATCH /barbers/me/status (online/offline/unavailable) tidak sinkron dengan live_status (available/serving/on_break/offline) yang dikelola admin"
+    },
+    {
+      "id": 3,
+      "description": "push_barber_location via Socket.IO tidak menjamin penyimpanan; gunakan REST POST /tracking untuk audit trail ETA"
+    },
+    {
+      "id": 4,
+      "description": "before_media_url dan after_media_url di PATCH /complete menerima signed URL; simpan asset_id dan minta URL baru via GET /media/:id/url sebelum signed URL kedaluwarsa"
+    },
+    {
+      "id": 5,
+      "description": "Notification center khusus barber belum tersedia di /api/v1/barbers/*; notifikasi real-time hanya via Socket.IO events"
+    }
+  ]
+}
