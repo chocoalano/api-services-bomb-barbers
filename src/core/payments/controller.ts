@@ -274,7 +274,8 @@ export class WebhookController {
       const orderId = body.order_id || body.external_id;
       if (!orderId) throw new Error('Order ID tidak ditemukan di payload webhook');
 
-      if (body.status_code !== '200' && body.status !== 'PAID') {
+      const statusCode = String(body.status_code || '');
+      if (statusCode !== '200' && body.status !== 'PAID') {
         return createSuccessResponse('Webhook diterima tapi tidak memicu lunas', null);
       }
 
