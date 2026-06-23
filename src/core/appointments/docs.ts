@@ -11,7 +11,12 @@ export const appointmentDocs = {
       media_urls: t.Optional(t.Array(t.String({
         format: 'uri',
         description: 'URL gambar hasil upload dari endpoint POST /api/v1/media/upload. Gunakan field ini untuk menyertakan foto detail wajah atau referensi gaya rambut pada pemesanan.'
-      })))
+      }))),
+      fulfillment_type: t.Optional(t.String()),
+      service_address: t.Optional(t.String()),
+      destination_latitude: t.Optional(t.Numeric()),
+      destination_longitude: t.Optional(t.Numeric()),
+      location_notes: t.Optional(t.String())
     }),
     detail: { tags: ['Customer Appointments'], summary: 'Booking Online', description: 'Membuat booking online. Jika pelanggan sudah mengunggah foto referensi melalui endpoint media upload, kirim URL gambar tersebut pada field media_urls agar referensi tersimpan bersama appointment.' }
   },

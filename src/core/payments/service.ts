@@ -143,7 +143,7 @@ export class PaymentService {
   static async createPayment(payload: CreatePaymentPayload, actorId: string, actorType: 'admin' | 'customer') {
     const { data: apt, error: aptErr } = await supabase
       .from('appointments')
-      .select('branch_id, appointment_services(price_amount)')
+      .select('branch_id, fulfillment_type, appointment_services(price_amount)')
       .eq('id', payload.appointment_id)
       .single();
 
@@ -154,7 +154,7 @@ export class PaymentService {
     const discountAmount = payload.discount_amount || 0;
     const tipAmount = payload.tip_amount || 0;
     const serviceFee = payload.service_fee ?? 5000;
-    const deliveryFee = payload.delivery_fee ?? 0;
+    const deliveryFee = apt.fulfillment_type === 'home_service' ? 5000 : 0;
 
     const totalAmount = serviceAmount + productAmount + serviceFee + deliveryFee + tipAmount - discountAmount;
     if (totalAmount < 0) throw new Error('Total amount tidak boleh negatif');
@@ -185,7 +185,7 @@ export class PaymentService {
       .select()
       .single();
 
-    // ── Jika duplikat (payment sudah ada), lakukan re-tokenization ────────────
+    // ── Jika duplikat (payment sudah ada), update data dan lakukan re-tokenization ────────────
     if (payErr && payErr.code === '23505') {
       // Ambil payment yang sudah ada
       const { data: existingPayment, error: fetchErr } = await supabase
@@ -203,19 +203,41 @@ export class PaymentService {
         throw new Error('Pembayaran untuk pesanan ini sudah lunas');
       }
 
-      // Buat Snap token baru untuk payment yang sudah ada
-      let gatewayResult = { payment_url: null as string | null, redirect_url: null as string | null, token: null as string | null, gateway_reference: existingPayment.gateway_reference };
+      // UPDATE payment dengan amount terbaru (tip, service_fee, dll mungkin berubah)
+      const { data: updatedPayment, error: updateErr } = await supabase
+        .from('payments')
+        .update({
+          service_amount: serviceAmount,
+          product_amount: productAmount,
+          service_fee: serviceFee,
+          delivery_fee: deliveryFee,
+          discount_amount: discountAmount,
+          tip_amount: tipAmount,
+          total_amount: totalAmount,
+          method: payload.method,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', existingPayment.id)
+        .select()
+        .single();
+
+      if (updateErr) {
+        throw new Error('Gagal mengupdate jumlah pembayaran yang sudah ada: ' + updateErr.message);
+      }
+
+      // Buat Snap token baru untuk payment yang sudah ada (menggunakan amount terbaru)
+      let gatewayResult = { payment_url: null as string | null, redirect_url: null as string | null, token: null as string | null, gateway_reference: updatedPayment.gateway_reference };
       if (payload.provider && payload.method !== 'cash') {
         gatewayResult = await this.requestGatewayToken(
           payload.provider,
-          existingPayment.id,
+          updatedPayment.id,
           payload.appointment_id,
-          existingPayment.total_amount
+          updatedPayment.total_amount
         );
       }
 
       return {
-        ...existingPayment,
+        ...updatedPayment,
         gateway_reference: gatewayResult.gateway_reference,
         invoice_number: null,
         invoice_access_token: null,
