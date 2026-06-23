@@ -270,16 +270,22 @@ export class WebhookController {
         return createErrorResponse('Invalid signature');
       }
 
-      const paymentId = body.order_id || body.external_id;
-      if (!paymentId) throw new Error('Payment ID tidak ditemukan di payload webhook');
+      // order_id dari Midtrans callback = gateway_reference yang kita simpan di DB
+      const orderId = body.order_id || body.external_id;
+      if (!orderId) throw new Error('Order ID tidak ditemukan di payload webhook');
 
       if (body.status_code !== '200' && body.status !== 'PAID') {
         return createSuccessResponse('Webhook diterima tapi tidak memicu lunas', null);
       }
 
-      const { data: payment } = await supabase.from('payments').select('id, status').eq('id', paymentId).single();
-      
-      if (!payment) throw new Error('Payment tidak ditemukan');
+      // Cari payment berdasarkan gateway_reference (bukan langsung pakai order_id sebagai UUID)
+      const { data: payment } = await supabase
+        .from('payments')
+        .select('id, status')
+        .eq('gateway_reference', orderId)
+        .maybeSingle();
+
+      if (!payment) throw new Error('Payment tidak ditemukan untuk order_id: ' + orderId);
       if (payment.status === 'paid') return createSuccessResponse('Payment sudah lunas sebelumnya', null);
 
       await PaymentService.updatePaymentStatus(

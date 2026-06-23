@@ -3,12 +3,12 @@ import { IPaymentGateway, TransactionPayload, TransactionResponse } from './inte
 export class XenditGateway implements IPaymentGateway {
   async createTransaction(payload: TransactionPayload): Promise<TransactionResponse> {
     // Simulasi HTTP request ke Xendit Invoice API
-    console.log(`[Xendit Gateway] Creating invoice for payment: ${payload.payment_id}`);
+    console.log(`[Xendit Gateway] Creating invoice for order: ${payload.order_id}`);
     
     // MOCK RESPONSE
     return {
-      gateway_reference: `XENDIT-${payload.payment_id.split('-')[0].toUpperCase()}`,
-      payment_url: `https://checkout-staging.xendit.co/web/${payload.payment_id}`
+      gateway_reference: payload.order_id,
+      payment_url: `https://checkout-staging.xendit.co/web/${payload.order_id}`
     };
   }
 

@@ -10,7 +10,6 @@ const ID = {
   region: { jakarta: '10000001-0000-4000-8000-000000000001' },
   branch: {
     kedoya: '20000001-0000-4000-8000-000000000001',
-    selatan: '20000001-0000-4000-8000-000000000002',
   },
   service: {
     haircut: '30000001-0000-4000-8000-000000000001',
@@ -24,7 +23,6 @@ const ID = {
   staff: {
     hq: '40000001-0000-4000-8000-000000000001',
     adminKedoya: '40000001-0000-4000-8000-000000000002',
-    adminSelatan: '40000001-0000-4000-8000-000000000003',
     davies: '40000001-0000-4000-8000-000000000004',
     barron: '40000001-0000-4000-8000-000000000005',
     reza: '40000001-0000-4000-8000-000000000006',
@@ -179,52 +177,36 @@ async function seedRegionsAndBranches() {
     name: 'Bomb Barbershop Kedoya',
     address: 'Jl. Taman Ratu Indah Blk. BB1 No.3A 3, RT.3/RW.11, Kedoya Utara, Jakarta Barat 11520',
     phone: '6281322096650',
-    latitude: -6.186800,
-    longitude: 106.752000,
+    latitude: -6.1561043,
+    longitude: 106.6157188,
     is_active: true
   });
 
-  // Cabang kedua — demo (sesuai company profile "2+ branches")
-  const selatan = await upsertBy('branches', { id: ID.branch.selatan }, {
-    id: ID.branch.selatan,
-    region_id: jakarta.id,
-    name: 'Bomb Barbershop Jakarta Selatan',
-    address: 'Jl. Melawai Raya No. 5, Blok M, Kebayoran Baru, Jakarta Selatan 12160',
-    phone: '6281322096651',
-    latitude: -6.244500,
-    longitude: 106.798100,
-    is_active: true
-  });
-
-  const branches = { kedoya, selatan };
+  const branches = { kedoya };
 
   // Jam operasional: 10:00–21:00 setiap hari (sesuai website bombbarbershop.com)
-  for (const branch of Object.values(branches) as any[]) {
-    for (const day of [0, 1, 2, 3, 4, 5, 6]) {
-      await upsertBy('branch_operating_hours', {
-        branch_id: branch.id,
-        day_of_week: day
-      }, {
-        branch_id: branch.id,
-        day_of_week: day,
-        open_time: '10:00:00',
-        close_time: '21:00:00'
-      });
-    }
+  for (const day of [0, 1, 2, 3, 4, 5, 6]) {
+    await upsertBy('branch_operating_hours', {
+      branch_id: kedoya.id,
+      day_of_week: day
+    }, {
+      branch_id: kedoya.id,
+      day_of_week: day,
+      open_time: '10:00:00',
+      close_time: '21:00:00'
+    });
   }
 
-  await upsertRowsBy('branch_photos', [
-    {
-      match: { branch_id: kedoya.id, url: 'http://localhost:3000/public/uploads/branches/photo-1585747860715-2ba37e788b70.webp' },
-      data: { branch_id: kedoya.id, url: 'http://localhost:3000/public/uploads/branches/photo-1585747860715-2ba37e788b70.webp', sort_order: 1 }
-    },
-    {
-      match: { branch_id: selatan.id, url: 'http://localhost:3000/public/uploads/branches/photo-1503951914875-452162b0f3f1.webp' },
-      data: { branch_id: selatan.id, url: 'http://localhost:3000/public/uploads/branches/photo-1503951914875-452162b0f3f1.webp', sort_order: 1 }
-    }
-  ]);
+  await upsertBy('branch_photos', {
+    branch_id: kedoya.id,
+    url: 'http://localhost:3000/public/uploads/branches/photo-1585747860715-2ba37e788b70.webp'
+  }, {
+    branch_id: kedoya.id,
+    url: 'http://localhost:3000/public/uploads/branches/photo-1585747860715-2ba37e788b70.webp',
+    sort_order: 1
+  });
 
-  return { regions: { jakarta }, branches };
+  return { branches };
 }
 
 async function seedStaff(roleByName: Record<string, any>, branches: Record<string, any>, passwordHash: string) {
@@ -239,10 +221,6 @@ async function seedStaff(roleByName: Record<string, any>, branches: Record<strin
     {
       match: { id: ID.staff.adminKedoya },
       data: { id: ID.staff.adminKedoya, full_name: 'Nadia Kedoya Admin', email: 'admin.kedoya@bombbarbershop.com', phone: '6281322096652', password_hash: passwordHash, is_active: true }
-    },
-    {
-      match: { id: ID.staff.adminSelatan },
-      data: { id: ID.staff.adminSelatan, full_name: 'Reno Selatan Admin', email: 'admin.selatan@bombbarbershop.com', phone: '6281322096653', password_hash: passwordHash, is_active: true }
     },
     {
       match: { id: ID.staff.davies },
@@ -273,10 +251,6 @@ async function seedStaff(roleByName: Record<string, any>, branches: Record<strin
       match: { staff_user_id: staffByEmail['admin.kedoya@bombbarbershop.com'].id, role_id: roleByName.branch_admin.id, branch_id: branches.kedoya.id },
       data: { staff_user_id: staffByEmail['admin.kedoya@bombbarbershop.com'].id, role_id: roleByName.branch_admin.id, branch_id: branches.kedoya.id }
     },
-    {
-      match: { staff_user_id: staffByEmail['admin.selatan@bombbarbershop.com'].id, role_id: roleByName.branch_admin.id, branch_id: branches.selatan.id },
-      data: { staff_user_id: staffByEmail['admin.selatan@bombbarbershop.com'].id, role_id: roleByName.branch_admin.id, branch_id: branches.selatan.id }
-    }
   ]);
 
   const globalRule = await upsertBy('commission_rules', {
@@ -329,7 +303,7 @@ async function seedStaff(roleByName: Record<string, any>, branches: Record<strin
       data: {
         id: ID.barber.reza,
         staff_user_id: staffByEmail['reza@bombbarbershop.com'].id,
-        branch_id: branches.selatan.id,
+        branch_id: branches.kedoya.id,
         display_name: 'Reza',
         bio: 'Fokus pada moustache trim, beard grooming, dan face shave dengan teknik straight razor.',
         rating_avg: '4.68',
@@ -344,7 +318,7 @@ async function seedStaff(roleByName: Record<string, any>, branches: Record<strin
       data: {
         id: ID.barber.dimas,
         staff_user_id: staffByEmail['dimas@bombbarbershop.com'].id,
-        branch_id: branches.selatan.id,
+        branch_id: branches.kedoya.id,
         display_name: 'Dimas',
         bio: 'Barber serba bisa: haircut, hair washing, dan styling untuk aktivitas profesional harian.',
         rating_avg: '4.72',
@@ -396,10 +370,10 @@ async function seedCustomers(passwordHash: string) {
   return Object.fromEntries((customers as any[]).map((customer) => [customer.email, customer]));
 }
 
-async function seedServices(regions: Record<string, any>, branches: Record<string, any>) {
+async function seedServices(branches: Record<string, any>) {
   console.log('Seeding services and prices...');
 
-  // Layanan sesuai menu resmi di bombbarbershop.com
+  // Layanan sesuai menu resmi bombbarbershop.com
   const services = await upsertRowsBy('services', [
     {
       match: { id: ID.service.haircut },
@@ -508,20 +482,19 @@ async function seedServices(regions: Record<string, any>, branches: Record<strin
     });
   }
 
-  // Hair Coloring bisa mencapai Rp500k (range 400k–500k dari website) di cabang Selatan
-  await upsertRowsBy('service_prices', [
-    {
-      match: { service_id: byName['Hair Coloring'].id, branch_id: branches.selatan.id },
-      data: {
-        service_id: byName['Hair Coloring'].id,
-        branch_id: branches.selatan.id,
-        region_id: null,
-        price_amount: 500000,
-        effective_from: EFFECTIVE_FROM,
-        effective_to: null
-      }
-    }
-  ]);
+  // Hair Coloring range 400k–500k; cabang Kedoya pakai harga atas
+  await upsertBy('service_prices', {
+    service_id: byName['Hair Coloring'].id,
+    branch_id: branches.kedoya.id,
+    region_id: null
+  }, {
+    service_id: byName['Hair Coloring'].id,
+    branch_id: branches.kedoya.id,
+    region_id: null,
+    price_amount: 500000,
+    effective_from: EFFECTIVE_FROM,
+    effective_to: null
+  });
 
   return byName;
 }
@@ -776,8 +749,8 @@ async function seedOperationalData(context: {
   await upsertBy('check_ins', { appointment_id: inQueueAppointment.id }, {
     appointment_id: inQueueAppointment.id,
     method: 'manual',
-    location_lat: -6.186800,
-    location_lng: 106.752000,
+    location_lat: -6.1561043,
+    location_lng: 106.6157188,
     checked_in_at: atJakartaTime(now, '10:25:00')
   });
 
@@ -818,13 +791,13 @@ async function seedOperationalData(context: {
     expires_at: atJakartaTime(tomorrow, '13:00:00')
   });
 
-  // Appointment pending lusa: Raka — Hair Coloring di Selatan oleh Reza
+  // Appointment pending lusa: Raka — Hair Coloring di Kedoya oleh Reza
   const pendingAppointment = await upsertBy('appointments', {
-    branch_id: branches.selatan.id,
+    branch_id: branches.kedoya.id,
     customer_id: customers['raka.customer@example.com'].id,
     scheduled_at: atJakartaTime(nextDay, '13:00:00')
   }, {
-    branch_id: branches.selatan.id,
+    branch_id: branches.kedoya.id,
     barber_id: barbers['Reza'].id,
     customer_id: customers['raka.customer@example.com'].id,
     source: 'online_booking',
@@ -950,10 +923,10 @@ async function main() {
   const passwordHash = await argon2.hash(DEMO_PASSWORD);
 
   const roleByName = await seedRolesAndPermissions();
-  const { regions, branches } = await seedRegionsAndBranches();
+  const { branches } = await seedRegionsAndBranches();
   const { staffByEmail, barbers, globalRule } = await seedStaff(roleByName, branches, passwordHash);
   const customers = await seedCustomers(passwordHash);
-  const services = await seedServices(regions, branches);
+  const services = await seedServices(branches);
   const products = await seedProducts(branches);
 
   await seedContent(branches, barbers, customers);
@@ -973,13 +946,11 @@ async function main() {
   }
 
   console.log('\nSeeding completed successfully.');
-  console.log('Demo password for all seeded staff and customers:', DEMO_PASSWORD);
-  console.log('\nDemo credentials:');
+  console.log('\nDemo credentials (password: ' + DEMO_PASSWORD + '):');
   console.log('  HQ Owner  : jordan@bombbarbershop.com');
   console.log('  Admin     : admin.kedoya@bombbarbershop.com');
-  console.log('  Barber    : davies@bombbarbershop.com / barron@bombbarbershop.com');
-  console.log('  Customer  : raka.customer@example.com');
-  console.log('  Password  :', DEMO_PASSWORD);
+  console.log('  Barbers   : davies@bombbarbershop.com / barron@bombbarbershop.com / reza@bombbarbershop.com / dimas@bombbarbershop.com');
+  console.log('  Customers : raka.customer@example.com / dewi.customer@example.com / fajar.customer@example.com');
 }
 
 main().catch((err) => {

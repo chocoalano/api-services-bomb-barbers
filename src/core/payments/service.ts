@@ -70,7 +70,76 @@ type CreatePaymentPayload = {
   gateway_reference?: string;
 };
 
+/**
+ * Generate order_id unik untuk Midtrans.
+ * Format: APPT-{8 char pertama appointment_id}-{timestamp}
+ * Midtrans menolak order_id yang sudah pernah dipakai, jadi setiap panggilan harus unik.
+ */
+function generateOrderId(appointmentId: string): string {
+  const shortId = appointmentId.replace(/-/g, '').substring(0, 8).toUpperCase();
+  return `APPT-${shortId}-${Date.now()}`;
+}
+
 export class PaymentService {
+  /**
+   * Fetch customer details dari appointment untuk dikirim ke payment gateway.
+   */
+  private static async getCustomerDetails(appointmentId: string) {
+    const { data } = await supabase
+      .from('appointments')
+      .select('customer_id, customers(full_name, email, phone)')
+      .eq('id', appointmentId)
+      .single();
+
+    if (!data?.customers) {
+      return { name: 'Customer', email: 'noreply@bombbarbershop.com', phone: '' };
+    }
+
+    const customer = Array.isArray(data.customers) ? data.customers[0] : data.customers;
+    return {
+      name: customer.full_name || 'Customer',
+      email: customer.email || 'noreply@bombbarbershop.com',
+      phone: customer.phone || ''
+    };
+  }
+
+  /**
+   * Request Snap token dari payment gateway.
+   * Dipanggil baik saat create payment baru maupun saat re-tokenization payment yang sudah ada.
+   */
+  private static async requestGatewayToken(
+    provider: string,
+    paymentId: string,
+    appointmentId: string,
+    totalAmount: number
+  ) {
+    const orderId = generateOrderId(appointmentId);
+    const customerDetails = await this.getCustomerDetails(appointmentId);
+    const gateway = GatewayFactory.getGateway(provider);
+
+    const transResponse = await gateway.createTransaction({
+      order_id: orderId,
+      payment_id: paymentId,
+      total_amount: totalAmount,
+      customer_name: customerDetails.name,
+      customer_email: customerDetails.email,
+      customer_phone: customerDetails.phone
+    });
+
+    // Simpan order_id terbaru sebagai gateway_reference agar webhook bisa mapping
+    await supabase
+      .from('payments')
+      .update({ gateway_reference: transResponse.gateway_reference })
+      .eq('id', paymentId);
+
+    return {
+      payment_url: transResponse.payment_url,
+      redirect_url: transResponse.redirect_url || transResponse.payment_url,
+      token: transResponse.token || null,
+      gateway_reference: transResponse.gateway_reference
+    };
+  }
+
   static async createPayment(payload: CreatePaymentPayload, actorId: string, actorType: 'admin' | 'customer') {
     const { data: apt, error: aptErr } = await supabase
       .from('appointments')
@@ -109,35 +178,73 @@ export class PaymentService {
 
     if (payload.status === 'paid') paymentRecord.paid_at = new Date().toISOString();
 
+    // ── Coba insert payment baru ──────────────────────────────────────────────
     const { data: newPayment, error: payErr } = await supabase
       .from('payments')
       .insert(paymentRecord)
       .select()
       .single();
 
+    // ── Jika duplikat (payment sudah ada), lakukan re-tokenization ────────────
+    if (payErr && payErr.code === '23505') {
+      // Ambil payment yang sudah ada
+      const { data: existingPayment, error: fetchErr } = await supabase
+        .from('payments')
+        .select('*')
+        .eq('appointment_id', payload.appointment_id)
+        .single();
+
+      if (fetchErr || !existingPayment) {
+        throw new Error('Gagal mengambil data payment yang sudah ada');
+      }
+
+      // Jika sudah paid, tidak perlu re-tokenize
+      if (existingPayment.status === 'paid') {
+        throw new Error('Pembayaran untuk pesanan ini sudah lunas');
+      }
+
+      // Buat Snap token baru untuk payment yang sudah ada
+      let gatewayResult = { payment_url: null as string | null, redirect_url: null as string | null, token: null as string | null, gateway_reference: existingPayment.gateway_reference };
+      if (payload.provider && payload.method !== 'cash') {
+        gatewayResult = await this.requestGatewayToken(
+          payload.provider,
+          existingPayment.id,
+          payload.appointment_id,
+          existingPayment.total_amount
+        );
+      }
+
+      return {
+        ...existingPayment,
+        gateway_reference: gatewayResult.gateway_reference,
+        invoice_number: null,
+        invoice_access_token: null,
+        payment_url: gatewayResult.payment_url,
+        redirect_url: gatewayResult.redirect_url,
+        token: gatewayResult.token
+      };
+    }
+
     if (payErr) {
-      if (payErr.code === '23505') throw new Error('Pembayaran untuk pesanan ini sudah pernah dibuat sebelumnya (Double Pay Protection)');
       throw new Error('Gagal mencatat pembayaran: ' + payErr.message);
     }
 
+    // ── Request gateway token untuk payment baru ──────────────────────────────
     let paymentUrl = null;
     let redirectUrl = null;
     let token = null;
 
     if (payload.provider && payload.method !== 'cash') {
-      const gateway = GatewayFactory.getGateway(payload.provider);
-      const transResponse = await gateway.createTransaction({
-        payment_id: newPayment.id,
-        total_amount: totalAmount,
-        customer_name: 'Customer', 
-        customer_email: 'customer@example.com'
-      });
-
-      paymentUrl = transResponse.payment_url;
-      redirectUrl = transResponse.redirect_url || transResponse.payment_url;
-      token = transResponse.token || null;
-      await supabase.from('payments').update({ gateway_reference: transResponse.gateway_reference }).eq('id', newPayment.id);
-      newPayment.gateway_reference = transResponse.gateway_reference;
+      const gatewayResult = await this.requestGatewayToken(
+        payload.provider,
+        newPayment.id,
+        payload.appointment_id,
+        totalAmount
+      );
+      paymentUrl = gatewayResult.payment_url;
+      redirectUrl = gatewayResult.redirect_url;
+      token = gatewayResult.token;
+      newPayment.gateway_reference = gatewayResult.gateway_reference;
     }
 
     if (payload.status === 'paid') {

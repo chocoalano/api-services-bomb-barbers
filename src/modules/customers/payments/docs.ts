@@ -116,9 +116,9 @@ export const paymentDocs = {
         customerAuthError,
         customerValidationError,
         {
-          status: 409,
-          description: 'Appointment sudah memiliki payment sehingga double payment ditolak.',
-          message: 'Pembayaran untuk pesanan ini sudah pernah dibuat sebelumnya (Double Pay Protection)'
+          status: 400,
+          description: 'Appointment sudah memiliki payment yang lunas sehingga tidak bisa membuat token baru.',
+          message: 'Pembayaran untuk pesanan ini sudah lunas'
         },
         customerServerError
       ]
