@@ -334,14 +334,19 @@ export class BarberAppointmentController {
         set.status = 400; return createErrorResponse('Tidak bisa menyelesaikan pesanan tanpa layanan');
       }
 
+      if (!body?.before_media_url || !body?.after_media_url) {
+        set.status = 400; 
+        return createErrorResponse('Foto before dan after wajib diunggah untuk menyelesaikan pesanan dan mencairkan pendapatan.');
+      }
+
       const existingUrls: string[] = (apt as any).customer_media_urls ?? [];
-      const newUrls = [body?.before_media_url, body?.after_media_url].filter(Boolean) as string[];
+      const newUrls = [body.before_media_url, body.after_media_url];
       const mergedUrls = [...existingUrls, ...newUrls];
 
       const res = await AppointmentService.updateAppointmentStatus(params.id, 'completed', {
         actor: { type: 'staff', id: staffId, role: 'barber' },
         reason: 'Pelayanan diselesaikan oleh barber',
-        ...(mergedUrls.length > 0 && { customer_media_urls: mergedUrls })
+        customer_media_urls: mergedUrls
       });
       return createSuccessResponse('Pelayanan diselesaikan', res);
     } catch (err: any) {

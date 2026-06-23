@@ -144,6 +144,18 @@ export class CommissionService {
     await this.updateBarberDailyStats(barberId, branchId, summaryDate, totalBarberShare);
     await this.updateDailyBranchSummaries(branchId, summaryDate, totalBaseAmount, totalBranchShare, totalHqShare);
 
+    if (totalBarberShare > 0) {
+      const { error: walletErr } = await supabase.rpc('deposit_commission', {
+        p_barber_id: barberId,
+        p_amount: totalBarberShare,
+        p_commission_id: newEntry.id,
+        p_description: `Komisi layanan (${totalBaseAmount})` + (tipAmount > 0 ? ` + Tip (${tipAmount})` : '')
+      });
+      if (walletErr) {
+        console.error(`[CommissionService] Gagal deposit komisi ke wallet barber ${barberId}:`, walletErr);
+      }
+    }
+
     return newEntry;
   }
 

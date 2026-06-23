@@ -6,6 +6,7 @@ import { barberCommissionRoutes } from './commissions/routes';
 import { barberDashboardRoutes } from './dashboard/routes';
 import { barberPortfolioRoutes } from './portfolio/routes';
 import { barberMediaRoutes } from './media/routes';
+import { walletController } from '../../core/wallets/controller';
 
 export const barberRoutes = new Elysia()
   .use(barberAuthRoutes)
@@ -14,4 +15,5 @@ export const barberRoutes = new Elysia()
   .use(barberCommissionRoutes)
   .use(barberDashboardRoutes)
   .use(barberMediaRoutes)
-  .use(barberPortfolioRoutes);
+  .use(barberPortfolioRoutes)
+  .use(walletController);

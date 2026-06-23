@@ -108,10 +108,10 @@ export const appointmentDocs = {
   },
   barberCompleteService: {
     params: t.Object({ id: t.String() }),
-    body: t.Optional(t.Object({
-      before_media_url: t.Optional(t.String({ format: 'uri', description: 'URL foto kondisi rambut sebelum dipotong, hasil upload dari POST /api/v1/media/upload.' })),
-      after_media_url: t.Optional(t.String({ format: 'uri', description: 'URL foto hasil potong rambut setelah selesai, hasil upload dari POST /api/v1/media/upload.' }))
-    })),
-    detail: { tags: ['Barber Appointments'], summary: 'Complete Service', description: 'Menyelesaikan pelayanan (completed). Opsional: kirim before_media_url dan after_media_url dari hasil upload foto ke endpoint media untuk menyimpan dokumentasi foto layanan bersama data appointment.' }
+    body: t.Object({
+      before_media_url: t.String({ format: 'uri', description: 'URL foto kondisi rambut sebelum dipotong, hasil upload dari POST /api/v1/barbers/media/upload. Wajib diisi.' }),
+      after_media_url: t.String({ format: 'uri', description: 'URL foto hasil potong rambut setelah selesai, hasil upload dari POST /api/v1/barbers/media/upload. Wajib diisi.' })
+    }),
+    detail: { tags: ['Barber Appointments'], summary: 'Complete Service', description: 'Menyelesaikan pelayanan (completed). Wajib kirim before_media_url dan after_media_url dari hasil upload foto ke POST /api/v1/barbers/media/upload untuk dokumentasi dan pencairan pendapatan.' }
   }
 };

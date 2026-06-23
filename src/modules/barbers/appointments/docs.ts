@@ -251,32 +251,31 @@ export const appointmentDocs = {
 
   barberCompleteService: {
     params: appointmentParams,
-    body: t.Optional(t.Object({
-      before_media_url: t.Optional(t.String({
+    body: t.Object({
+      before_media_url: t.String({
         format: 'uri',
         description: 'URL foto sebelum layanan dari endpoint upload media barber.',
         examples: ['https://api.bombbarbershop.com/public/uploads/reference-before.webp']
-      })),
-      after_media_url: t.Optional(t.String({
+      }),
+      after_media_url: t.String({
         format: 'uri',
         description: 'URL foto hasil akhir layanan dari endpoint upload media barber.',
         examples: [BARBER_EXAMPLES.imageUrl]
-      }))
+      })
     }, {
       examples: [
-        {},
         {
           before_media_url: 'https://api.bombbarbershop.com/public/uploads/reference-before.webp',
           after_media_url: BARBER_EXAMPLES.imageUrl
         }
       ]
-    })),
+    }),
     detail: barberDetail({
       tag: BARBER_TAGS.appointments,
       summary: 'Selesaikan Pelayanan',
-      description: 'Mengubah appointment menjadi completed, mengisi completed_at, menggabungkan URL dokumentasi sebelum/sesudah dengan media customer, menghapus tracking aktif, mengubah status barber menjadi available, dan menyiarkan perubahan status.',
-      required: ['Authorization: Bearer <barber_access_token>', 'path.id'],
-      optional: ['body.before_media_url', 'body.after_media_url', 'seluruh body boleh tidak dikirim'],
+      description: 'Mengubah appointment menjadi completed, mengisi completed_at, menggabungkan URL dokumentasi sebelum/sesudah dengan media customer, menghapus tracking aktif, mengubah status barber menjadi available, dan menyiarkan perubahan status. Wajib melampirkan foto sebelum dan sesudah layanan.',
+      required: ['Authorization: Bearer <barber_access_token>', 'path.id', 'body.before_media_url', 'body.after_media_url'],
+      optional: [],
       successMessage: 'Pelayanan diselesaikan',
       successData: {
         ...appointmentRecordExample,

@@ -237,7 +237,8 @@ const formatCustomerAppointment = (appointment: any) => {
     barberLng: initialLocation?.lng ?? null,
     services,
     items,
-    appointment_services: appointmentServices
+    appointment_services: appointmentServices,
+    payment_status: appointment.payments?.[0]?.status ?? 'unpaid'
   };
 };
 
@@ -296,7 +297,7 @@ export const formatBarberQueueOrder = async (appointment: any) => {
   const price = appointmentServices.reduce(
     (sum: number, item: any) => sum + Number(item.price_amount || 0),
     0
-  );
+  ) * 0.4;
   const route = await readTrackingRoute(appointment.id);
 
   const fulfillmentType = appointment.fulfillment_type ?? 'in_store';
@@ -339,7 +340,7 @@ const formatBarberHistoryOrder = (appointment: any) => {
   const price = appointmentServices.reduce(
     (sum: number, item: any) => sum + Number(item.price_amount || 0),
     0
-  );
+  ) * 0.4;
 
   return {
     id: appointment.id,
@@ -548,6 +549,9 @@ export class AppointmentService {
           display_name,
           rating_avg,
           rating_count
+        ),
+        payments (
+          status
         )
       `)
       .eq('customer_id', customerId)
@@ -598,6 +602,9 @@ export class AppointmentService {
           display_name,
           rating_avg,
           rating_count
+        ),
+        payments (
+          status
         )
       `)
       .eq('id', appointmentId)
