@@ -285,7 +285,10 @@ export class WebhookController {
         .eq('gateway_reference', orderId)
         .maybeSingle();
 
-      if (!payment) throw new Error('Payment tidak ditemukan untuk order_id: ' + orderId);
+      if (!payment) {
+        set.status = 404;
+        return createErrorResponse('Webhook Error: Payment tidak ditemukan untuk order_id: ' + orderId);
+      }
       if (payment.status === 'paid') return createSuccessResponse('Payment sudah lunas sebelumnya', null);
 
       await PaymentService.updatePaymentStatus(
