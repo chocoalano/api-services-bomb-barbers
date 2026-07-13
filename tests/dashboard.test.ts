@@ -1,6 +1,6 @@
 import { describe, expect, it, beforeAll, afterAll } from 'bun:test';
 import { app } from '../src/app';
-import { supabase } from '../src/lib/supabase';
+import { testDb } from '../src/lib/test-db';
 import { redis } from '../src/lib/redis';
 import * as argon2 from 'argon2';
 
@@ -28,23 +28,23 @@ describe('Dashboard Module (Fase 1)', () => {
     const suffix = crypto.randomUUID().split('-')[0];
 
     // 1. Setup Master
-    const { data: region } = await supabase.from('regions').insert({ code: `RD${suffix.toString().slice(-4)}`, name: 'Dash Region' }).select('id').single();
+    const { data: region } = await testDb.from('regions').insert({ code: `RD${suffix.toString().slice(-4)}`, name: 'Dash Region' }).select('id').single();
     if (region) regionId = region.id;
 
-    const { data: b1 } = await supabase.from('branches').insert({ name: 'Dash Branch 1', region_id: regionId, address: 'Jl. Dashboard Barber No. 1' }).select('id').single();
+    const { data: b1 } = await testDb.from('branches').insert({ name: 'Dash Branch 1', region_id: regionId, address: 'Jl. Dashboard Barber No. 1' }).select('id').single();
     if (b1) branchId = b1.id;
 
-    const { data: b2 } = await supabase.from('branches').insert({ name: 'Dash Branch 2', region_id: regionId }).select('id').single();
+    const { data: b2 } = await testDb.from('branches').insert({ name: 'Dash Branch 2', region_id: regionId }).select('id').single();
     if (b2) otherBranchId = b2.id;
 
-    const { data: customer } = await supabase.from('customers').insert({ full_name: 'CDash', email: `cd${suffix}@test.com`, phone: `555D${suffix}`, password_hash: pwHash }).select('id').single();
+    const { data: customer } = await testDb.from('customers').insert({ full_name: 'CDash', email: `cd${suffix}@test.com`, phone: `555D${suffix}`, password_hash: pwHash }).select('id').single();
     if (customer) customerId = customer.id;
 
     // Ensure roles exist
     const getRole = async (name: string) => {
-      let { data } = await supabase.from('roles').select('id').eq('name', name).single();
+      let { data } = await testDb.from('roles').select('id').eq('name', name).single();
       if (!data) {
-        const { data: ins, error } = await supabase.from('roles').insert({ name }).select('id').single();
+        const { data: ins, error } = await testDb.from('roles').insert({ name }).select('id').single();
         if (error) throw new Error('Role error: ' + error.message);
         data = ins;
       }
@@ -55,26 +55,26 @@ describe('Dashboard Module (Fase 1)', () => {
     const roleBarber = await getRole('barber');
 
     // Admin Cabang
-    const { data: admin } = await supabase.from('staff_users').insert({ full_name: 'ADash', email: `ad${suffix}@test.com`, password_hash: pwHash }).select('id').single();
+    const { data: admin } = await testDb.from('staff_users').insert({ full_name: 'ADash', email: `ad${suffix}@test.com`, password_hash: pwHash }).select('id').single();
     if (admin) adminId = admin.id;
-    await supabase.from('staff_user_roles').insert({ staff_user_id: adminId, role_id: roleAdmin!.id, branch_id: branchId });
+    await testDb.from('staff_user_roles').insert({ staff_user_id: adminId, role_id: roleAdmin!.id, branch_id: branchId });
 
     // Super Admin
-    const { data: hq } = await supabase.from('staff_users').insert({ full_name: 'HQDash', email: `hq${suffix}@test.com`, password_hash: pwHash }).select('id').single();
+    const { data: hq } = await testDb.from('staff_users').insert({ full_name: 'HQDash', email: `hq${suffix}@test.com`, password_hash: pwHash }).select('id').single();
     if (hq) hqId = hq.id;
-    await supabase.from('staff_user_roles').insert({ staff_user_id: hqId, role_id: roleHQ!.id });
+    await testDb.from('staff_user_roles').insert({ staff_user_id: hqId, role_id: roleHQ!.id });
 
     // Barbers
-    const { data: barb1, error: e1 } = await supabase.from('staff_users').insert({ full_name: 'B1Dash', email: `b1${suffix}@test.com`, password_hash: pwHash }).select('id').single();
+    const { data: barb1, error: e1 } = await testDb.from('staff_users').insert({ full_name: 'B1Dash', email: `b1${suffix}@test.com`, password_hash: pwHash }).select('id').single();
     if (e1) throw new Error(e1.message);
-    const { data: realB1 } = await supabase.from('barbers').insert({ staff_user_id: barb1!.id, branch_id: branchId, display_name: 'Barber 1' }).select('id').single();
+    const { data: realB1 } = await testDb.from('barbers').insert({ staff_user_id: barb1!.id, branch_id: branchId, display_name: 'Barber 1' }).select('id').single();
     barber1Id = realB1!.id;
-    await supabase.from('staff_user_roles').insert({ staff_user_id: barb1!.id, role_id: roleBarber!.id, branch_id: branchId });
+    await testDb.from('staff_user_roles').insert({ staff_user_id: barb1!.id, role_id: roleBarber!.id, branch_id: branchId });
 
-    const { data: barb2 } = await supabase.from('staff_users').insert({ full_name: 'B2Dash', email: `b2${suffix}@test.com`, password_hash: pwHash }).select('id').single();
-    const { data: realB2 } = await supabase.from('barbers').insert({ staff_user_id: barb2!.id, branch_id: branchId, display_name: 'Barber 2' }).select('id').single();
+    const { data: barb2 } = await testDb.from('staff_users').insert({ full_name: 'B2Dash', email: `b2${suffix}@test.com`, password_hash: pwHash }).select('id').single();
+    const { data: realB2 } = await testDb.from('barbers').insert({ staff_user_id: barb2!.id, branch_id: branchId, display_name: 'Barber 2' }).select('id').single();
     barber2Id = realB2!.id;
-    await supabase.from('staff_user_roles').insert({ staff_user_id: barb2!.id, role_id: roleBarber!.id, branch_id: branchId });
+    await testDb.from('staff_user_roles').insert({ staff_user_id: barb2!.id, role_id: roleBarber!.id, branch_id: branchId });
 
     // Login
     const loginA = await app.handle(new Request(`http://localhost${API_PREFIX}/staff/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: `ad${suffix}@test.com`, password }) })).then(r => r.json());
@@ -90,15 +90,15 @@ describe('Dashboard Module (Fase 1)', () => {
     barber2Token = loginB2.data.accessToken;
 
     // 2. Transaksi Hari Ini
-    const { data: rule } = await supabase.from('commission_rules').insert({ scope: 'global', barber_pct: 50, branch_pct: 30, hq_pct: 20, effective_from: new Date().toISOString() }).select('id').single();
+    const { data: rule } = await testDb.from('commission_rules').insert({ scope: 'global', barber_pct: 50, branch_pct: 30, hq_pct: 20, effective_from: new Date().toISOString() }).select('id').single();
 
     // Barber 1 (Selesai & Lunas)
-    const { data: apt1 } = await supabase.from('appointments').insert({ branch_id: branchId, customer_id: customerId, barber_id: barber1Id, source: 'walk_in', status: 'completed' }).select('id').single();
-    await supabase.from('payments').insert({ appointment_id: apt1!.id, branch_id: branchId, service_amount: 100000, product_amount: 0, discount_amount: 0, tip_amount: 10000, total_amount: 110000, method: 'cash', status: 'paid', paid_at: new Date().toISOString() });
-    await supabase.from('commission_entries').insert({ appointment_id: apt1!.id, commission_rule_id: rule!.id, base_amount: 100000, barber_share: 60000, branch_share: 30000, hq_share: 20000, tip_amount: 10000, calculated_at: new Date().toISOString() });
+    const { data: apt1 } = await testDb.from('appointments').insert({ branch_id: branchId, customer_id: customerId, barber_id: barber1Id, source: 'walk_in', status: 'completed' }).select('id').single();
+    await testDb.from('payments').insert({ appointment_id: apt1!.id, branch_id: branchId, service_amount: 100000, product_amount: 0, discount_amount: 0, tip_amount: 10000, total_amount: 110000, method: 'cash', status: 'paid', paid_at: new Date().toISOString() });
+    await testDb.from('commission_entries').insert({ appointment_id: apt1!.id, commission_rule_id: rule!.id, base_amount: 100000, barber_share: 60000, branch_share: 30000, hq_share: 20000, tip_amount: 10000, calculated_at: new Date().toISOString() });
 
     // Barber 2 (Batal)
-    await supabase.from('appointments').insert({ branch_id: branchId, customer_id: customerId, barber_id: barber2Id, source: 'online_booking', status: 'cancelled' });
+    await testDb.from('appointments').insert({ branch_id: branchId, customer_id: customerId, barber_id: barber2Id, source: 'online_booking', status: 'cancelled' });
   });
 
   it('1. Admin Cabang bisa melihat ringkasan cabangnya (revenue dan komisi terakumulasi dengan benar)', async () => {
@@ -154,13 +154,13 @@ describe('Dashboard Module (Fase 1)', () => {
   });
 
   it('3c. Barber queue mengembalikan order siap pakai untuk frontend dashboard', async () => {
-    const { data: svc } = await supabase
+    const { data: svc } = await testDb
       .from('services')
       .insert({ name: 'Classic Cut + Hair Wash', default_duration_min: 45 })
       .select('id')
       .single();
 
-    const { data: apt } = await supabase.from('appointments').insert({
+    const { data: apt } = await testDb.from('appointments').insert({
       branch_id: branchId,
       customer_id: customerId,
       barber_id: barber1Id,
@@ -169,7 +169,7 @@ describe('Dashboard Module (Fase 1)', () => {
       scheduled_at: new Date().toISOString()
     }).select('id').single();
 
-    await supabase.from('appointment_services').insert({
+    await testDb.from('appointment_services').insert({
       appointment_id: apt!.id,
       service_id: svc!.id,
       price_amount: 85000,
@@ -235,10 +235,10 @@ describe('Dashboard Module (Fase 1)', () => {
 
   it('5. Perlindungan Null Safety: Cabang tanpa transaksi hari ini mengembalikan angka 0 tanpa error', async () => {
     // Create an empty branch
-    const { data: b3 } = await supabase.from('branches').insert({ name: 'Dash Branch Empty', region_id: regionId }).select('id').single();
-    const { data: admin3 } = await supabase.from('staff_users').insert({ full_name: 'A3Dash', email: `a3${Date.now()}@test.com`, password_hash: 'pw' }).select('id').single();
-    const { data: roleAdmin } = await supabase.from('roles').select('id').eq('name', 'branch_admin').single();
-    await supabase.from('staff_user_roles').insert({ staff_user_id: admin3!.id, role_id: roleAdmin!.id, branch_id: b3!.id });
+    const { data: b3 } = await testDb.from('branches').insert({ name: 'Dash Branch Empty', region_id: regionId }).select('id').single();
+    const { data: admin3 } = await testDb.from('staff_users').insert({ full_name: 'A3Dash', email: `a3${Date.now()}@test.com`, password_hash: 'pw' }).select('id').single();
+    const { data: roleAdmin } = await testDb.from('roles').select('id').eq('name', 'branch_admin').single();
+    await testDb.from('staff_user_roles').insert({ staff_user_id: admin3!.id, role_id: roleAdmin!.id, branch_id: b3!.id });
     
     // Note: the test login uses argon2 password "Password123!" but admin3 has 'pw' hash which is invalid. We will just use HQ token to view empty branch.
     // Wait, the test uses global staff role? No, let's just use HQ token to view empty branch.

@@ -1,4 +1,8 @@
-import { supabase } from '../../lib/supabase';
+import { randomUUID } from 'crypto';
+import { db } from '../../lib/db';
+import { snakeKeys } from '../../db/helpers';
+import { appointments, barbers, chatMessages } from '../../db/schema';
+import { and, eq, gt, asc } from 'drizzle-orm';
 import { emitChatMessage } from '../../lib/socket';
 
 const normalizeLimit = (value: number | string | undefined) => {
@@ -34,13 +38,18 @@ export class ChatService {
     userId: string,
     userRole: 'customer' | 'barber'
   ) {
-    const { data: appointment, error } = await supabase
-      .from('appointments')
-      .select('customer_id, barber_id')
-      .eq('id', appointmentId)
-      .single();
+    const [appointment] = await db
+      .select({
+        customer_id: appointments.customerId,
+        barber_id: appointments.barberId,
+        status: appointments.status,
+        chat_cleared_at: appointments.chatClearedAt
+      })
+      .from(appointments)
+      .where(eq(appointments.id, appointmentId))
+      .limit(1);
 
-    if (error || !appointment) {
+    if (!appointment) {
       throw new Error('Appointment tidak ditemukan');
     }
 
@@ -49,13 +58,13 @@ export class ChatService {
     }
 
     if (userRole === 'barber') {
-      const { data: barber, error: barberError } = await supabase
-        .from('barbers')
-        .select('id')
-        .eq('staff_user_id', userId)
-        .single();
+      const [barber] = await db
+        .select({ id: barbers.id })
+        .from(barbers)
+        .where(eq(barbers.staffUserId, userId))
+        .limit(1);
 
-      if (barberError || !barber || barber.id !== appointment.barber_id) {
+      if (!barber || barber.id !== appointment.barber_id) {
         throw new Error('Akses ditolak');
       }
     }
@@ -77,23 +86,34 @@ export class ChatService {
     userRole: 'customer' | 'barber',
     query: PaginationQuery = {}
   ) {
-    await this.validateAppointmentParticipant(appointmentId, userId, userRole);
+    const appointment = await this.validateAppointmentParticipant(appointmentId, userId, userRole);
 
     const page = normalizePage(query.page);
     const limit = normalizeLimit(query.limit);
     const from = (page - 1) * limit;
     const to = from + limit - 1;
 
-    const { data, error } = await supabase
-      .from('chat_messages' as any)
-      .select('id, appointment_id, sender_id, sender_role, text, created_at')
-      .eq('appointment_id', appointmentId)
-      .order('created_at', { ascending: true })
-      .range(from, to);
-
-    if (error) {
-      throw new Error('Gagal mengambil riwayat chat: ' + error.message);
+    const conds = [eq(chatMessages.appointmentId, appointmentId)];
+    // Barber yang baru di-reassign tidak boleh melihat riwayat chat sebelum ia
+    // ditugaskan. Customer tetap melihat seluruh riwayatnya. (M7)
+    if (userRole === 'barber' && (appointment as any).chat_cleared_at) {
+      conds.push(gt(chatMessages.createdAt, (appointment as any).chat_cleared_at));
     }
+
+    const data = await db
+      .select({
+        id: chatMessages.id,
+        appointment_id: chatMessages.appointmentId,
+        sender_id: chatMessages.senderId,
+        sender_role: chatMessages.senderRole,
+        text: chatMessages.text,
+        created_at: chatMessages.createdAt
+      })
+      .from(chatMessages)
+      .where(and(...conds))
+      .orderBy(asc(chatMessages.createdAt))
+      .limit(limit)
+      .offset(from);
 
     return data || [];
   }
@@ -108,30 +128,51 @@ export class ChatService {
       throw new Error('Pesan chat tidak boleh kosong');
     }
 
-    await this.validateAppointmentParticipant(appointmentId, senderId, senderRole);
+    const appointment = await this.validateAppointmentParticipant(appointmentId, senderId, senderRole);
 
-    const { data, error } = await supabase
-      .from('chat_messages' as any)
-      .insert({
-        appointment_id: appointmentId,
-        sender_id: senderId,
-        sender_role: senderRole,
-        text: text.trim()
+    // Chat ditutup untuk appointment yang sudah berakhir. (M7)
+    const terminalStatuses = ['completed', 'cancelled', 'no_show'];
+    if (terminalStatuses.includes((appointment as any).status)) {
+      throw new Error('Sesi chat sudah ditutup untuk pesanan ini');
+    }
+
+    const messageId = randomUUID();
+    await db.insert(chatMessages).values({
+      id: messageId,
+      appointmentId,
+      senderId,
+      senderRole,
+      text: text.trim()
+    });
+
+    const [data] = await db
+      .select({
+        id: chatMessages.id,
+        appointment_id: chatMessages.appointmentId,
+        sender_id: chatMessages.senderId,
+        sender_role: chatMessages.senderRole,
+        text: chatMessages.text,
+        created_at: chatMessages.createdAt
       })
-      .select('id, appointment_id, sender_id, sender_role, text, created_at')
-      .single();
+      .from(chatMessages)
+      .where(eq(chatMessages.id, messageId))
+      .limit(1);
 
-    if (error || !data) {
-      throw new Error('Gagal menyimpan pesan chat: ' + (error?.message ?? 'unknown'));
+    if (!data) {
+      throw new Error('Gagal menyimpan pesan chat: unknown');
     }
 
     emitChatMessage({
       id: data.id,
       appointment_id: data.appointment_id,
       sender_id: data.sender_id,
-      sender_role: data.sender_role,
+      sender_role: data.sender_role as 'customer' | 'barber',
       text: data.text,
       created_at: data.created_at,
+      // Dikirim juga ke room personal kedua pihak agar badge unread global
+      // pada penerima tetap bertambah walau ia tidak di room appointment.
+      customer_id: (appointment as any).customer_id ?? null,
+      barber_id: (appointment as any).barber_id ?? null,
     });
 
     return data;

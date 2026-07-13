@@ -1,35 +1,46 @@
 import { redis } from '../../../lib/redis';
-import { supabase } from '../../../lib/supabase';
+import { db } from '../../../lib/db';
+import { snakeKeys } from '../../../db/helpers';
+import { appointments } from '../../../db/schema';
+import { and, eq, inArray, asc } from 'drizzle-orm';
 
 const BRANCH_QUEUE_STATUSES = ['pending', 'confirmed', 'in_queue', 'in_service'];
 
 export class QueueService {
   static async getBranchActiveQueueSnapshot(branchId: string) {
-    const { data: queue, error } = await supabase
-      .from('appointments')
-      .select('id, barber_id, status, customer_id')
-      .eq('branch_id', branchId)
-      .in('status', BRANCH_QUEUE_STATUSES)
-      .order('created_at', { ascending: true });
+    const queue = snakeKeys(
+      await db
+        .select({
+          id: appointments.id,
+          barberId: appointments.barberId,
+          status: appointments.status,
+          customerId: appointments.customerId
+        })
+        .from(appointments)
+        .where(
+          and(
+            eq(appointments.branchId, branchId),
+            inArray(appointments.status, BRANCH_QUEUE_STATUSES as any)
+          )
+        )
+        .orderBy(asc(appointments.createdAt))
+    ) as any[];
 
-    if (error) {
-      throw new Error('Gagal mengambil realtime queue: ' + error.message);
-    }
+    return Promise.all(
+      queue.map(async (apt) => {
+        const etaRaw = await redis.get(`appointment:eta:${apt.id}`);
+        let eta = null;
 
-    return Promise.all((queue || []).map(async (apt) => {
-      const etaRaw = await redis.get(`appointment:eta:${apt.id}`);
-      let eta = null;
-
-      if (etaRaw) {
-        try {
-          eta = JSON.parse(etaRaw);
-        } catch {
-          eta = null;
+        if (etaRaw) {
+          try {
+            eta = JSON.parse(etaRaw);
+          } catch {
+            eta = null;
+          }
         }
-      }
 
-      return { ...apt, eta };
-    }));
+        return { ...apt, eta };
+      })
+    );
   }
-
 }

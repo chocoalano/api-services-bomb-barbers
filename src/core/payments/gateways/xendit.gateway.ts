@@ -1,3 +1,4 @@
+import { timingSafeEqual } from 'node:crypto';
 import { IPaymentGateway, TransactionPayload, TransactionResponse } from './interface';
 
 export class XenditGateway implements IPaymentGateway {
@@ -13,7 +14,14 @@ export class XenditGateway implements IPaymentGateway {
   }
 
   verifyWebhookSignature(signature: string, body: any): boolean {
-    // Verifikasi via x-callback-token
-    return signature === 'mock-xendit-signature' || signature === 'test-signature-xendit';
+    // Xendit mengirim callback token statis pada header `x-callback-token`.
+    // Bandingkan dengan token yang dikonfigurasi di env secara timing-safe.
+    const expected = process.env.XENDIT_CALLBACK_TOKEN || '';
+    if (!expected || !signature) return false;
+
+    const expectedBuf = Buffer.from(expected);
+    const providedBuf = Buffer.from(signature);
+    if (expectedBuf.length !== providedBuf.length) return false;
+    return timingSafeEqual(expectedBuf, providedBuf);
   }
 }

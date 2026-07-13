@@ -11,7 +11,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import { app } from '../src/app';
-import { supabase } from '../src/lib/supabase';
+import { testDb } from '../src/lib/test-db';
 import {
   getLegacyAppointmentEtaKey,
   getTrackingRouteKey,
@@ -51,7 +51,7 @@ const req = async (method: string, path: string, token?: string, body?: any) => 
 };
 
 const insertApt = async (extra: Record<string, any>): Promise<string> => {
-  const { data, error } = await supabase
+  const { data, error } = await testDb
     .from('appointments')
     .insert({
       branch_id: branchId,
@@ -89,12 +89,12 @@ beforeAll(async () => {
   daviesToken = loginRes.body.data.accessToken;
 
   // Resolve IDs
-  const { data: daviesStaff } = await supabase.from('staff_users').select('id').eq('email', 'davies@bombbarbershop.com').single();
-  const { data: daviesBarber } = await supabase.from('barbers').select('id, branch_id').eq('staff_user_id', daviesStaff!.id).single();
+  const { data: daviesStaff } = await testDb.from('staff_users').select('id').eq('email', 'davies@bombbarbershop.com').single();
+  const { data: daviesBarber } = await testDb.from('barbers').select('id, branch_id').eq('staff_user_id', daviesStaff!.id).single();
   barberId = daviesBarber!.id;
   branchId = daviesBarber!.branch_id;
 
-  const { data: customer } = await supabase.from('customers').select('id').eq('email', 'fajar.customer@example.com').single();
+  const { data: customer } = await testDb.from('customers').select('id').eq('email', 'fajar.customer@example.com').single();
   customerId = customer!.id;
 
   // Create test appointments
@@ -128,9 +128,9 @@ afterAll(async () => {
     await RealtimeTrackingService.cleanup(id);
   }
   if (allAptIds.length) {
-    await supabase.from('tracking_sessions').delete().in('appointment_id', allAptIds);
-    await supabase.from('appointment_events').delete().in('appointment_id', allAptIds);
-    await supabase.from('appointments').delete().in('id', allAptIds);
+    await testDb.from('tracking_sessions').delete().in('appointment_id', allAptIds);
+    await testDb.from('appointment_events').delete().in('appointment_id', allAptIds);
+    await testDb.from('appointments').delete().in('id', allAptIds);
   }
 });
 

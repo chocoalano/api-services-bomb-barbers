@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
-import { supabase } from '../src/lib/supabase';
+import { testDb } from '../src/lib/test-db';
 import { AppointmentLifecycleService } from '../src/core/appointments/lifecycle.service';
 import {
   APPOINTMENT_NO_SHOW_TIMEOUT,
@@ -14,20 +14,20 @@ let customerId = '';
 const appointmentIds: string[] = [];
 
 beforeAll(async () => {
-  const { data: fajar } = await supabase
+  const { data: fajar } = await testDb
     .from('customers')
     .select('id')
     .eq('email', 'fajar.customer@example.com')
     .single();
   customerId = fajar!.id;
 
-  const { data: daviesStaff } = await supabase
+  const { data: daviesStaff } = await testDb
     .from('staff_users')
     .select('id')
     .eq('email', 'davies@bombbarbershop.com')
     .single();
   daviesStaffId = daviesStaff!.id;
-  const { data: budi } = await supabase
+  const { data: budi } = await testDb
     .from('barbers')
     .select('id, branch_id')
     .eq('staff_user_id', daviesStaff!.id)
@@ -38,15 +38,15 @@ beforeAll(async () => {
 
 afterAll(async () => {
   if (appointmentIds.length) {
-    await supabase.from('tracking_sessions').delete().in('appointment_id', appointmentIds);
-    await supabase.from('appointment_events').delete().in('appointment_id', appointmentIds);
-    await supabase.from('appointments').delete().in('id', appointmentIds);
+    await testDb.from('tracking_sessions').delete().in('appointment_id', appointmentIds);
+    await testDb.from('appointment_events').delete().in('appointment_id', appointmentIds);
+    await testDb.from('appointments').delete().in('id', appointmentIds);
   }
 });
 
 describe('Concurrent appointment status update', () => {
   it('retry transisi status tetap idempoten dan hanya mencatat satu event', async () => {
-    const { data: apt, error } = await supabase
+    const { data: apt, error } = await testDb
       .from('appointments')
       .insert({
         branch_id: branchId,
@@ -70,14 +70,14 @@ describe('Concurrent appointment status update', () => {
       reason: 'Retry penerimaan order yang sama'
     });
 
-    const { data: final } = await supabase
+    const { data: final } = await testDb
       .from('appointments')
       .select('status')
       .eq('id', apt!.id)
       .single();
     expect(final!.status).toBe('confirmed');
 
-    const { count: transitionCount } = await supabase
+    const { count: transitionCount } = await testDb
       .from('appointment_events')
       .select('id', { count: 'exact', head: true })
       .eq('appointment_id', apt!.id)
@@ -87,7 +87,7 @@ describe('Concurrent appointment status update', () => {
   });
 
   it('menolak transisi status yang tidak diizinkan oleh state machine', async () => {
-    const { data: apt, error } = await supabase
+    const { data: apt, error } = await testDb
       .from('appointments')
       .insert({
         branch_id: branchId,
@@ -109,7 +109,7 @@ describe('Concurrent appointment status update', () => {
       })
     ).rejects.toThrow('tidak diizinkan');
 
-    const { data: unchanged } = await supabase
+    const { data: unchanged } = await testDb
       .from('appointments')
       .select('status')
       .eq('id', apt!.id)
@@ -120,7 +120,7 @@ describe('Concurrent appointment status update', () => {
 
 describe('Appointment timeout logic', () => {
   it('acceptance timeout hanya membatalkan appointment pending', async () => {
-    const { data: apt, error } = await supabase
+    const { data: apt, error } = await testDb
       .from('appointments')
       .insert({
         branch_id: branchId,
@@ -144,7 +144,7 @@ describe('Appointment timeout logic', () => {
       }
     });
 
-    const { data: result } = await supabase
+    const { data: result } = await testDb
       .from('appointments')
       .select('status, cancellation_reason')
       .eq('id', apt!.id)
@@ -155,7 +155,7 @@ describe('Appointment timeout logic', () => {
   });
 
   it('no-show timeout menghasilkan status no_show, bukan cancelled', async () => {
-    const { data: apt, error } = await supabase
+    const { data: apt, error } = await testDb
       .from('appointments')
       .insert({
         branch_id: branchId,
@@ -179,7 +179,7 @@ describe('Appointment timeout logic', () => {
       }
     });
 
-    const { data: unchanged } = await supabase
+    const { data: unchanged } = await testDb
       .from('appointments')
       .select('status')
       .eq('id', apt!.id)
@@ -188,7 +188,7 @@ describe('Appointment timeout logic', () => {
   });
 
   it('acceptance timeout tidak membatalkan appointment yang sudah confirmed', async () => {
-    const { data: apt, error } = await supabase
+    const { data: apt, error } = await testDb
       .from('appointments')
       .insert({
         branch_id: branchId,
@@ -211,7 +211,7 @@ describe('Appointment timeout logic', () => {
       }
     });
 
-    const { data: unchanged } = await supabase
+    const { data: unchanged } = await testDb
       .from('appointments')
       .select('status')
       .eq('id', apt!.id)
@@ -220,7 +220,7 @@ describe('Appointment timeout logic', () => {
   });
 
   it('mengubah version saat setiap transisi status', async () => {
-    const { data: apt, error } = await supabase
+    const { data: apt, error } = await testDb
       .from('appointments')
       .select('version')
       .eq('status', 'pending')
@@ -231,7 +231,7 @@ describe('Appointment timeout logic', () => {
     // Skip jika kolom version belum ada di schema.
     if (error || !apt || apt.version === undefined) return;
 
-    const { data: newApt } = await supabase
+    const { data: newApt } = await testDb
       .from('appointments')
       .insert({
         branch_id: branchId,
@@ -252,7 +252,7 @@ describe('Appointment timeout logic', () => {
       reason: 'Order diterima barber'
     });
 
-    const { data: after } = await supabase
+    const { data: after } = await testDb
       .from('appointments')
       .select('version')
       .eq('id', newApt.id)

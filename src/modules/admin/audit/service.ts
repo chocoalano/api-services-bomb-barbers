@@ -2,7 +2,7 @@ import { auditQueue } from '../../../lib/queue';
 
 export class AuditService {
   static async logAction(
-    actorType: 'admin' | 'customer' | 'system',
+    actorType: 'admin' | 'customer' | 'system' | 'barber' | 'staff',
     actorId: string,
     action: string,
     entityType: string,

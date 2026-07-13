@@ -13,3 +13,7 @@ export const staffAuthRoutes = new Elysia({ prefix: '/api/v1/staff' })
   )
   .use(staffAuthMiddleware)
   .get('/me', StaffAuthController.getProfile, staffAuthDocs.getProfile);
+
+// [REVISI C1] Pendaftaran mandiri kepster (publik, tanpa auth).
+export const staffRegisterRoutes = new Elysia({ prefix: '/api/v1/staff-auth' })
+  .post('/register', StaffAuthController.register, staffAuthDocs.register);

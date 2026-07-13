@@ -1,6 +1,6 @@
 import { describe, expect, it, beforeAll } from 'bun:test';
 import { app } from '../src/app';
-import { supabase } from '../src/lib/supabase';
+import { testDb } from '../src/lib/test-db';
 import * as argon2 from 'argon2';
 
 const API_PREFIX = '/api/v1';
@@ -16,14 +16,14 @@ describe('Auth Module', () => {
 
   beforeAll(async () => {
     // Cleanup first
-    await supabase.from('customers').delete().eq('phone', testPhone);
-    await supabase.from('customers').delete().eq('email', testCustomerEmail);
-    await supabase.from('staff_users').delete().in('email', [testStaffEmail, testInactiveEmail]);
+    await testDb.from('customers').delete().eq('phone', testPhone);
+    await testDb.from('customers').delete().eq('email', testCustomerEmail);
+    await testDb.from('staff_users').delete().in('email', [testStaffEmail, testInactiveEmail]);
 
     const password_hash = await argon2.hash(password);
 
     // Create staff user
-    const { data: staff } = await supabase.from('staff_users').insert({
+    const { data: staff } = await testDb.from('staff_users').insert({
       full_name: 'Test Staff',
       email: testStaffEmail,
       is_active: true,
@@ -32,7 +32,7 @@ describe('Auth Module', () => {
     if(staff) staffId = staff.id;
 
     // Create inactive staff user
-    const { data: inactiveStaff } = await supabase.from('staff_users').insert({
+    const { data: inactiveStaff } = await testDb.from('staff_users').insert({
       full_name: 'Inactive Staff',
       email: testInactiveEmail,
       is_active: false,

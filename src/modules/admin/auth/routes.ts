@@ -6,7 +6,13 @@ import { adminAuthDocs } from './docs';
 export const adminAuthRoutes = new Elysia({ prefix: '/api/v1/admin' })
   .use(setupAuth)
   .group('/auth', (app) => app
-    .post('/login', StaffAuthController.login, adminAuthDocs.login)
+    // Login backoffice dibatasi khusus role super_admin & branch_admin (admin).
+    // Akun kepster/barber ditolak (403) meski kredensialnya benar.
+    .post(
+      '/login',
+      (ctx) => StaffAuthController.login(ctx, { allowedRoles: ['super_admin', 'branch_admin'] }),
+      adminAuthDocs.login
+    )
     .post('/refresh', StaffAuthController.refresh, adminAuthDocs.refresh)
     .post('/logout', StaffAuthController.logout, adminAuthDocs.logout)
   )

@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
-import { supabase } from '../src/lib/supabase';
+import { testDb } from '../src/lib/test-db';
 import { redis } from '../src/lib/redis';
 import { QueueService } from '../src/modules/admin/queue/service';
 
@@ -13,21 +13,21 @@ describe('Realtime Queue Service', () => {
   beforeAll(async () => {
     const suffix = crypto.randomUUID().split('-')[0];
 
-    const { data: branch } = await supabase
+    const { data: branch } = await testDb
       .from('branches')
       .insert({ name: `Queue Branch ${suffix}` })
       .select('id')
       .single();
     branchId = branch!.id;
 
-    const { data: staff } = await supabase
+    const { data: staff } = await testDb
       .from('staff_users')
       .insert({ full_name: 'Queue Barber', email: `queue-${suffix}@test.com` })
       .select('id')
       .single();
     staffId = staff!.id;
 
-    const { data: barber } = await supabase
+    const { data: barber } = await testDb
       .from('barbers')
       .insert({ staff_user_id: staffId, branch_id: branchId, display_name: 'Queue Barber' })
       .select('id')
@@ -37,7 +37,7 @@ describe('Realtime Queue Service', () => {
     const activeStatuses = ['pending', 'confirmed', 'in_queue', 'in_service'];
     const inactiveStatuses = ['completed', 'cancelled'];
 
-    const { data: activeAppointments } = await supabase
+    const { data: activeAppointments } = await testDb
       .from('appointments')
       .insert(activeStatuses.map((status, index) => ({
         branch_id: branchId,
@@ -48,7 +48,7 @@ describe('Realtime Queue Service', () => {
       })))
       .select('id, status');
 
-    const { data: inactiveAppointments } = await supabase
+    const { data: inactiveAppointments } = await testDb
       .from('appointments')
       .insert(inactiveStatuses.map((status) => ({
         branch_id: branchId,
@@ -58,10 +58,10 @@ describe('Realtime Queue Service', () => {
       })))
       .select('id');
 
-    activeAppointmentIds = (activeAppointments ?? []).map((appointment) => appointment.id);
-    inactiveAppointmentIds = (inactiveAppointments ?? []).map((appointment) => appointment.id);
+    activeAppointmentIds = (activeAppointments ?? []).map((appointment: any) => appointment.id);
+    inactiveAppointmentIds = (inactiveAppointments ?? []).map((appointment: any) => appointment.id);
 
-    const inService = activeAppointments?.find((appointment) => appointment.status === 'in_service');
+    const inService = activeAppointments?.find((appointment: any) => appointment.status === 'in_service');
     if (inService) {
       await redis.set(`appointment:eta:${inService.id}`, JSON.stringify({ eta_minutes: 7 }), 'EX', 60);
     }
@@ -70,13 +70,13 @@ describe('Realtime Queue Service', () => {
   afterAll(async () => {
     const appointmentIds = [...activeAppointmentIds, ...inactiveAppointmentIds];
     if (appointmentIds.length > 0) {
-      await supabase.from('appointments').delete().in('id', appointmentIds);
+      await testDb.from('appointments').delete().in('id', appointmentIds);
       await Promise.all(appointmentIds.map((id) => redis.del(`appointment:eta:${id}`)));
     }
 
-    if (barberId) await supabase.from('barbers').delete().eq('id', barberId);
-    if (staffId) await supabase.from('staff_users').delete().eq('id', staffId);
-    if (branchId) await supabase.from('branches').delete().eq('id', branchId);
+    if (barberId) await testDb.from('barbers').delete().eq('id', barberId);
+    if (staffId) await testDb.from('staff_users').delete().eq('id', staffId);
+    if (branchId) await testDb.from('branches').delete().eq('id', branchId);
   });
 
   it('mengembalikan semua status antrean aktif dan mengecualikan appointment selesai/batal', async () => {

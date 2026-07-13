@@ -1,6 +1,6 @@
 import { describe, expect, it, beforeAll, afterAll } from 'bun:test';
 import { app } from '../src/app';
-import { supabase } from '../src/lib/supabase';
+import { testDb } from '../src/lib/test-db';
 import * as argon2 from 'argon2';
 
 const API_PREFIX = '/api/v1';
@@ -26,32 +26,32 @@ describe('Growth Features Module (Reviews & Expenses)', () => {
     const pwHash = await argon2.hash(password);
     const suffix = crypto.randomUUID().split('-')[0];
 
-    const { data: region } = await supabase.from('regions').insert({ code: `GW${suffix.toString().slice(-4)}`, name: 'Growth Region' }).select('id').single();
-    const { data: branch } = await supabase.from('branches').insert({ name: 'Growth Branch', region_id: region?.id }).select('id').single();
+    const { data: region } = await testDb.from('regions').insert({ code: `GW${suffix.toString().slice(-4)}`, name: 'Growth Region' }).select('id').single();
+    const { data: branch } = await testDb.from('branches').insert({ name: 'Growth Branch', region_id: region?.id }).select('id').single();
     if (branch) branchId = branch.id;
 
-    const { data: branch2 } = await supabase.from('branches').insert({ name: 'Growth Branch 2', region_id: region?.id }).select('id').single();
+    const { data: branch2 } = await testDb.from('branches').insert({ name: 'Growth Branch 2', region_id: region?.id }).select('id').single();
     if (branch2) otherBranchId = branch2.id;
 
-    const { data: customer } = await supabase.from('customers').insert({ full_name: 'CGrowth', email: `cg${suffix}@test.com`, phone: `444${suffix}`, password_hash: pwHash }).select('id').single();
+    const { data: customer } = await testDb.from('customers').insert({ full_name: 'CGrowth', email: `cg${suffix}@test.com`, phone: `444${suffix}`, password_hash: pwHash }).select('id').single();
     if (customer) customerId = customer.id;
 
-    const { data: customer2 } = await supabase.from('customers').insert({ full_name: 'OtherGrowth', email: `og${suffix}@test.com`, phone: `555${suffix}`, password_hash: pwHash }).select('id').single();
+    const { data: customer2 } = await testDb.from('customers').insert({ full_name: 'OtherGrowth', email: `og${suffix}@test.com`, phone: `555${suffix}`, password_hash: pwHash }).select('id').single();
     if (customer2) otherCustomerId = customer2.id;
 
-    const { data: adminStaff } = await supabase.from('staff_users').insert({ full_name: 'AGrowth', email: `ag${suffix}@test.com`, password_hash: pwHash }).select('id').single();
+    const { data: adminStaff } = await testDb.from('staff_users').insert({ full_name: 'AGrowth', email: `ag${suffix}@test.com`, password_hash: pwHash }).select('id').single();
     if (adminStaff) adminStaffId = adminStaff.id;
 
     // Beri adminStaff akses ke branch 1
-    const { data: roleAdmin } = await supabase.from('roles').select('id').eq('name', 'branch_admin').single();
+    const { data: roleAdmin } = await testDb.from('roles').select('id').eq('name', 'branch_admin').single();
     if (roleAdmin && adminStaff) {
-      await supabase.from('staff_user_roles').insert({
+      await testDb.from('staff_user_roles').insert({
         staff_user_id: adminStaff.id, role_id: roleAdmin.id, branch_id: branchId
       });
     }
 
-    const { data: barberStaff } = await supabase.from('staff_users').insert({ full_name: 'BGrowth', email: `bg${suffix}@test.com`, password_hash: pwHash }).select('id').single();
-    const { data: barber } = await supabase.from('barbers').insert({ staff_user_id: barberStaff?.id, branch_id: branchId, display_name: 'Growth Barber' }).select('id').single();
+    const { data: barberStaff } = await testDb.from('staff_users').insert({ full_name: 'BGrowth', email: `bg${suffix}@test.com`, password_hash: pwHash }).select('id').single();
+    const { data: barber } = await testDb.from('barbers').insert({ staff_user_id: barberStaff?.id, branch_id: branchId, display_name: 'Growth Barber' }).select('id').single();
     if (barber) barberId = barber.id;
 
     // Login Admin
@@ -75,13 +75,13 @@ describe('Growth Features Module (Reviews & Expenses)', () => {
     otherCustomerToken = loginC2.data?.accessToken;
 
     // Setup completed appointment
-    const { data: aptC } = await supabase.from('appointments').insert({
+    const { data: aptC } = await testDb.from('appointments').insert({
       branch_id: branchId, customer_id: customerId, barber_id: barberId, source: 'walk_in', status: 'completed'
     }).select('id').single();
     if (aptC) completedAptId = aptC.id;
 
     // Setup pending appointment
-    const { data: aptP } = await supabase.from('appointments').insert({
+    const { data: aptP } = await testDb.from('appointments').insert({
       branch_id: branchId, customer_id: customerId, barber_id: barberId, source: 'walk_in', status: 'pending'
     }).select('id').single();
     if (aptP) pendingAptId = aptP.id;
@@ -89,9 +89,9 @@ describe('Growth Features Module (Reviews & Expenses)', () => {
 
   afterAll(async () => {
     // Teardown logic
-    await supabase.from('reviews').delete().in('appointment_id', [completedAptId, pendingAptId]);
-    await supabase.from('appointments').delete().in('id', [completedAptId, pendingAptId]);
-    await supabase.from('barbers').delete().eq('id', barberId);
+    await testDb.from('reviews').delete().in('appointment_id', [completedAptId, pendingAptId]);
+    await testDb.from('appointments').delete().in('id', [completedAptId, pendingAptId]);
+    await testDb.from('barbers').delete().eq('id', barberId);
   });
 
   describe('Reviews Feature', () => {
@@ -162,7 +162,7 @@ describe('Growth Features Module (Reviews & Expenses)', () => {
     });
 
     it('7. Rating barber otomatis ter-update (Avg dan Count)', async () => {
-      const { data: barber } = await supabase.from('barbers').select('rating_avg, rating_count').eq('id', barberId).single();
+      const { data: barber } = await testDb.from('barbers').select('rating_avg, rating_count').eq('id', barberId).single();
       expect(barber?.rating_count).toBe(1);
       expect(Number(barber?.rating_avg)).toBe(5);
     });

@@ -1,5 +1,8 @@
-import { supabase } from '../lib/supabase';
+import { db } from '../lib/db';
+import { staffUserRoles, roles, barbers, rolePermissions, permissions } from '../db/schema';
+import { and, eq, isNull, inArray } from 'drizzle-orm';
 import { redis } from '../lib/redis';
+import { createErrorResponse } from '../shared/response';
 
 const RBAC_CACHE_TTL = 60; // detik
 const rbacCacheKey = (staffUserId: string) => `rbac:staff:${staffUserId}`;
@@ -11,38 +14,39 @@ interface RbacProfile {
   isGlobal: boolean; // punya role dengan branch_id NULL (akses global/HQ)
 }
 
-const unauthorized = { success: false, message: 'Unauthorized', data: null };
+const unauthorized = () => createErrorResponse('Unauthorized', null, null, null, {
+  context: 'rbac.unauthorized',
+  status: 401
+});
 
 async function loadRbacProfileFromDb(staffUserId: string): Promise<RbacProfile> {
-  const { data: roleRows } = await supabase
-    .from('staff_user_roles')
-    .select('role_id, branch_id, roles!inner(name)')
-    .eq('staff_user_id', staffUserId);
+  const rows = await db
+    .select({ role_id: staffUserRoles.roleId, branch_id: staffUserRoles.branchId, roleName: roles.name })
+    .from(staffUserRoles)
+    .innerJoin(roles, eq(staffUserRoles.roleId, roles.id))
+    .where(eq(staffUserRoles.staffUserId, staffUserId));
 
-  const rows = roleRows ?? [];
-  const roleIds = rows.map((r: any) => r.role_id);
-  const roleNames = Array.from(new Set(rows.map((r: any) => r.roles?.name).filter(Boolean)));
-  const isGlobal = rows.some((r: any) => r.branch_id === null);
+  const roleIds = rows.map((r) => r.role_id);
+  const roleNames = Array.from(new Set(rows.map((r) => r.roleName).filter(Boolean)));
+  const isGlobal = rows.some((r) => r.branch_id === null);
 
   const branchIds = new Set<string>();
-  rows.forEach((r: any) => { if (r.branch_id) branchIds.add(r.branch_id); });
+  rows.forEach((r) => { if (r.branch_id) branchIds.add(r.branch_id); });
 
-  const { data: barberRows } = await supabase
-    .from('barbers')
-    .select('branch_id')
-    .eq('staff_user_id', staffUserId)
-    .is('deleted_at', null);
-  (barberRows ?? []).forEach((b: any) => { if (b.branch_id) branchIds.add(b.branch_id); });
+  const barberRows = await db
+    .select({ branch_id: barbers.branchId })
+    .from(barbers)
+    .where(and(eq(barbers.staffUserId, staffUserId), isNull(barbers.deletedAt)));
+  barberRows.forEach((b) => { if (b.branch_id) branchIds.add(b.branch_id); });
 
   let permissionCodes: string[] = [];
   if (roleIds.length > 0) {
-    const { data: permRows } = await supabase
-      .from('role_permissions')
-      .select('permissions!inner(code)')
-      .in('role_id', roleIds);
-    permissionCodes = Array.from(
-      new Set((permRows ?? []).map((p: any) => p.permissions?.code).filter(Boolean))
-    );
+    const permRows = await db
+      .select({ code: permissions.code })
+      .from(rolePermissions)
+      .innerJoin(permissions, eq(rolePermissions.permissionId, permissions.id))
+      .where(inArray(rolePermissions.roleId, roleIds));
+    permissionCodes = Array.from(new Set(permRows.map((p) => p.code).filter(Boolean)));
   }
 
   return { roleNames, permissionCodes, branchIds: Array.from(branchIds), isGlobal };
@@ -89,26 +93,50 @@ export const getStaffAccessibleBranchIds = async (staffUserId: string): Promise<
 export const requirePermission = (permissionCode: string) => async ({ staffId, set }: any) => {
   if (!staffId) {
     set.status = 401;
-    return unauthorized;
+    return unauthorized();
   }
 
   const { permissionCodes } = await getRbacProfile(staffId);
   if (!permissionCodes.includes(permissionCode)) {
     set.status = 403;
-    return { success: false, message: `Forbidden: Requires permission '${permissionCode}'`, data: null };
+    return createErrorResponse(`Forbidden: Requires permission '${permissionCode}'`, null, null, null, {
+      context: 'rbac.requirePermission',
+      status: 403
+    });
+  }
+};
+
+export const requireAnyPermission = (permissionCodes: string[]) => async ({ staffId, set }: any) => {
+  if (!staffId) {
+    set.status = 401;
+    return unauthorized();
+  }
+
+  const profile = await getRbacProfile(staffId);
+  if (profile.roleNames.includes('super_admin')) return;
+
+  if (!permissionCodes.some((code) => profile.permissionCodes.includes(code))) {
+    set.status = 403;
+    return createErrorResponse(`Forbidden: Requires one of permissions '${permissionCodes.join("', '")}'`, null, null, null, {
+      context: 'rbac.requireAnyPermission',
+      status: 403
+    });
   }
 };
 
 export const requireRole = (roleCode: string) => async ({ staffId, set }: any) => {
   if (!staffId) {
     set.status = 401;
-    return unauthorized;
+    return unauthorized();
   }
 
   const { roleNames } = await getRbacProfile(staffId);
   if (!roleNames.includes(roleCode)) {
     set.status = 403;
-    return { success: false, message: `Forbidden: Requires role '${roleCode}'`, data: null };
+    return createErrorResponse(`Forbidden: Requires role '${roleCode}'`, null, null, null, {
+      context: 'rbac.requireRole',
+      status: 403
+    });
   }
 };
 
@@ -121,13 +149,16 @@ export const requireBranchScope = (branchIdSource: (ctx: any) => string | undefi
     const { staffId, set } = ctx;
     if (!staffId) {
       set.status = 401;
-      return unauthorized;
+      return unauthorized();
     }
 
     const targetBranchId = branchIdSource(ctx);
     if (!targetBranchId) {
       set.status = 400;
-      return { success: false, message: 'Parameter branch_id wajib disertakan', data: null };
+      return createErrorResponse('Parameter branch_id wajib disertakan', null, null, null, {
+        context: 'rbac.requireBranchScope',
+        status: 400
+      });
     }
 
     const profile = await getRbacProfile(staffId);
@@ -135,7 +166,10 @@ export const requireBranchScope = (branchIdSource: (ctx: any) => string | undefi
 
     if (!profile.branchIds.includes(targetBranchId)) {
       set.status = 403;
-      return { success: false, message: 'Forbidden: Access to this branch is restricted', data: null };
+      return createErrorResponse('Forbidden: Access to this branch is restricted', null, null, null, {
+        context: 'rbac.requireBranchScope',
+        status: 403
+      });
     }
   };
 
@@ -149,7 +183,7 @@ export const requireBranchScopeResolved = (resolver: (ctx: any) => Promise<strin
     const { staffId, set } = ctx;
     if (!staffId) {
       set.status = 401;
-      return unauthorized;
+      return unauthorized();
     }
 
     const profile = await getRbacProfile(staffId);
@@ -158,12 +192,18 @@ export const requireBranchScopeResolved = (resolver: (ctx: any) => Promise<strin
     const targetBranchId = await resolver(ctx);
     if (!targetBranchId) {
       set.status = 404;
-      return { success: false, message: 'Resource tidak ditemukan', data: null };
+      return createErrorResponse('Resource tidak ditemukan', null, null, null, {
+        context: 'rbac.requireBranchScopeResolved',
+        status: 404
+      });
     }
 
     if (!profile.branchIds.includes(targetBranchId)) {
       set.status = 403;
-      return { success: false, message: 'Forbidden: Access to this branch is restricted', data: null };
+      return createErrorResponse('Forbidden: Access to this branch is restricted', null, null, null, {
+        context: 'rbac.requireBranchScopeResolved',
+        status: 403
+      });
     }
   };
 
@@ -175,18 +215,20 @@ export const requireBarber = async (ctx: any) => {
   const { staffId, set } = ctx;
   if (!staffId) {
     set.status = 401;
-    return unauthorized;
+    return unauthorized();
   }
 
-  const { data: barber } = await supabase
-    .from('barbers')
-    .select('id')
-    .eq('staff_user_id', staffId)
-    .is('deleted_at', null)
-    .maybeSingle();
+  const [barber] = await db
+    .select({ id: barbers.id })
+    .from(barbers)
+    .where(and(eq(barbers.staffUserId, staffId), isNull(barbers.deletedAt)))
+    .limit(1);
 
   if (!barber) {
     set.status = 403;
-    return { success: false, message: 'Forbidden: endpoint ini hanya untuk barber', data: null };
+    return createErrorResponse('Forbidden: endpoint ini hanya untuk barber', null, null, null, {
+      context: 'rbac.requireBarber',
+      status: 403
+    });
   }
 };

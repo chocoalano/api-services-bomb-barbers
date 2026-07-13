@@ -1,4 +1,7 @@
-import { supabase } from '../../lib/supabase';
+import { db } from '../../lib/db';
+import { snakeKeys, toDbDate } from '../../db/helpers';
+import { promotions, barberPortfolios, barbers, notifications } from '../../db/schema';
+import { and, or, eq, ne, isNull, isNotNull, lte, gte, lt, asc, desc, sql, type SQL } from 'drizzle-orm';
 
 type ListQuery = {
   limit?: number | string;
@@ -43,22 +46,33 @@ export class ContentService {
     const limit = normalizeLimit(query.limit, 10, 30);
     const now = new Date().toISOString();
 
-    const { data, error } = await supabase
-      .from('promotions')
-      .select('id, title, subtitle, image_url, target_url, starts_at, ends_at, sort_order, created_at')
-      .eq('is_active', true)
-      .is('deleted_at', null)
-      .not('image_url', 'is', null)
-      .neq('image_url', '')
-      .or(`starts_at.is.null,starts_at.lte.${now}`)
-      .or(`ends_at.is.null,ends_at.gte.${now}`)
-      .order('sort_order', { ascending: true })
-      .order('created_at', { ascending: false })
-      .limit(limit);
-
-    if (error) {
-      throw new Error('Gagal mengambil daftar banner');
-    }
+    const data = snakeKeys(
+      await db
+        .select({
+          id: promotions.id,
+          title: promotions.title,
+          subtitle: promotions.subtitle,
+          image_url: promotions.imageUrl,
+          target_url: promotions.targetUrl,
+          starts_at: promotions.startsAt,
+          ends_at: promotions.endsAt,
+          sort_order: promotions.sortOrder,
+          created_at: promotions.createdAt
+        })
+        .from(promotions)
+        .where(
+          and(
+            eq(promotions.isActive, true),
+            isNull(promotions.deletedAt),
+            isNotNull(promotions.imageUrl),
+            ne(promotions.imageUrl, ''),
+            or(isNull(promotions.startsAt), lte(promotions.startsAt, now)),
+            or(isNull(promotions.endsAt), gte(promotions.endsAt, now))
+          )
+        )
+        .orderBy(asc(promotions.sortOrder), desc(promotions.createdAt))
+        .limit(limit)
+    );
 
     return data ?? [];
   }
@@ -66,46 +80,40 @@ export class ContentService {
   static async getAfterGallery(query: GalleryQuery = {}) {
     const limit = normalizeLimit(query.limit, 30, 100);
 
-    let galleryQuery = supabase
-      .from('barber_portfolios')
-      .select(`
-        id,
-        barber_id,
-        image_url,
-        caption,
-        created_at,
-        barbers!inner (
-          id,
-          branch_id,
-          display_name,
-          deleted_at
-        )
-      `)
-      .is('barbers.deleted_at', null)
-      .order('created_at', { ascending: false })
+    const conds: SQL[] = [isNull(barbers.deletedAt)];
+    if (query.barber_id) conds.push(eq(barberPortfolios.barberId, query.barber_id));
+    if (query.branch_id) conds.push(eq(barbers.branchId, query.branch_id));
+
+    const rows = await db
+      .select({
+        id: barberPortfolios.id,
+        barberId: barberPortfolios.barberId,
+        imageUrl: barberPortfolios.imageUrl,
+        caption: barberPortfolios.caption,
+        createdAt: barberPortfolios.createdAt,
+        barberIdRef: barbers.id,
+        branchId: barbers.branchId,
+        displayName: barbers.displayName,
+        deletedAt: barbers.deletedAt
+      })
+      .from(barberPortfolios)
+      .innerJoin(barbers, eq(barberPortfolios.barberId, barbers.id))
+      .where(and(...conds))
+      .orderBy(desc(barberPortfolios.createdAt))
       .limit(limit);
 
-    if (query.barber_id) {
-      galleryQuery = galleryQuery.eq('barber_id', query.barber_id);
-    }
-
-    if (query.branch_id) {
-      galleryQuery = galleryQuery.eq('barbers.branch_id', query.branch_id);
-    }
-
-    const { data, error } = await galleryQuery;
-
-    if (error) {
-      throw new Error('Gagal mengambil gallery layanan');
-    }
-
-    return (data ?? []).map((item: any) => ({
+    return rows.map((item) => ({
       id: item.id,
-      barber_id: item.barber_id,
-      image_url: item.image_url,
+      barber_id: item.barberId,
+      image_url: item.imageUrl,
       caption: item.caption,
-      created_at: item.created_at,
-      barber: Array.isArray(item.barbers) ? item.barbers[0] : item.barbers
+      created_at: item.createdAt,
+      barber: {
+        id: item.barberIdRef,
+        branch_id: item.branchId,
+        display_name: item.displayName,
+        deleted_at: item.deletedAt
+      }
     }));
   }
 
@@ -114,77 +122,96 @@ export class ContentService {
     const unreadOnly = normalizeBoolean(query.unread_only);
     assertIsoDate(query.before);
 
-    let notificationQuery = supabase
-      .from('notifications')
-      .select('id, title, body, type, sent_at, read_at, created_at')
-      .eq('recipient_type', 'customer')
-      .eq('recipient_id', customerId)
-      .is('deleted_at', null)
-      .order('created_at', { ascending: false })
-      .limit(limit);
+    const conds: SQL[] = [
+      eq(notifications.recipientType, 'customer'),
+      eq(notifications.recipientId, customerId),
+      isNull(notifications.deletedAt)
+    ];
+    if (unreadOnly) conds.push(isNull(notifications.readAt));
+    if (query.before) conds.push(lt(notifications.createdAt, query.before));
 
-    if (unreadOnly) {
-      notificationQuery = notificationQuery.is('read_at', null);
-    }
+    const data = snakeKeys(
+      await db
+        .select({
+          id: notifications.id,
+          title: notifications.title,
+          body: notifications.body,
+          type: notifications.type,
+          sent_at: notifications.sentAt,
+          read_at: notifications.readAt,
+          created_at: notifications.createdAt
+        })
+        .from(notifications)
+        .where(and(...conds))
+        .orderBy(desc(notifications.createdAt))
+        .limit(limit)
+    );
 
-    if (query.before) {
-      notificationQuery = notificationQuery.lt('created_at', query.before);
-    }
-
-    const { data, error } = await notificationQuery;
-
-    if (error) {
-      throw new Error('Gagal mengambil daftar notifikasi');
-    }
-
-    const { count, error: countError } = await supabase
-      .from('notifications')
-      .select('id', { count: 'exact', head: true })
-      .eq('recipient_type', 'customer')
-      .eq('recipient_id', customerId)
-      .is('read_at', null)
-      .is('deleted_at', null);
-
-    if (countError) {
-      throw new Error('Gagal menghitung notifikasi belum dibaca');
-    }
+    const countRows = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(notifications)
+      .where(
+        and(
+          eq(notifications.recipientType, 'customer'),
+          eq(notifications.recipientId, customerId),
+          isNull(notifications.readAt),
+          isNull(notifications.deletedAt)
+        )
+      );
 
     return {
       items: (data ?? []).map((item: any) => ({
         ...item,
         is_read: Boolean(item.read_at)
       })),
-      unread_count: count ?? 0
+      unread_count: Number(countRows[0]?.count ?? 0)
     };
   }
 
   static async markNotificationRead(customerId: string, notificationId: string) {
-    const { data, error } = await supabase
-      .from('notifications')
-      .update({ read_at: new Date().toISOString() })
-      .eq('id', notificationId)
-      .eq('recipient_id', customerId)
-      .eq('recipient_type', 'customer')
-      .is('deleted_at', null)
-      .select('id, read_at')
-      .maybeSingle();
+    await db
+      .update(notifications)
+      .set({ readAt: toDbDate(new Date()) })
+      .where(
+        and(
+          eq(notifications.id, notificationId),
+          eq(notifications.recipientId, customerId),
+          eq(notifications.recipientType, 'customer'),
+          isNull(notifications.deletedAt)
+        )
+      );
 
-    if (error) throw new Error('Gagal menandai notifikasi sebagai dibaca');
+    const [data] = await db
+      .select({ id: notifications.id, read_at: notifications.readAt })
+      .from(notifications)
+      .where(
+        and(
+          eq(notifications.id, notificationId),
+          eq(notifications.recipientId, customerId),
+          eq(notifications.recipientType, 'customer'),
+          isNull(notifications.deletedAt)
+        )
+      )
+      .limit(1);
+
     if (!data) throw new Error('Notifikasi tidak ditemukan atau bukan milik Anda');
     return data;
   }
 
   static async markAllNotificationsRead(customerId: string) {
-    const { data, error } = await supabase
-      .from('notifications')
-      .update({ read_at: new Date().toISOString() })
-      .eq('recipient_id', customerId)
-      .eq('recipient_type', 'customer')
-      .is('read_at', null)
-      .is('deleted_at', null)
-      .select('id');
+    const res: any = await db
+      .update(notifications)
+      .set({ readAt: toDbDate(new Date()) })
+      .where(
+        and(
+          eq(notifications.recipientId, customerId),
+          eq(notifications.recipientType, 'customer'),
+          isNull(notifications.readAt),
+          isNull(notifications.deletedAt)
+        )
+      );
 
-    if (error) throw new Error('Gagal menandai semua notifikasi sebagai dibaca');
-    return { updated_count: (data ?? []).length };
+    const updated = (Array.isArray(res) ? res[0]?.affectedRows : res?.affectedRows) ?? 0;
+    return { updated_count: updated };
   }
 }

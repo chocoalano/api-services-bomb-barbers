@@ -1,54 +1,61 @@
-import { supabase } from '../../../lib/supabase';
+import { randomUUID } from 'crypto';
+import { db } from '../../../lib/db';
+import { snakeKeys, camelKeys } from '../../../db/helpers';
+import { branchExpenses } from '../../../db/schema';
+import { and, eq, desc } from 'drizzle-orm';
 
 export class ExpenseService {
   async getExpenses(branchId: string) {
-    const { data, error } = await supabase
-      .from('branch_expenses')
-      .select('*')
-      .eq('branch_id', branchId)
-      .order('expense_date', { ascending: false });
-    
-    if (error) throw new Error(error.message);
-    return data;
+    return snakeKeys(
+      await db
+        .select()
+        .from(branchExpenses)
+        .where(eq(branchExpenses.branchId, branchId))
+        .orderBy(desc(branchExpenses.expenseDate))
+    );
   }
 
-  async createExpense(branchId: string, payload: { amount: number, description: string, expense_date: string }) {
-    const { data, error } = await supabase
-      .from('branch_expenses')
-      .insert({
-        branch_id: branchId,
-        amount: payload.amount,
-        description: payload.description,
-        expense_date: payload.expense_date
-      })
-      .select('*')
-      .single();
-
-    if (error) throw new Error(error.message);
-    return data;
+  async createExpense(branchId: string, payload: { amount: number; description: string; expense_date: string }) {
+    const id = randomUUID();
+    await db.insert(branchExpenses).values({
+      id,
+      branchId,
+      amount: payload.amount,
+      description: payload.description,
+      expenseDate: payload.expense_date
+    });
+    const [row] = snakeKeys(await db.select().from(branchExpenses).where(eq(branchExpenses.id, id)).limit(1));
+    return row;
   }
 
-  async updateExpense(branchId: string, expenseId: string, payload: { amount?: number, description?: string, expense_date?: string }) {
-    const { data, error } = await supabase
-      .from('branch_expenses')
-      .update(payload)
-      .eq('id', expenseId)
-      .eq('branch_id', branchId)
-      .select('*')
-      .single();
-
-    if (error) throw new Error(error.message);
-    return data;
+  async updateExpense(
+    branchId: string,
+    expenseId: string,
+    payload: { amount?: number; description?: string; expense_date?: string }
+  ) {
+    const setClause = camelKeys(
+      Object.fromEntries(Object.entries(payload).filter(([, v]) => v !== undefined))
+    );
+    if (Object.keys(setClause).length > 0) {
+      await db
+        .update(branchExpenses)
+        .set(setClause)
+        .where(and(eq(branchExpenses.id, expenseId), eq(branchExpenses.branchId, branchId)));
+    }
+    const [row] = snakeKeys(
+      await db
+        .select()
+        .from(branchExpenses)
+        .where(and(eq(branchExpenses.id, expenseId), eq(branchExpenses.branchId, branchId)))
+        .limit(1)
+    );
+    return row;
   }
 
   async deleteExpense(branchId: string, expenseId: string) {
-    const { error } = await supabase
-      .from('branch_expenses')
-      .delete()
-      .eq('id', expenseId)
-      .eq('branch_id', branchId);
-    
-    if (error) throw new Error(error.message);
+    await db
+      .delete(branchExpenses)
+      .where(and(eq(branchExpenses.id, expenseId), eq(branchExpenses.branchId, branchId)));
     return true;
   }
 }

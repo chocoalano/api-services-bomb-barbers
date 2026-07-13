@@ -1,6 +1,6 @@
 import { describe, expect, it, beforeAll, afterAll } from 'bun:test';
 import { app } from '../src/app';
-import { supabase } from '../src/lib/supabase';
+import { testDb } from '../src/lib/test-db';
 import * as argon2 from 'argon2';
 
 const API_PREFIX = '/api/v1';
@@ -33,25 +33,25 @@ describe('Commission & Revenue Share Module', () => {
     const suffix = crypto.randomUUID().split('-')[0];
 
     // 1. Master Data
-    const { data: region } = await supabase.from('regions').insert({ code: `RC${suffix.toString().slice(-4)}`, name: 'Comm Region' }).select('id').single();
+    const { data: region } = await testDb.from('regions').insert({ code: `RC${suffix.toString().slice(-4)}`, name: 'Comm Region' }).select('id').single();
     if (region) regionId = region.id;
 
-    const { data: branch } = await supabase.from('branches').insert({ name: 'Comm Branch', region_id: regionId }).select('id').single();
+    const { data: branch } = await testDb.from('branches').insert({ name: 'Comm Branch', region_id: regionId }).select('id').single();
     if (branch) branchId = branch.id;
 
-    const { data: customer } = await supabase.from('customers').insert({ full_name: 'CComm', email: `cc${suffix}@test.com`, phone: `555${suffix}`, password_hash: pwHash }).select('id').single();
+    const { data: customer } = await testDb.from('customers').insert({ full_name: 'CComm', email: `cc${suffix}@test.com`, phone: `555${suffix}`, password_hash: pwHash }).select('id').single();
     if (customer) customerId = customer.id;
 
-    const { data: barber } = await supabase.from('staff_users').insert({ full_name: 'BComm', email: `bc${suffix}@test.com`, password_hash: pwHash }).select('id').single();
+    const { data: barber } = await testDb.from('staff_users').insert({ full_name: 'BComm', email: `bc${suffix}@test.com`, password_hash: pwHash }).select('id').single();
     let staffUserId = barber?.id || '';
     barberStaffId = staffUserId;
-    const { data: bData, error: bErr } = await supabase.from('barbers').insert({ staff_user_id: staffUserId, branch_id: branchId, display_name: 'Barber Comm' }).select('id').single();
+    const { data: bData, error: bErr } = await testDb.from('barbers').insert({ staff_user_id: staffUserId, branch_id: branchId, display_name: 'Barber Comm' }).select('id').single();
     if (bErr) throw new Error('Barber Insert Error: ' + bErr.message);
     barberId = bData.id;
 
-    const { data: admin } = await supabase.from('staff_users').insert({ full_name: 'AComm', email: `ac${suffix}@test.com`, password_hash: pwHash }).select('id').single();
+    const { data: admin } = await testDb.from('staff_users').insert({ full_name: 'AComm', email: `ac${suffix}@test.com`, password_hash: pwHash }).select('id').single();
     if (admin) adminId = admin.id;
-    const { data: branchAdminRole } = await supabase
+    const { data: branchAdminRole } = await testDb
       .from('roles')
       .select('id')
       .eq('name', 'branch_admin')
@@ -60,7 +60,7 @@ describe('Commission & Revenue Share Module', () => {
       throw new Error('Role branch_admin atau admin test tidak tersedia');
     }
     branchAdminRoleId = branchAdminRole.id;
-    const { error: roleAssignmentError } = await supabase
+    const { error: roleAssignmentError } = await testDb
       .from('staff_user_roles')
       .insert({
         staff_user_id: adminId,
@@ -71,7 +71,7 @@ describe('Commission & Revenue Share Module', () => {
       throw new Error(`Gagal memberikan scope cabang pada admin test: ${roleAssignmentError.message}`);
     }
 
-    const { data: svc } = await supabase.from('services').insert({ name: 'CommCut', default_duration_min: 30 }).select('id').single();
+    const { data: svc } = await testDb.from('services').insert({ name: 'CommCut', default_duration_min: 30 }).select('id').single();
     if (svc) serviceId = svc.id;
 
     // Login
@@ -85,35 +85,35 @@ describe('Commission & Revenue Share Module', () => {
     const now = new Date().toISOString();
     
     // Global: 10/10/80
-    const { data: r1 } = await supabase.from('commission_rules').insert({ scope: 'global', barber_pct: 10, branch_pct: 10, hq_pct: 80, effective_from: now, tip_to_barber: true }).select('id').single();
+    const { data: r1 } = await testDb.from('commission_rules').insert({ scope: 'global', barber_pct: 10, branch_pct: 10, hq_pct: 80, effective_from: now, tip_to_barber: true }).select('id').single();
     if (r1) ruleGlobalId = r1.id;
 
     // Region: 20/20/60
-    const { data: r2 } = await supabase.from('commission_rules').insert({ scope: 'region', scope_ref_id: regionId, barber_pct: 20, branch_pct: 20, hq_pct: 60, effective_from: now, tip_to_barber: true }).select('id').single();
+    const { data: r2 } = await testDb.from('commission_rules').insert({ scope: 'region', scope_ref_id: regionId, barber_pct: 20, branch_pct: 20, hq_pct: 60, effective_from: now, tip_to_barber: true }).select('id').single();
     if (r2) ruleRegionId = r2.id;
 
     // Branch: 30/30/40
-    const { data: r3 } = await supabase.from('commission_rules').insert({ scope: 'branch', scope_ref_id: branchId, barber_pct: 30, branch_pct: 30, hq_pct: 40, effective_from: now, tip_to_barber: true }).select('id').single();
+    const { data: r3 } = await testDb.from('commission_rules').insert({ scope: 'branch', scope_ref_id: branchId, barber_pct: 30, branch_pct: 30, hq_pct: 40, effective_from: now, tip_to_barber: true }).select('id').single();
     if (r3) ruleBranchId = r3.id;
 
     // Service: 40/40/20
-    const { data: r4 } = await supabase.from('commission_rules').insert({ scope: 'service', scope_ref_id: serviceId, barber_pct: 40, branch_pct: 40, hq_pct: 20, effective_from: now, tip_to_barber: true }).select('id').single();
+    const { data: r4 } = await testDb.from('commission_rules').insert({ scope: 'service', scope_ref_id: serviceId, barber_pct: 40, branch_pct: 40, hq_pct: 20, effective_from: now, tip_to_barber: true }).select('id').single();
     if (r4) ruleServiceId = r4.id;
 
     // Barber: 50/30/20 (50% barber)
-    const { data: r5 } = await supabase.from('commission_rules').insert({ scope: 'barber', scope_ref_id: barberId, barber_pct: 50, branch_pct: 30, hq_pct: 20, effective_from: now, tip_to_barber: true }).select('id').single();
+    const { data: r5 } = await testDb.from('commission_rules').insert({ scope: 'barber', scope_ref_id: barberId, barber_pct: 50, branch_pct: 30, hq_pct: 20, effective_from: now, tip_to_barber: true }).select('id').single();
     if (r5) ruleBarberId = r5.id;
 
     // 3. Setup Appointment
-    const { data: apt, error: aptErr } = await supabase.from('appointments').insert({
+    const { data: apt, error: aptErr } = await testDb.from('appointments').insert({
       branch_id: branchId, customer_id: customerId, barber_id: barberId, source: 'walk_in', status: 'completed'
     }).select('id').single();
     if (aptErr) throw new Error('Apt Error: ' + aptErr.message);
     if (apt) aptId = apt.id;
 
-    await supabase.from('appointment_services').insert({ appointment_id: aptId, service_id: serviceId, price_amount: 100000, duration_min: 30 });
+    await testDb.from('appointment_services').insert({ appointment_id: aptId, service_id: serviceId, price_amount: 100000, duration_min: 30 });
 
-    const { data: pay, error: pErr } = await supabase.from('payments').insert({
+    const { data: pay, error: pErr } = await testDb.from('payments').insert({
       appointment_id: aptId, branch_id: branchId, service_amount: 100000, product_amount: 0, discount_amount: 0, tip_amount: 15000, total_amount: 115000, method: 'cash', status: 'paid', paid_at: now
     }).select('id').single();
     if (pErr) throw new Error('Payment Insert Error: ' + pErr.message);
@@ -122,18 +122,18 @@ describe('Commission & Revenue Share Module', () => {
 
   afterAll(async () => {
     const appointmentIds = [aptId, apt2Id, apt3Id].filter(Boolean);
-    await supabase.from('commission_entries').delete().in('appointment_id', appointmentIds);
-    await supabase.from('commission_rules').delete().in('id', [ruleGlobalId, ruleRegionId, ruleBranchId, ruleServiceId, ruleBarberId]);
-    await supabase.from('payments').delete().in('appointment_id', appointmentIds);
-    await supabase.from('appointment_services').delete().in('appointment_id', appointmentIds);
-    await supabase.from('appointments').delete().in('id', appointmentIds);
-    await supabase.from('staff_user_roles').delete().eq('staff_user_id', adminId);
-    await supabase.from('services').delete().eq('id', serviceId);
-    await supabase.from('barbers').delete().eq('id', barberId);
-    await supabase.from('staff_users').delete().in('id', [barberStaffId, adminId]);
-    await supabase.from('customers').delete().eq('id', customerId);
-    await supabase.from('branches').delete().eq('id', branchId);
-    await supabase.from('regions').delete().eq('id', regionId);
+    await testDb.from('commission_entries').delete().in('appointment_id', appointmentIds);
+    await testDb.from('commission_rules').delete().in('id', [ruleGlobalId, ruleRegionId, ruleBranchId, ruleServiceId, ruleBarberId]);
+    await testDb.from('payments').delete().in('appointment_id', appointmentIds);
+    await testDb.from('appointment_services').delete().in('appointment_id', appointmentIds);
+    await testDb.from('appointments').delete().in('id', appointmentIds);
+    await testDb.from('staff_user_roles').delete().eq('staff_user_id', adminId);
+    await testDb.from('services').delete().eq('id', serviceId);
+    await testDb.from('barbers').delete().eq('id', barberId);
+    await testDb.from('staff_users').delete().in('id', [barberStaffId, adminId]);
+    await testDb.from('customers').delete().eq('id', customerId);
+    await testDb.from('branches').delete().eq('id', branchId);
+    await testDb.from('regions').delete().eq('id', regionId);
   });
 
   it('1. Resolusi rule harus memilih rule barber mengalahkan yang lain (Prioritas 5)', async () => {
@@ -158,7 +158,7 @@ describe('Commission & Revenue Share Module', () => {
   });
 
   it('2. Total split selalu sama persis dengan base_amount + tip', async () => {
-    const { data: comm } = await supabase.from('commission_entries').select('*').eq('appointment_id', aptId).single();
+    const { data: comm } = await testDb.from('commission_entries').select('*').eq('appointment_id', aptId).single();
     expect(comm).toBeDefined();
     if (comm) {
       const totalShares = Number(comm.barber_share) + Number(comm.branch_share) + Number(comm.hq_share);
@@ -192,13 +192,13 @@ describe('Commission & Revenue Share Module', () => {
 
   it('5. Skenario Multi-Servis dihitung terpisah', async () => {
     // Setup apt2 with 2 services (100k and 50k)
-    const { data: apt2 } = await supabase.from('appointments').insert({ branch_id: branchId, customer_id: customerId, barber_id: barberId, source: 'walk_in', status: 'completed' }).select('id').single();
+    const { data: apt2 } = await testDb.from('appointments').insert({ branch_id: branchId, customer_id: customerId, barber_id: barberId, source: 'walk_in', status: 'completed' }).select('id').single();
     apt2Id = apt2!.id;
-    await supabase.from('appointment_services').insert([
+    await testDb.from('appointment_services').insert([
       { appointment_id: apt2!.id, service_id: serviceId, price_amount: 100000, duration_min: 30 },
       { appointment_id: apt2!.id, service_id: serviceId, price_amount: 50000, duration_min: 15 }
     ]);
-    await supabase.from('payments').insert({ appointment_id: apt2!.id, branch_id: branchId, service_amount: 150000, product_amount: 0, discount_amount: 0, tip_amount: 0, total_amount: 150000, method: 'cash', status: 'paid', paid_at: new Date().toISOString() });
+    await testDb.from('payments').insert({ appointment_id: apt2!.id, branch_id: branchId, service_amount: 150000, product_amount: 0, discount_amount: 0, tip_amount: 0, total_amount: 150000, method: 'cash', status: 'paid', paid_at: new Date().toISOString() });
 
     const res = await app.handle(new Request(`http://localhost${API_PREFIX}/admin/appointments/${apt2!.id}/calculate-commission`, { method: 'POST', headers: { 'Authorization': `Bearer ${adminToken}` } }));
     const body = await res.json();
@@ -214,11 +214,11 @@ describe('Commission & Revenue Share Module', () => {
   });
 
   it('6. Skenario Servis Gratis (Rp 0) namun ada Tip, mencegah Infinity Error', async () => {
-    const { data: apt3 } = await supabase.from('appointments').insert({ branch_id: branchId, customer_id: customerId, barber_id: barberId, source: 'walk_in', status: 'completed' }).select('id').single();
+    const { data: apt3 } = await testDb.from('appointments').insert({ branch_id: branchId, customer_id: customerId, barber_id: barberId, source: 'walk_in', status: 'completed' }).select('id').single();
     apt3Id = apt3!.id;
-    await supabase.from('appointment_services').insert({ appointment_id: apt3!.id, service_id: serviceId, price_amount: 0, duration_min: 30 });
+    await testDb.from('appointment_services').insert({ appointment_id: apt3!.id, service_id: serviceId, price_amount: 0, duration_min: 30 });
     // Rp 0 base, Tip 50000
-    await supabase.from('payments').insert({ appointment_id: apt3!.id, branch_id: branchId, service_amount: 0, product_amount: 0, discount_amount: 0, tip_amount: 50000, total_amount: 50000, method: 'cash', status: 'paid', paid_at: new Date().toISOString() });
+    await testDb.from('payments').insert({ appointment_id: apt3!.id, branch_id: branchId, service_amount: 0, product_amount: 0, discount_amount: 0, tip_amount: 50000, total_amount: 50000, method: 'cash', status: 'paid', paid_at: new Date().toISOString() });
 
     const res = await app.handle(new Request(`http://localhost${API_PREFIX}/admin/appointments/${apt3!.id}/calculate-commission`, { method: 'POST', headers: { 'Authorization': `Bearer ${adminToken}` } }));
     const body = await res.json();

@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import { io as createClient, Socket } from 'socket.io-client';
 import { app } from '../src/app';
 import { io } from '../src/lib/socket';
-import { supabase } from '../src/lib/supabase';
+import { testDb } from '../src/lib/test-db';
 import {
   getTrackingBarberKey,
   getTrackingCustomerKey,
@@ -66,7 +66,7 @@ const emitWithAck = <T = any>(socket: Socket, event: string, payload: unknown) =
   });
 
 beforeAll(async () => {
-  const { error: homeServiceSchemaError } = await supabase
+  const { error: homeServiceSchemaError } = await testDb
     .from('appointments')
     .select('fulfillment_type')
     .limit(1);
@@ -93,19 +93,19 @@ beforeAll(async () => {
     password
   });
 
-  const { data: fajar } = await supabase
+  const { data: fajar } = await testDb
     .from('customers')
     .select('id')
     .eq('email', 'fajar.customer@example.com')
     .single();
   fajarCustomerId = fajar!.id;
 
-  const { data: daviesStaff } = await supabase
+  const { data: daviesStaff } = await testDb
     .from('staff_users')
     .select('id')
     .eq('email', 'davies@bombbarbershop.com')
     .single();
-  const { data: budi } = await supabase
+  const { data: budi } = await testDb
     .from('barbers')
     .select('id, branch_id')
     .eq('staff_user_id', daviesStaff!.id)
@@ -131,7 +131,7 @@ beforeAll(async () => {
     });
   }
 
-  const { data: appointment, error: appointmentError } = await supabase
+  const { data: appointment, error: appointmentError } = await testDb
     .from('appointments')
     .insert(appointmentPayload)
     .select('id')
@@ -139,7 +139,7 @@ beforeAll(async () => {
   if (appointmentError) throw appointmentError;
 
   appointmentId = appointment!.id;
-  const { data: activeSession } = await supabase
+  const { data: activeSession } = await testDb
     .from('tracking_sessions')
     .select('id')
     .eq('appointment_id', appointmentId)
@@ -149,7 +149,7 @@ beforeAll(async () => {
     .maybeSingle();
 
   if (!activeSession) {
-    const { data: session, error } = await supabase
+    const { data: session, error } = await testDb
       .from('tracking_sessions')
       .insert({
         appointment_id: appointmentId,
@@ -188,7 +188,7 @@ beforeAll(async () => {
       destination_longitude: 106.8100
     });
   }
-  const { data: noSessionApt, error: noSessionError } = await supabase
+  const { data: noSessionApt, error: noSessionError } = await testDb
     .from('appointments')
     .insert(noSessionPayload)
     .select('id')
@@ -207,14 +207,14 @@ afterAll(async () => {
     await RealtimeTrackingService.cleanup(id);
   }
   if (createdSessionId) {
-    await supabase.from('tracking_sessions').delete().eq('id', createdSessionId);
+    await testDb.from('tracking_sessions').delete().eq('id', createdSessionId);
   }
   if (noSessionCreatedId) {
-    await supabase.from('tracking_sessions').delete().eq('id', noSessionCreatedId);
+    await testDb.from('tracking_sessions').delete().eq('id', noSessionCreatedId);
   }
   if (allAppointmentIds.length) {
-    await supabase.from('tracking_sessions').delete().in('appointment_id', allAppointmentIds);
-    await supabase.from('appointments').delete().in('id', allAppointmentIds);
+    await testDb.from('tracking_sessions').delete().in('appointment_id', allAppointmentIds);
+    await testDb.from('appointments').delete().in('id', allAppointmentIds);
   }
   if (socketStarted) {
     await Promise.race([

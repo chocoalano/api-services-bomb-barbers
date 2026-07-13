@@ -1,7 +1,9 @@
 import { Server, Socket } from 'socket.io';
 import { createAdapter } from '@socket.io/redis-adapter';
 import { verifyAccessToken } from '../middleware/auth';
-import { supabase } from './supabase';
+import { db } from './db';
+import { customers, staffUsers, barbers } from '../db/schema';
+import { and, eq, isNull } from 'drizzle-orm';
 import { socketPubClient, socketSubClient } from './redis';
 import {
   LocationInput,
@@ -62,6 +64,25 @@ const acknowledge = (
   }
 };
 
+const acknowledgeError = (
+  socket: Socket,
+  event: string,
+  error: any,
+  ack?: SocketAck
+) => {
+  logger.warn(
+    {
+      err: error,
+      event,
+      socketId: socket.id,
+      userId: socket.data.userId ?? null,
+      role: socket.data.role ?? null
+    },
+    `[Socket] ${event} failed`
+  );
+  acknowledge(ack, { success: false, error: error?.message ?? 'Socket event gagal' });
+};
+
 const getSocketActor = (socket: Socket): TrackingActor => ({
   role: socket.data.role,
   userId: socket.data.userId,
@@ -78,6 +99,7 @@ const validateAppointmentId = (appointmentId: unknown) => {
 io.use(async (socket, next) => {
   const token = socket.handshake.auth?.token;
   if (!token || typeof token !== 'string') {
+    logger.warn({ socketId: socket.id }, '[SocketAuth] Token tidak ditemukan');
     return next(new Error('AUTH_REQUIRED: Token tidak ditemukan'));
   }
 
@@ -88,56 +110,50 @@ io.use(async (socket, next) => {
     }
 
     if (payload.role === 'customer') {
-      const { data: customer } = await supabase
-        .from('customers')
-        .select('id, is_active, deleted_at')
-        .eq('id', payload.sub)
-        .maybeSingle();
-      if (!customer?.is_active || customer.deleted_at) {
+      const [customer] = await db
+        .select({ isActive: customers.isActive, deletedAt: customers.deletedAt })
+        .from(customers)
+        .where(eq(customers.id, payload.sub))
+        .limit(1);
+      if (!customer?.isActive || customer.deletedAt) {
+        logger.warn({ socketId: socket.id, userId: payload.sub, role: payload.role }, '[SocketAuth] Customer tidak aktif');
         return next(new Error('AUTH_INACTIVE: Akun customer tidak aktif'));
       }
     } else {
-      const { data: staff } = await supabase
-        .from('staff_users')
-        .select('id, is_active, deleted_at')
-        .eq('id', payload.sub)
-        .maybeSingle();
-      if (!staff?.is_active || staff.deleted_at) {
+      const [staff] = await db
+        .select({ isActive: staffUsers.isActive, deletedAt: staffUsers.deletedAt })
+        .from(staffUsers)
+        .where(eq(staffUsers.id, payload.sub))
+        .limit(1);
+      if (!staff?.isActive || staff.deletedAt) {
+        logger.warn({ socketId: socket.id, userId: payload.sub, role: payload.role }, '[SocketAuth] Staff tidak aktif');
         return next(new Error('AUTH_INACTIVE: Akun staff tidak aktif'));
       }
 
-      const [{ data: barber }, rbac] = await Promise.all([
-        supabase
-          .from('barbers')
-          .select('id')
-          .eq('staff_user_id', payload.sub)
-          .is('deleted_at', null)
-          .maybeSingle(),
+      const [barberRows, rbac] = await Promise.all([
+        db
+          .select({ id: barbers.id })
+          .from(barbers)
+          .where(and(eq(barbers.staffUserId, payload.sub), isNull(barbers.deletedAt)))
+          .limit(1),
         getRbacProfile(payload.sub)
       ]);
-      socket.data.barberId = barber?.id || null;
+      socket.data.barberId = barberRows[0]?.id || null;
       socket.data.branchIds = rbac.branchIds;
       socket.data.isGlobal = rbac.isGlobal;
     }
 
     socket.data.userId = payload.sub;
     socket.data.role = payload.role;
-    socket.data.tokenExp = payload.exp || null;
     next();
-  } catch {
-    next(new Error('AUTH_INVALID: Token tidak valid atau sudah kadaluarsa'));
+  } catch (error) {
+    logger.warn({ err: error, socketId: socket.id }, '[SocketAuth] Token tidak valid');
+    next(new Error('AUTH_INVALID: Token tidak valid'));
   }
 });
 
 io.on('connection', async (socket: Socket) => {
   const { userId, role } = socket.data;
-  const tokenExpiryTimer = socket.data.tokenExp
-    ? setTimeout(() => {
-        socket.emit('auth:expired', { message: 'Access token sudah kedaluwarsa' });
-        socket.disconnect(true);
-      }, Math.max(0, socket.data.tokenExp * 1000 - Date.now()))
-    : null;
-  tokenExpiryTimer?.unref();
 
   socket.on('join_appointment', async (appointmentId: unknown, ack?: SocketAck) => {
     try {
@@ -146,7 +162,7 @@ io.on('connection', async (socket: Socket) => {
       await socket.join(`appointment:${id}`);
       acknowledge(ack, { success: true, data: { appointment_id: id } });
     } catch (error: any) {
-      acknowledge(ack, { success: false, error: error.message });
+      acknowledgeError(socket, 'join_appointment', error, ack);
     }
   });
 
@@ -156,7 +172,7 @@ io.on('connection', async (socket: Socket) => {
       await socket.leave(`appointment:${id}`);
       acknowledge(ack, { success: true, data: { appointment_id: id } });
     } catch (error: any) {
-      acknowledge(ack, { success: false, error: error.message });
+      acknowledgeError(socket, 'leave_appointment', error, ack);
     }
   });
 
@@ -180,7 +196,7 @@ io.on('connection', async (socket: Socket) => {
       });
       acknowledge(ack, { success: true, data: result });
     } catch (error: any) {
-      acknowledge(ack, { success: false, error: error.message });
+      acknowledgeError(socket, 'push_customer_location', error, ack);
     }
   });
 
@@ -213,7 +229,7 @@ io.on('connection', async (socket: Socket) => {
       });
       acknowledge(ack, { success: true, data: result });
     } catch (error: any) {
-      acknowledge(ack, { success: false, error: error.message });
+      acknowledgeError(socket, 'push_barber_location', error, ack);
     }
   });
 
@@ -234,12 +250,11 @@ io.on('connection', async (socket: Socket) => {
       await socket.join(`branch:${id}`);
       acknowledge(ack, { success: true, data: { branch_id: id } });
     } catch (error: any) {
-      acknowledge(ack, { success: false, error: error.message });
+      acknowledgeError(socket, 'join_branch', error, ack);
     }
   });
 
   socket.on('disconnect', (reason) => {
-    if (tokenExpiryTimer) clearTimeout(tokenExpiryTimer);
     logger.debug({ socketId: socket.id, userId, role, reason }, 'Socket disconnected');
   });
 
@@ -290,15 +305,24 @@ export type ChatMessageEvent = {
   sender_role: 'customer' | 'barber';
   text: string;
   created_at: string;
+  /** Untuk delivery ke room personal penerima (badge unread global). */
+  customer_id?: string | null;
+  barber_id?: string | null;
 };
 
 export const emitAppointmentStatusChanged = (data: AppointmentStatusEvent) => {
   const { appointment_id, barber_id, customer_id, branch_id } = data;
 
-  io.to(`appointment:${appointment_id}`).emit('appointment:status_changed', data);
-  if (barber_id) io.to(`barber:${barber_id}`).emit('appointment:status_changed', data);
-  if (customer_id) io.to(`customer:${customer_id}`).emit('appointment:status_changed', data);
-  if (branch_id) io.to(`branch:${branch_id}`).emit('appointment:status_changed', data);
+  // Gabungkan seluruh room ke dalam SATU emit (deduped) agar socket yang
+  // tergabung di lebih dari satu room — mis. customer yang sedang di room
+  // `appointment:<id>` DAN room personal `customer:<id>` — hanya menerima event
+  // SEKALI. Emit terpisah per-room membuat event dobel → double refetch/toast.
+  // Pola sama dengan emitChatMessage.
+  let target = io.to(`appointment:${appointment_id}`);
+  if (barber_id) target = target.to(`barber:${barber_id}`);
+  if (customer_id) target = target.to(`customer:${customer_id}`);
+  if (branch_id) target = target.to(`branch:${branch_id}`);
+  target.emit('appointment:status_changed', data);
 };
 
 export const emitBarberLocation = (data: BarberLocationEvent) => {
@@ -314,7 +338,26 @@ export const emitNewOrder = (barberId: string, event: NewOrderEvent) => {
 };
 
 export const emitChatMessage = (data: ChatMessageEvent) => {
-  io.to(`appointment:${data.appointment_id}`).emit('appointment:chat_message', data);
+  // Satu emit ke gabungan room agar socket yang tergabung di lebih dari satu
+  // room (mis. sedang di layar tracking DAN room personalnya) hanya menerima
+  // event SEKALI. Room personal (customer:/barber:) selalu tergabung selama
+  // socket hidup, sehingga badge unread global tetap bertambah walau penerima
+  // tidak sedang berada di room appointment.
+  let target = io.to(`appointment:${data.appointment_id}`);
+  if (data.customer_id) target = target.to(`customer:${data.customer_id}`);
+  if (data.barber_id) target = target.to(`barber:${data.barber_id}`);
+  target.emit('appointment:chat_message', data);
+};
+
+export type WalletRefundEvent = {
+  customer_id: string;
+  appointment_id: string;
+  amount: number;
+  new_balance: number;
+};
+
+export const emitWalletRefundCredited = (data: WalletRefundEvent) => {
+  io.to(`customer:${data.customer_id}`).emit('wallet:refund_credited', data);
 };
 
 export const startSocketServer = (port: number) => {

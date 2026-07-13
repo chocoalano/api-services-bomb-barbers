@@ -1,5 +1,56 @@
 import * as argon2 from 'argon2';
-import { supabase } from '../lib/supabase';
+import { randomUUID } from 'crypto';
+import { and, eq, ne, isNull, is, Table, getTableName, getTableColumns } from 'drizzle-orm';
+import { db, pool } from '../lib/db';
+import { logger } from '../lib/logger';
+import { snakeKeys, camelKeys, toDbDate } from './helpers';
+import * as baseSchema from './schema';
+import * as extraSchema from './schema-extra';
+
+// Registry nama-tabel-SQL → objek tabel Drizzle (agar helper generik seed tetap
+// bisa menerima nama tabel string (helper generik).
+const ALL_TABLES = { ...baseSchema, ...extraSchema } as Record<string, any>;
+const TABLE_BY_NAME: Record<string, any> = {};
+for (const val of Object.values(ALL_TABLES)) {
+  if (is(val, Table)) TABLE_BY_NAME[getTableName(val)] = val;
+}
+function tableFor(name: string): any {
+  const t = TABLE_BY_NAME[name];
+  if (!t) throw new Error(`Tabel tidak dikenal di schema: ${name}`);
+  return t;
+}
+
+// Kolom datetime & decimal per tabel (di-cache) untuk normalisasi nilai:
+// datetime ISO → format MySQL; decimal number → string.
+const dtCache = new Map<string, Set<string>>();
+const decCache = new Map<string, Set<string>>();
+function typedCols(name: string, cache: Map<string, Set<string>>, prefix: string): Set<string> {
+  if (cache.has(name)) return cache.get(name)!;
+  const set = new Set<string>();
+  for (const [key, col] of Object.entries(getTableColumns(tableFor(name)))) {
+    if (String((col as any).getSQLType?.() ?? '').startsWith(prefix)) set.add(key);
+  }
+  cache.set(name, set);
+  return set;
+}
+function normalizeValues(name: string, snakeObj: Record<string, any>): Record<string, any> {
+  const camel = camelKeys(snakeObj);
+  for (const k of typedCols(name, dtCache, 'datetime')) {
+    if (camel[k] != null) camel[k] = toDbDate(camel[k]);
+  }
+  for (const k of typedCols(name, decCache, 'decimal')) {
+    if (typeof camel[k] === 'number') camel[k] = String(camel[k]);
+  }
+  return camel;
+}
+function whereForMatch(name: string, match: Record<string, any>) {
+  const cols = getTableColumns(tableFor(name));
+  const camel = camelKeys(match);
+  const conds = Object.entries(camel).map(([k, v]) =>
+    v === null ? isNull((cols as any)[k]) : eq((cols as any)[k], v)
+  );
+  return conds.length ? and(...conds) : undefined;
+}
 
 const DEMO_PASSWORD = 'password123';
 const EFFECTIVE_FROM = '2026-01-01T00:00:00.000Z';
@@ -49,48 +100,34 @@ const dateOnly = (date: Date) => date.toISOString().slice(0, 10);
 const atJakartaTime = (date: Date, time: string) =>
   new Date(`${dateOnly(date)}T${time}+07:00`).toISOString();
 
-const applyMatch = (query: any, match: RecordData) => {
-  let nextQuery = query;
-
-  for (const [key, value] of Object.entries(match)) {
-    nextQuery = value === null ? nextQuery.is(key, null) : nextQuery.eq(key, value);
-  }
-
-  return nextQuery;
-};
-
 async function findOne(table: string, match: RecordData) {
-  const { data, error } = await applyMatch(
-    supabase.from(table).select('*'),
-    match
-  ).limit(1).maybeSingle();
+  const t = tableFor(table);
+  const [row] = await db.select().from(t).where(whereForMatch(table, match)).limit(1);
+  return row ? snakeKeys(row) : null;
+}
 
-  if (error) throw error;
-  return data;
+async function findById(table: string, id: string) {
+  const t = tableFor(table);
+  const cols = getTableColumns(t);
+  const [row] = await db.select().from(t).where(eq((cols as any).id, id)).limit(1);
+  return row ? snakeKeys(row) : null;
 }
 
 async function upsertBy(table: string, match: RecordData, data: RecordData) {
+  const t = tableFor(table);
   const existing = await findOne(table, match);
 
   if (existing) {
     const { id: _id, ...updateData } = data;
-    const { data: rows, error } = await applyMatch(
-      supabase.from(table).update(updateData).select('*'),
-      match
-    );
-
-    if (error) throw error;
-    return Array.isArray(rows) ? rows[0] : rows;
+    if (Object.keys(updateData).length > 0) {
+      await db.update(t).set(normalizeValues(table, updateData)).where(whereForMatch(table, match));
+    }
+    return findById(table, existing.id);
   }
 
-  const { data: inserted, error } = await supabase
-    .from(table)
-    .insert(data)
-    .select('*')
-    .single();
-
-  if (error) throw error;
-  return inserted;
+  const id = (data.id ?? match.id ?? randomUUID()) as string;
+  await db.insert(t).values({ ...normalizeValues(table, data), id } as any);
+  return findById(table, id);
 }
 
 async function upsertRowsBy(table: string, rows: Array<{ match: RecordData; data: RecordData }>) {
@@ -103,64 +140,21 @@ async function upsertRowsBy(table: string, rows: Array<{ match: RecordData; data
   return result;
 }
 
-
-async function runSupabaseMutation(label: string, query: any): Promise<void> {
-  const { error } = await query;
-
-  if (error) {
-    console.error(`Supabase mutation failed: ${label}`, error);
-    throw error;
-  }
-}
-
 async function resetServicesToHaircutPremiumOnly(): Promise<void> {
-  // Bersihkan seluruh relasi service lama terlebih dulu supaya foreign key tidak menahan delete service.
-  await runSupabaseMutation(
-    'delete appointment_services except Haircut Premium',
-    supabase
-      .from('appointment_services')
-      .delete()
-      .neq('service_id', ID.service.haircutPremium)
-  );
-
+  // Bersihkan relasi service lama dulu supaya foreign key tidak menahan delete service.
+  await db.delete(baseSchema.appointmentServices).where(ne(baseSchema.appointmentServices.serviceId, ID.service.haircutPremium));
   // Reset seluruh harga service, lalu seed ulang hanya harga Haircut Premium Rp100.000.
-  await runSupabaseMutation(
-    'delete service_prices except Haircut Premium',
-    supabase
-      .from('service_prices')
-      .delete()
-      .neq('service_id', ID.service.haircutPremium)
-  );
-
-  await runSupabaseMutation(
-    'delete existing Haircut Premium service_prices',
-    supabase
-      .from('service_prices')
-      .delete()
-      .eq('service_id', ID.service.haircutPremium)
-  );
-
+  await db.delete(baseSchema.servicePrices).where(ne(baseSchema.servicePrices.serviceId, ID.service.haircutPremium));
+  await db.delete(baseSchema.servicePrices).where(eq(baseSchema.servicePrices.serviceId, ID.service.haircutPremium));
   // Hapus semua service selain Haircut Premium.
-  await runSupabaseMutation(
-    'delete services except Haircut Premium',
-    supabase
-      .from('services')
-      .delete()
-      .neq('id', ID.service.haircutPremium)
-  );
+  await db.delete(baseSchema.services).where(ne(baseSchema.services.id, ID.service.haircutPremium));
 }
 
 async function resetAppointmentToHaircutPremiumOnly(
   appointmentId: string,
   serviceId: string,
 ): Promise<void> {
-  await runSupabaseMutation(
-    `delete appointment_services for appointment ${appointmentId}`,
-    supabase
-      .from('appointment_services')
-      .delete()
-      .eq('appointment_id', appointmentId)
-  );
+  await db.delete(baseSchema.appointmentServices).where(eq(baseSchema.appointmentServices.appointmentId, appointmentId));
 
   await upsertBy('appointment_services', {
     appointment_id: appointmentId,
@@ -174,13 +168,7 @@ async function resetAppointmentToHaircutPremiumOnly(
 }
 
 async function deleteAppointmentProducts(appointmentId: string): Promise<void> {
-  await runSupabaseMutation(
-    `delete appointment_products for appointment ${appointmentId}`,
-    supabase
-      .from('appointment_products')
-      .delete()
-      .eq('appointment_id', appointmentId)
-  );
+  await db.delete(baseSchema.appointmentProducts).where(eq(baseSchema.appointmentProducts.appointmentId, appointmentId));
 }
 
 async function seedRolesAndPermissions() {
@@ -195,12 +183,15 @@ async function seedRolesAndPermissions() {
   const permissionCodes = [
     'manage_branch',
     'manage_staff',
+    'manage_users',
+    'manage_roles',
     'manage_barber',
     'manage_service',
     'manage_appointment',
     'manage_payment',
     'manage_commission',
-    'view_audit_log'
+    'view_audit_log',
+    'view_customers'
   ];
 
   const permissions = await upsertRowsBy(
@@ -216,7 +207,7 @@ async function seedRolesAndPermissions() {
 
   const rolePermissionMap: Record<string, string[]> = {
     super_admin: permissionCodes,
-    branch_admin: ['manage_appointment', 'manage_payment', 'manage_commission', 'view_audit_log'],
+    branch_admin: ['manage_barber', 'manage_appointment', 'manage_payment', 'manage_commission', 'view_audit_log', 'view_customers'],
     barber: []
   };
 
@@ -244,7 +235,7 @@ async function seedRegionsAndBranches() {
     name: 'Jakarta'
   });
 
-  // Cabang utama — alamat resmi dari bombbarbershop.com
+  // Cabang utama — alamat resmi dari bomb.com
   const kedoya = await upsertBy('branches', { id: ID.branch.kedoya }, {
     id: ID.branch.kedoya,
     region_id: jakarta.id,
@@ -258,7 +249,7 @@ async function seedRegionsAndBranches() {
 
   const branches = { kedoya };
 
-  // Jam operasional: 10:00–21:00 setiap hari (sesuai website bombbarbershop.com)
+  // [REVISI B7] Jam operasional 08:00–22:00 setiap hari (slot kelipatan 2 jam).
   for (const day of [0, 1, 2, 3, 4, 5, 6]) {
     await upsertBy('branch_operating_hours', {
       branch_id: kedoya.id,
@@ -266,8 +257,8 @@ async function seedRegionsAndBranches() {
     }, {
       branch_id: kedoya.id,
       day_of_week: day,
-      open_time: '10:00:00',
-      close_time: '21:00:00'
+      open_time: '08:00:00',
+      close_time: '22:00:00'
     });
   }
 
@@ -290,27 +281,27 @@ async function seedStaff(roleByName: Record<string, any>, branches: Record<strin
   const staffRows = await upsertRowsBy('staff_users', [
     {
       match: { id: ID.staff.hq },
-      data: { id: ID.staff.hq, full_name: 'Jordan', email: 'jordan@bombbarbershop.com', phone: '6281322096650', password_hash: passwordHash, is_active: true }
+      data: { id: ID.staff.hq, full_name: 'Jordan', email: 'jordan@bomb.com', phone: '6281322096650', password_hash: passwordHash, is_active: true }
     },
     {
       match: { id: ID.staff.adminKedoya },
-      data: { id: ID.staff.adminKedoya, full_name: 'Nadia Kedoya Admin', email: 'admin.kedoya@bombbarbershop.com', phone: '6281322096652', password_hash: passwordHash, is_active: true }
+      data: { id: ID.staff.adminKedoya, full_name: 'Nadia Kedoya Admin', email: 'admin.kedoya@bomb.com', phone: '6281322096652', password_hash: passwordHash, is_active: true }
     },
     {
       match: { id: ID.staff.davies },
-      data: { id: ID.staff.davies, full_name: 'Davies', email: 'davies@bombbarbershop.com', phone: '6281322096654', password_hash: passwordHash, is_active: true }
+      data: { id: ID.staff.davies, full_name: 'Davies', email: 'davies@bomb.com', phone: '6281322096654', password_hash: passwordHash, is_active: true }
     },
     {
       match: { id: ID.staff.barron },
-      data: { id: ID.staff.barron, full_name: 'Barron', email: 'barron@bombbarbershop.com', phone: '6281322096655', password_hash: passwordHash, is_active: true }
+      data: { id: ID.staff.barron, full_name: 'Barron', email: 'barron@bomb.com', phone: '6281322096655', password_hash: passwordHash, is_active: true }
     },
     {
       match: { id: ID.staff.reza },
-      data: { id: ID.staff.reza, full_name: 'Reza Mahendra', email: 'reza@bombbarbershop.com', phone: '6281322096656', password_hash: passwordHash, is_active: true }
+      data: { id: ID.staff.reza, full_name: 'Reza Mahendra', email: 'reza@bomb.com', phone: '6281322096656', password_hash: passwordHash, is_active: true }
     },
     {
       match: { id: ID.staff.dimas },
-      data: { id: ID.staff.dimas, full_name: 'Dimas Wicaksono', email: 'dimas@bombbarbershop.com', phone: '6281322096657', password_hash: passwordHash, is_active: true }
+      data: { id: ID.staff.dimas, full_name: 'Dimas Wicaksono', email: 'dimas@bomb.com', phone: '6281322096657', password_hash: passwordHash, is_active: true }
     }
   ]);
 
@@ -318,12 +309,12 @@ async function seedStaff(roleByName: Record<string, any>, branches: Record<strin
 
   await upsertRowsBy('staff_user_roles', [
     {
-      match: { staff_user_id: staffByEmail['jordan@bombbarbershop.com'].id, role_id: roleByName.super_admin.id, branch_id: null },
-      data: { staff_user_id: staffByEmail['jordan@bombbarbershop.com'].id, role_id: roleByName.super_admin.id, branch_id: null }
+      match: { staff_user_id: staffByEmail['jordan@bomb.com'].id, role_id: roleByName.super_admin.id, branch_id: null },
+      data: { staff_user_id: staffByEmail['jordan@bomb.com'].id, role_id: roleByName.super_admin.id, branch_id: null }
     },
     {
-      match: { staff_user_id: staffByEmail['admin.kedoya@bombbarbershop.com'].id, role_id: roleByName.branch_admin.id, branch_id: branches.kedoya.id },
-      data: { staff_user_id: staffByEmail['admin.kedoya@bombbarbershop.com'].id, role_id: roleByName.branch_admin.id, branch_id: branches.kedoya.id }
+      match: { staff_user_id: staffByEmail['admin.kedoya@bomb.com'].id, role_id: roleByName.branch_admin.id, branch_id: branches.kedoya.id },
+      data: { staff_user_id: staffByEmail['admin.kedoya@bomb.com'].id, role_id: roleByName.branch_admin.id, branch_id: branches.kedoya.id }
     },
   ]);
 
@@ -346,7 +337,7 @@ async function seedStaff(roleByName: Record<string, any>, branches: Record<strin
       match: { id: ID.barber.davies },
       data: {
         id: ID.barber.davies,
-        staff_user_id: staffByEmail['davies@bombbarbershop.com'].id,
+        staff_user_id: staffByEmail['davies@bomb.com'].id,
         branch_id: branches.kedoya.id,
         display_name: 'Davies',
         bio: 'Spesialis Haircut Premium, skin fade, dan classic gentleman cut. Berpengalaman 5+ tahun.',
@@ -361,7 +352,7 @@ async function seedStaff(roleByName: Record<string, any>, branches: Record<strin
       match: { id: ID.barber.barron },
       data: {
         id: ID.barber.barron,
-        staff_user_id: staffByEmail['barron@bombbarbershop.com'].id,
+        staff_user_id: staffByEmail['barron@bomb.com'].id,
         branch_id: branches.kedoya.id,
         display_name: 'Barron',
         bio: 'Stylist senior untuk Haircut Premium, konsultasi gaya, dan grooming transformation.',
@@ -376,7 +367,7 @@ async function seedStaff(roleByName: Record<string, any>, branches: Record<strin
       match: { id: ID.barber.reza },
       data: {
         id: ID.barber.reza,
-        staff_user_id: staffByEmail['reza@bombbarbershop.com'].id,
+        staff_user_id: staffByEmail['reza@bomb.com'].id,
         branch_id: branches.kedoya.id,
         display_name: 'Reza',
         bio: 'Fokus pada Haircut Premium dengan detail potongan bersih dan rapi.',
@@ -391,7 +382,7 @@ async function seedStaff(roleByName: Record<string, any>, branches: Record<strin
       match: { id: ID.barber.dimas },
       data: {
         id: ID.barber.dimas,
-        staff_user_id: staffByEmail['dimas@bombbarbershop.com'].id,
+        staff_user_id: staffByEmail['dimas@bomb.com'].id,
         branch_id: branches.kedoya.id,
         display_name: 'Dimas',
         bio: 'Barber serba bisa untuk Haircut Premium dan styling profesional harian.',
@@ -429,15 +420,15 @@ async function seedCustomers(passwordHash: string) {
   const customers = await upsertRowsBy('customers', [
     {
       match: { id: ID.customer.raka },
-      data: { id: ID.customer.raka, full_name: 'Raka Pratama', phone: '6281290001001', email: 'raka.customer@example.com', password_hash: passwordHash, points_balance: 120, is_active: true }
+      data: { id: ID.customer.raka, full_name: 'Raka Pratama', phone: '6281290001001', email: 'raka@customer.com', password_hash: passwordHash, points_balance: 120, is_active: true }
     },
     {
       match: { id: ID.customer.dewi },
-      data: { id: ID.customer.dewi, full_name: 'Dewi Lestari', phone: '6281290001002', email: 'dewi.customer@example.com', password_hash: passwordHash, points_balance: 80, is_active: true }
+      data: { id: ID.customer.dewi, full_name: 'Dewi Lestari', phone: '6281290001002', email: 'dewi@customer.com', password_hash: passwordHash, points_balance: 80, is_active: true }
     },
     {
       match: { id: ID.customer.fajar },
-      data: { id: ID.customer.fajar, full_name: 'Fajar Nugroho', phone: '6281290001003', email: 'fajar.customer@example.com', password_hash: passwordHash, points_balance: 35, is_active: true }
+      data: { id: ID.customer.fajar, full_name: 'Fajar Nugroho', phone: '6281290001003', email: 'fajar@customer.com', password_hash: passwordHash, points_balance: 35, is_active: true }
     }
   ]);
 
@@ -533,13 +524,7 @@ async function seedContent(branches: Record<string, any>, barbers: Record<string
   ]);
 
   // Nonaktifkan seluruh promo lama yang masih menyebut service lain.
-  await runSupabaseMutation(
-    'disable old promotions except Haircut Premium',
-    supabase
-      .from('promotions')
-      .update({ is_active: false })
-      .neq('title', 'Haircut Premium')
-  );
+  await db.update(baseSchema.promotions).set({ isActive: false }).where(ne(baseSchema.promotions.title, 'Haircut Premium'));
 
   await upsertRowsBy('barber_portfolios', [
     {
@@ -560,7 +545,7 @@ async function seedContent(branches: Record<string, any>, barbers: Record<string
     }
   ]);
 
-  const raka = customers['raka.customer@example.com'];
+  const raka = customers['raka@customer.com'];
 
   await upsertRowsBy('notifications', [
     {
@@ -602,12 +587,12 @@ async function seedOperationalData(context: {
   // Appointment selesai kemarin: Raka — Haircut Premium di Kedoya oleh Davies
   const completedAppointment = await upsertBy('appointments', {
     branch_id: branches.kedoya.id,
-    customer_id: customers['raka.customer@example.com'].id,
+    customer_id: customers['raka@customer.com'].id,
     scheduled_at: atJakartaTime(yesterday, '14:00:00')
   }, {
     branch_id: branches.kedoya.id,
     barber_id: barbers['Davies'].id,
-    customer_id: customers['raka.customer@example.com'].id,
+    customer_id: customers['raka@customer.com'].id,
     source: 'online_booking',
     status: 'completed',
     scheduled_at: atJakartaTime(yesterday, '14:00:00'),
@@ -660,7 +645,7 @@ async function seedOperationalData(context: {
 
   await upsertBy('reviews', { appointment_id: completedAppointment.id }, {
     appointment_id: completedAppointment.id,
-    customer_id: customers['raka.customer@example.com'].id,
+    customer_id: customers['raka@customer.com'].id,
     barber_id: barbers['Davies'].id,
     rating: '5.00',
     comment: 'Haircut Premium rapi banget. Davies sangat profesional dan detail.'
@@ -669,12 +654,12 @@ async function seedOperationalData(context: {
   // Appointment aktif hari ini: Dewi — Haircut Premium di Kedoya oleh Barron
   const inQueueAppointment = await upsertBy('appointments', {
     branch_id: branches.kedoya.id,
-    customer_id: customers['dewi.customer@example.com'].id,
+    customer_id: customers['dewi@customer.com'].id,
     scheduled_at: atJakartaTime(now, '10:30:00')
   }, {
     branch_id: branches.kedoya.id,
     barber_id: barbers['Barron'].id,
-    customer_id: customers['dewi.customer@example.com'].id,
+    customer_id: customers['dewi@customer.com'].id,
     source: 'walk_in',
     status: 'in_queue',
     scheduled_at: atJakartaTime(now, '10:30:00'),
@@ -699,12 +684,12 @@ async function seedOperationalData(context: {
   // Appointment confirmed besok: Fajar — Haircut Premium di Kedoya oleh Davies
   const confirmedAppointment = await upsertBy('appointments', {
     branch_id: branches.kedoya.id,
-    customer_id: customers['fajar.customer@example.com'].id,
+    customer_id: customers['fajar@customer.com'].id,
     scheduled_at: atJakartaTime(tomorrow, '11:00:00')
   }, {
     branch_id: branches.kedoya.id,
     barber_id: barbers['Davies'].id,
-    customer_id: customers['fajar.customer@example.com'].id,
+    customer_id: customers['fajar@customer.com'].id,
     source: 'online_booking',
     status: 'confirmed',
     scheduled_at: atJakartaTime(tomorrow, '11:00:00'),
@@ -727,12 +712,12 @@ async function seedOperationalData(context: {
   // Appointment pending lusa: Raka — Haircut Premium di Kedoya oleh Reza
   const pendingAppointment = await upsertBy('appointments', {
     branch_id: branches.kedoya.id,
-    customer_id: customers['raka.customer@example.com'].id,
+    customer_id: customers['raka@customer.com'].id,
     scheduled_at: atJakartaTime(nextDay, '13:00:00')
   }, {
     branch_id: branches.kedoya.id,
     barber_id: barbers['Reza'].id,
-    customer_id: customers['raka.customer@example.com'].id,
+    customer_id: customers['raka@customer.com'].id,
     source: 'online_booking',
     status: 'pending',
     scheduled_at: atJakartaTime(nextDay, '13:00:00'),
@@ -802,7 +787,7 @@ async function seedOperationalData(context: {
       match: { entity_type: 'payment', entity_id: payment.id, action: 'payment_paid' },
       data: {
         actor_type: 'staff',
-        actor_id: staffByEmail['admin.kedoya@bombbarbershop.com'].id,
+        actor_id: staffByEmail['admin.kedoya@bomb.com'].id,
         action: 'payment_paid',
         entity_type: 'payment',
         entity_id: payment.id,
@@ -814,7 +799,7 @@ async function seedOperationalData(context: {
       match: { entity_type: 'appointment', entity_id: completedAppointment.id, action: 'appointment_completed' },
       data: {
         actor_type: 'staff',
-        actor_id: staffByEmail['admin.kedoya@bombbarbershop.com'].id,
+        actor_id: staffByEmail['admin.kedoya@bomb.com'].id,
         action: 'appointment_completed',
         entity_type: 'appointment',
         entity_id: completedAppointment.id,
@@ -824,7 +809,7 @@ async function seedOperationalData(context: {
     }
   ]);
 
-  const fajar = customers['fajar.customer@example.com'];
+  const fajar = customers['fajar@customer.com'];
 
   await upsertBy('notifications', {
     recipient_id: fajar.id,
@@ -844,6 +829,19 @@ async function seedOperationalData(context: {
 }
 
 async function main() {
+  // Guard produksi (B5): seed menyuntik akun demo ber-password publik & meng-upsert
+  // data referensi. Tolak di produksi kecuali dinyatakan eksplisit.
+  const SEED_ALLOWED =
+    process.argv.includes('--allow-prod') || process.env.ALLOW_PROD_SEED === 'yes';
+  if (process.env.NODE_ENV === 'production' && !SEED_ALLOWED) {
+    logger.error('[db:seed] Ditolak berjalan saat NODE_ENV=production tanpa konfirmasi eksplisit');
+    console.error(
+      '❌ db:seed menolak berjalan saat NODE_ENV=production karena menyuntik akun demo ' +
+      'dengan password publik. Jika sengaja (mis. hanya data referensi), jalankan dengan --allow-prod.'
+    );
+    process.exit(1);
+  }
+
   const isStarter = process.argv.includes('--starter');
   console.log(`Seeding Bomb Barbershop${isStarter ? ' (starter — tanpa data appointment)' : ''}...\n`);
 
@@ -874,13 +872,20 @@ async function main() {
 
   console.log('\nSeeding completed successfully.');
   console.log('\nDemo credentials (password: ' + DEMO_PASSWORD + '):');
-  console.log('  HQ Owner  : jordan@bombbarbershop.com');
-  console.log('  Admin     : admin.kedoya@bombbarbershop.com');
-  console.log('  Barbers   : davies@bombbarbershop.com / barron@bombbarbershop.com / reza@bombbarbershop.com / dimas@bombbarbershop.com');
-  console.log('  Customers : raka.customer@example.com / dewi.customer@example.com / fajar.customer@example.com');
+  console.log('  HQ Owner  : jordan@bomb.com');
+  console.log('  Admin     : admin.kedoya@bomb.com');
+  console.log('  Barbers   : davies@bomb.com / barron@bomb.com / reza@bomb.com / dimas@bomb.com');
+  console.log('  Customers : raka@customer.com / dewi@customer.com / fajar@customer.com');
 }
 
-main().catch((err) => {
-  console.error('Seeding failed:', err);
-  process.exit(1);
-});
+main()
+  .then(async () => {
+    await pool.end();
+    process.exit(0);
+  })
+  .catch(async (err) => {
+    logger.error({ err }, '[db:seed] Seeding failed');
+    console.error('Seeding failed:', err);
+    await pool.end().catch(() => {});
+    process.exit(1);
+  });

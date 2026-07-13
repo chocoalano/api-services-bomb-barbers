@@ -1,6 +1,6 @@
 import { describe, expect, it, beforeAll, afterAll } from 'bun:test';
 import { app } from '../src/app';
-import { supabase } from '../src/lib/supabase';
+import { testDb } from '../src/lib/test-db';
 
 const API_PREFIX = '/api/v1';
 
@@ -23,14 +23,14 @@ describe('Catalog Module', () => {
 
   beforeAll(async () => {
     // 1. Create Region
-    const { data: region } = await supabase.from('regions').insert({ code: 'TST', name: 'Test Region' }).select('id').single();
+    const { data: region } = await testDb.from('regions').insert({ code: 'TST', name: 'Test Region' }).select('id').single();
     if (region) regionId = region.id;
 
     // 2. Create Branch
-    const { data: branch } = await supabase.from('branches').insert({ name: 'Test Branch Catalog', region_id: regionId }).select('id').single();
+    const { data: branch } = await testDb.from('branches').insert({ name: 'Test Branch Catalog', region_id: regionId }).select('id').single();
     if (branch) branchId = branch.id;
 
-    const { data: sA } = await supabase.from('services').insert({
+    const { data: sA } = await testDb.from('services').insert({
       name: 'Active Service',
       description: 'Active haircut service',
       default_duration_min: 30,
@@ -38,7 +38,7 @@ describe('Catalog Module', () => {
     }).select('id').single();
     if (sA) serviceAId = sA.id;
 
-    const { data: sPaged } = await supabase.from('services').insert({
+    const { data: sPaged } = await testDb.from('services').insert({
       name: 'Active Service Extra',
       description: 'Second active service for pagination',
       default_duration_min: 45,
@@ -46,13 +46,13 @@ describe('Catalog Module', () => {
     }).select('id').single();
     if (sPaged) servicePagedId = sPaged.id;
 
-    const { data: sDel } = await supabase.from('services').insert({ name: 'Deleted Service', default_duration_min: 30, deleted_at: new Date().toISOString() }).select('id').single();
+    const { data: sDel } = await testDb.from('services').insert({ name: 'Deleted Service', default_duration_min: 30, deleted_at: new Date().toISOString() }).select('id').single();
     if (sDel) serviceDeletedId = sDel.id;
 
-    const { data: sInact } = await supabase.from('services').insert({ name: 'Inactive Service', default_duration_min: 30, is_active: false }).select('id').single();
+    const { data: sInact } = await testDb.from('services').insert({ name: 'Inactive Service', default_duration_min: 30, is_active: false }).select('id').single();
     if (sInact) serviceInactiveId = sInact.id;
 
-    const { data: sFut } = await supabase.from('services').insert({ name: 'Future Service', default_duration_min: 30 }).select('id').single();
+    const { data: sFut } = await testDb.from('services').insert({ name: 'Future Service', default_duration_min: 30 }).select('id').single();
     if (sFut) serviceFutureId = sFut.id;
 
     // 4. Create Service Prices
@@ -61,7 +61,7 @@ describe('Catalog Module', () => {
     const future = new Date(now.getTime() + 10000000).toISOString();
     const pastFar = new Date(now.getTime() - 20000000).toISOString();
 
-    await supabase.from('service_prices').insert([
+    await testDb.from('service_prices').insert([
       // Default Price (P3)
       { service_id: serviceAId, price_amount: defaultPrice, effective_from: past },
       // Region Price (P2)
@@ -79,10 +79,10 @@ describe('Catalog Module', () => {
 
   afterAll(async () => {
     // Cleanup
-    await supabase.from('service_prices').delete().in('service_id', [serviceAId, servicePagedId, serviceFutureId]);
-    await supabase.from('services').delete().in('id', [serviceAId, servicePagedId, serviceDeletedId, serviceInactiveId, serviceFutureId]);
-    await supabase.from('branches').delete().eq('id', branchId);
-    await supabase.from('regions').delete().eq('id', regionId);
+    await testDb.from('service_prices').delete().in('service_id', [serviceAId, servicePagedId, serviceFutureId]);
+    await testDb.from('services').delete().in('id', [serviceAId, servicePagedId, serviceDeletedId, serviceInactiveId, serviceFutureId]);
+    await testDb.from('branches').delete().eq('id', branchId);
+    await testDb.from('regions').delete().eq('id', regionId);
   });
 
   it('1. Harga branch mengalahkan harga region', async () => {
@@ -94,7 +94,7 @@ describe('Catalog Module', () => {
 
   it('2. Harga region mengalahkan harga default (Simulasi hapus branch price)', async () => {
     // Soft delete / remove the branch price first
-    await supabase.from('service_prices').delete().match({ service_id: serviceAId, branch_id: branchId });
+    await testDb.from('service_prices').delete().match({ service_id: serviceAId, branch_id: branchId });
 
     const res = await app.handle(new Request(`http://localhost${API_PREFIX}/branches/${branchId}/services/${serviceAId}/price`));
     const body = await res.json();
@@ -103,7 +103,7 @@ describe('Catalog Module', () => {
   });
 
   it('3. Harga default muncul jika region price dihapus', async () => {
-    await supabase.from('service_prices').delete().match({ service_id: serviceAId, region_id: regionId });
+    await testDb.from('service_prices').delete().match({ service_id: serviceAId, region_id: regionId });
 
     const res = await app.handle(new Request(`http://localhost${API_PREFIX}/branches/${branchId}/services/${serviceAId}/price`));
     const body = await res.json();

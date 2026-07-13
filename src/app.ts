@@ -3,7 +3,9 @@ import { cors } from "@elysiajs/cors";
 import { swagger } from "@elysiajs/swagger";
 import { staticPlugin } from "@elysiajs/static";
 import { errorHandler } from "./middleware/error-handler";
-import { createSuccessResponse } from "./shared/response";
+import { securityHeaders } from "./middleware/security-headers";
+import { requestLogger } from "./middleware/request-logger";
+import { createErrorResponse, createSuccessResponse } from "./shared/response";
 import { logger } from "./lib/logger";
 
 import { adminRoutes } from "./modules/admin/routes";
@@ -13,7 +15,9 @@ import { ADMIN_TAGS } from "./modules/admin/swagger";
 import { CUSTOMER_TAGS } from "./modules/customers/swagger";
 import { BARBER_TAGS } from "./modules/barbers/swagger";
 import { redis } from "./lib/redis";
-import { supabase } from "./lib/supabase";
+import { db } from "./lib/db";
+import { LocalStorage } from "./lib/storage";
+import { branches, authSessions, mediaAssets } from "./db/schema";
 
 const corsOrigins = (process.env.CORS_ORIGINS || '')
   .split(',')
@@ -24,16 +28,48 @@ if (process.env.NODE_ENV === 'production' && corsOrigins.length === 0) {
   throw new Error('CORS_ORIGINS wajib dikonfigurasi pada environment production.');
 }
 
+// Swagger/OpenAPI hanya di non-produksi agar seluruh permukaan API tidak
+// terekspos publik di prod. (HB1)
+const docsEnabled = process.env.NODE_ENV !== 'production';
+
 export const app = new Elysia()
   .use(cors({
     origin: corsOrigins.length > 0
       ? corsOrigins
-      : ['http://localhost:3000', 'http://localhost:5173'],
+      // 5174 = web server backoffice (asal request browser), 5173 = Vite dev assets.
+      : ['http://localhost:3000', 'http://localhost:5173', 'http://localhost:5174'],
     credentials: true
   }))
+  .use(securityHeaders)
+  .use(requestLogger)
   .use(staticPlugin({ assets: "public", prefix: "/public" }))
+  // Serving media privat via signed URL (HMAC + expiry) — pengganti signed URL storage lama. File publik disajikan langsung oleh staticPlugin.
+  .get("/media/private/*", async ({ params, query, set }: any) => {
+    const objectPath = params["*"] as string;
+    const expires = Number(query?.expires);
+    const sig = String(query?.sig ?? "");
+    if (!LocalStorage.verifySignature(objectPath, expires, sig)) {
+      set.status = 403;
+      return createErrorResponse("Signed URL tidak valid atau kedaluwarsa", null, null, null, {
+        context: 'media.private',
+        status: 403
+      });
+    }
+    try {
+      const buf = await LocalStorage.readPrivate(objectPath);
+      set.headers["content-type"] = "image/webp";
+      set.headers["cache-control"] = "private, max-age=60";
+      return new Response(new Uint8Array(buf));
+    } catch {
+      set.status = 404;
+      return createErrorResponse("Media tidak ditemukan", null, null, null, {
+        context: 'media.private',
+        status: 404
+      });
+    }
+  })
   .use(errorHandler)
-  .use(swagger({
+  .use(docsEnabled ? swagger({
     path: "/docs",
     documentation: {
       info: {
@@ -92,25 +128,20 @@ export const app = new Elysia()
         }
       }
     }
-  }))
+  }) : new Elysia())
   .get("/health", () => createSuccessResponse("Server is healthy", null))
   .get("/ready", async ({ set }) => {
     const [redisResult, databaseResult, authSchemaResult, mediaSchemaResult] = await Promise.allSettled([
       redis.ping(),
-      supabase.from('branches').select('id', { head: true, count: 'exact' }).limit(1),
-      supabase.from('auth_sessions' as any).select('id').limit(1),
-      supabase.from('media_assets' as any).select('id').limit(1)
+      db.select({ id: branches.id }).from(branches).limit(1),
+      db.select({ id: authSessions.id }).from(authSessions).limit(1),
+      db.select({ id: mediaAssets.id }).from(mediaAssets).limit(1)
     ]);
     const redisReady = redisResult.status === 'fulfilled' && redisResult.value === 'PONG';
-    const databaseReady =
-      databaseResult.status === 'fulfilled' &&
-      !databaseResult.value.error;
-    const authSchemaReady =
-      authSchemaResult.status === 'fulfilled' &&
-      !authSchemaResult.value.error;
-    const mediaSchemaReady =
-      mediaSchemaResult.status === 'fulfilled' &&
-      !mediaSchemaResult.value.error;
+    // Drizzle melempar bila query gagal, jadi 'fulfilled' = query berhasil.
+    const databaseReady = databaseResult.status === 'fulfilled';
+    const authSchemaReady = authSchemaResult.status === 'fulfilled';
+    const mediaSchemaReady = mediaSchemaResult.status === 'fulfilled';
 
     if (!redisReady || !databaseReady || !authSchemaReady || !mediaSchemaReady) {
       set.status = 503;

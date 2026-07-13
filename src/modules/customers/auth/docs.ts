@@ -177,7 +177,7 @@ export const customerAuthDocs = {
         customerValidationError,
         {
           status: 401,
-          description: 'Refresh token tidak valid, kedaluwarsa, atau customer sudah tidak aktif.',
+          description: 'Refresh token tidak valid, session sudah dicabut, atau customer sudah tidak aktif.',
           message: 'Refresh token tidak valid'
         },
         {

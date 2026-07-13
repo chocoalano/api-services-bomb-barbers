@@ -13,7 +13,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import { app } from '../src/app';
-import { supabase } from '../src/lib/supabase';
+import { testDb } from '../src/lib/test-db';
 
 const API = '/api/v1';
 const PASS = 'password123';
@@ -48,7 +48,7 @@ const req = async (method: string, path: string, token?: string, body?: any) => 
 };
 
 const insertApt = async (extra: Record<string, any> = {}): Promise<string> => {
-  const { data, error } = await supabase
+  const { data, error } = await testDb
     .from('appointments')
     .insert({
       branch_id: branchId,
@@ -84,16 +84,16 @@ beforeAll(async () => {
   barberToken = br.body?.data?.accessToken ?? '';
 
   // Resolve IDs
-  const { data: cust } = await supabase.from('customers').select('id').eq('email', 'fajar.customer@example.com').single();
+  const { data: cust } = await testDb.from('customers').select('id').eq('email', 'fajar.customer@example.com').single();
   customerId = cust!.id;
 
-  const { data: daviesStaff } = await supabase.from('staff_users').select('id').eq('email', 'davies@bombbarbershop.com').single();
-  const { data: daviesBarber } = await supabase.from('barbers').select('id, branch_id').eq('staff_user_id', daviesStaff!.id).single();
+  const { data: daviesStaff } = await testDb.from('staff_users').select('id').eq('email', 'davies@bombbarbershop.com').single();
+  const { data: daviesBarber } = await testDb.from('barbers').select('id, branch_id').eq('staff_user_id', daviesStaff!.id).single();
   barberId = daviesBarber!.id;
   branchId = daviesBarber!.branch_id;
 
   // Insert test notifications for fajar (user_id is required and uses customer id)
-  const { data: n1 } = await supabase.from('notifications').insert({
+  const { data: n1 } = await testDb.from('notifications').insert({
     user_id: customerId,
     recipient_id: customerId,
     recipient_type: 'customer',
@@ -104,7 +104,7 @@ beforeAll(async () => {
   }).select('id').single();
   notifId1 = n1!.id;
 
-  const { data: n2 } = await supabase.from('notifications').insert({
+  const { data: n2 } = await testDb.from('notifications').insert({
     user_id: customerId,
     recipient_id: customerId,
     recipient_type: 'customer',
@@ -129,9 +129,9 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await supabase.from('notifications').delete().in('id', [notifId1, notifId2].filter(Boolean));
-  await supabase.from('appointment_events').delete().in('appointment_id', cleanupAptIds);
-  await supabase.from('appointments').delete().in('id', cleanupAptIds);
+  await testDb.from('notifications').delete().in('id', [notifId1, notifId2].filter(Boolean));
+  await testDb.from('appointment_events').delete().in('appointment_id', cleanupAptIds);
+  await testDb.from('appointments').delete().in('id', cleanupAptIds);
 });
 
 // ── 1. Update customer profile ─────────────────────────────────────────────────
@@ -173,7 +173,7 @@ describe('PATCH /customers/me — update profil', () => {
 
   it('nomor telepon yang sudah digunakan → 400', async () => {
     // Get another customer's phone
-    const { data: other } = await supabase
+    const { data: other } = await testDb
       .from('customers')
       .select('phone')
       .neq('id', customerId)
@@ -209,7 +209,7 @@ describe('PATCH /customers/notifications/:id/read — tandai notifikasi dibaca',
   });
 
   it('read_at tersimpan di database', async () => {
-    const { data } = await supabase
+    const { data } = await testDb
       .from('notifications')
       .select('read_at')
       .eq('id', notifId1)
@@ -252,14 +252,14 @@ describe('PATCH /customers/notifications/read-all — tandai semua dibaca', () =
 
   it('setelah read-all, notifikasi ke-2 juga read_at terisi', async () => {
     // Reset notif2 to unread first
-    await supabase
+    await testDb
       .from('notifications')
       .update({ read_at: null })
       .eq('id', notifId2);
 
     await req('PATCH', `${API}/customers/notifications/read-all`, customerToken);
 
-    const { data } = await supabase
+    const { data } = await testDb
       .from('notifications')
       .select('read_at')
       .eq('id', notifId2)
@@ -315,7 +315,7 @@ describe('GET /customers/appointments/:id/payment — status pembayaran', () => 
 
   it('appointment yang punya pembayaran mengembalikan data pembayaran', async () => {
     // Find an existing appointment with payment
-    const { data: existing } = await supabase
+    const { data: existing } = await testDb
       .from('payments')
       .select('id, appointment_id, appointments!inner(customer_id)')
       .eq('appointments.customer_id', customerId)
@@ -360,7 +360,7 @@ describe('POST /barbers/appointments/:id/reject — tolak order', () => {
   });
 
   it('appointment menjadi cancelled di database', async () => {
-    const { data } = await supabase
+    const { data } = await testDb
       .from('appointments')
       .select('status')
       .eq('id', pendingAptId)
@@ -438,7 +438,7 @@ describe('PATCH /barbers/appointments/:id/no-show — tandai tidak hadir', () =>
   });
 
   it('appointment menjadi no_show di database', async () => {
-    const { data } = await supabase
+    const { data } = await testDb
       .from('appointments')
       .select('status')
       .eq('id', confirmedAptId)
@@ -490,7 +490,7 @@ describe('PATCH /barbers/me/status — set status kehadiran', () => {
   });
 
   it('status tersimpan di database barbers.live_status', async () => {
-    const { data } = await supabase
+    const { data } = await testDb
       .from('barbers')
       .select('live_status')
       .eq('id', barberId)

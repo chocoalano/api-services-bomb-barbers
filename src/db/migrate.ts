@@ -1,137 +1,87 @@
 import { readdir, readFile } from 'fs/promises';
 import { join } from 'path';
-import postgres from 'postgres';
-import {
-  maskDatabaseConnectionString,
-  resolveDatabaseConnection
-} from './connection';
-import { isMigrationRepresented } from './migration-baseline';
+import { pool, maskDatabaseConnectionString, resolveDatabaseConnectionString } from '../lib/db';
+import { logger } from '../lib/logger';
 
-const MIGRATIONS_DIR = join(import.meta.dir, '../../supabase/migrations');
+// Migrasi MySQL: terapkan file SQL hasil drizzle-kit di folder `drizzle/`.
+// Tiap file dipisah menjadi statement oleh penanda `--> statement-breakpoint`.
+const MIGRATIONS_DIR = join(import.meta.dir, '../../drizzle');
 
-interface Migration {
-  name: string;
-  sql: string;
-}
-
-async function getMigrations(): Promise<Migration[]> {
-  const files = await readdir(MIGRATIONS_DIR);
-  const sqlFiles = files.filter((f) => f.endsWith('.sql')).sort();
-
-  const migrations: Migration[] = [];
-  for (const file of sqlFiles) {
-    const sql = await readFile(join(MIGRATIONS_DIR, file), 'utf-8');
-    migrations.push({ name: file, sql });
+async function getMigrationFiles(): Promise<{ name: string; statements: string[] }[]> {
+  let files: string[];
+  try {
+    files = (await readdir(MIGRATIONS_DIR)).filter((f) => f.endsWith('.sql')).sort();
+  } catch {
+    return [];
   }
 
-  return migrations;
+  const out: { name: string; statements: string[] }[] = [];
+  for (const file of files) {
+    const raw = await readFile(join(MIGRATIONS_DIR, file), 'utf-8');
+    const statements = raw
+      .split('--> statement-breakpoint')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    out.push({ name: file, statements });
+  }
+  return out;
 }
 
 async function runMigrations(): Promise<void> {
-  console.log('🔄 Starting database migrations...\n');
+  console.log('🔄 Menjalankan migrasi MySQL...\n');
+  const connString = resolveDatabaseConnectionString();
+  if (connString) console.log(`📦 Database: ${maskDatabaseConnectionString(connString)}\n`);
 
+  const conn = await pool.getConnection();
   try {
-    const resolvedConnection = await resolveDatabaseConnection();
-    const connectionString = resolvedConnection.connectionString;
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS _migrations (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        name VARCHAR(255) NOT NULL UNIQUE,
+        executed_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)
+      )
+    `);
 
-    console.log(
-      `📦 Connecting to database: ${maskDatabaseConnectionString(connectionString)}`
-    );
-    if (resolvedConnection.source === 'linked-project-pooler') {
-      console.log(
-        'ℹ️  Direct host Supabase diganti otomatis dengan Session Pooler dari project yang terhubung (IPv4 compatible).\n'
-      );
-    } else {
-      console.log('');
-    }
+    const [appliedRows]: any = await conn.query('SELECT name FROM _migrations');
+    const applied = new Set<string>(appliedRows.map((r: any) => r.name));
 
-    const sql = postgres(connectionString, {
-      // Supabase transaction pooler tidak mendukung prepared statements.
-      // Opsi ini juga aman untuk direct/session connection.
-      prepare: false
-    });
+    const migrations = await getMigrationFiles();
+    console.log(`📋 Ditemukan ${migrations.length} file migrasi\n`);
 
-    try {
-      // Ensure migrations table exists
-      await sql`
-        CREATE TABLE IF NOT EXISTS _migrations (
-          id SERIAL PRIMARY KEY,
-          name VARCHAR(255) UNIQUE NOT NULL,
-          executed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-        );
-      `;
-
-      const migrations = await getMigrations();
-      console.log(`📋 Found ${migrations.length} migration files\n`);
-
-      if (migrations.length === 0) {
-        console.log('✅ No migrations to run');
-        return;
+    let count = 0;
+    for (const migration of migrations) {
+      if (applied.has(migration.name)) {
+        console.log(`⏭️  Sudah diterapkan: ${migration.name}`);
+        continue;
       }
-
-      // Get applied migrations
-      const applied = await sql<{ name: string }[]>`
-        SELECT name FROM _migrations ORDER BY executed_at ASC;
-      `;
-
-      const appliedNames = new Set(applied.map((row) => row.name));
-      console.log(`✅ Previously applied: ${applied.length || 'none'}\n`);
-
-      let appliedCount = 0;
-      let baselinedCount = 0;
-      for (const migration of migrations) {
-        if (appliedNames.has(migration.name)) {
-          console.log(`⏭️  Skipped (already applied): ${migration.name}`);
-          continue;
+      console.log(`⏳ Menerapkan: ${migration.name}`);
+      await conn.query('START TRANSACTION');
+      try {
+        for (const stmt of migration.statements) {
+          await conn.query(stmt);
         }
-
-        if (await isMigrationRepresented(sql, migration.name)) {
-          await sql`
-            INSERT INTO _migrations (name)
-            VALUES (${migration.name})
-            ON CONFLICT (name) DO NOTHING
-          `;
-          appliedNames.add(migration.name);
-          baselinedCount++;
-          console.log(`🧭 Baselined (schema already present): ${migration.name}`);
-          continue;
-        }
-
-        console.log(`⏳ Running: ${migration.name}`);
-
-        try {
-          await sql.begin(async (transaction) => {
-            await transaction.unsafe(migration.sql);
-            await transaction`
-              INSERT INTO _migrations (name) VALUES (${migration.name})
-            `;
-          });
-        } catch (error: any) {
-          console.error(`❌ Failed to apply ${migration.name}:`);
-          console.error(error.message || error);
-          throw error;
-        }
-
-        console.log(`✅ Applied: ${migration.name}\n`);
-        appliedCount++;
+        await conn.query('INSERT INTO _migrations (name) VALUES (?)', [migration.name]);
+        await conn.query('COMMIT');
+      } catch (error: any) {
+        await conn.query('ROLLBACK').catch(() => {});
+        logger.error({ err: error, migration: migration.name }, '[db:migrate] Gagal menerapkan migrasi');
+        console.error(`❌ Gagal menerapkan ${migration.name}: ${error?.message}`);
+        throw error;
       }
+      console.log(`✅ Diterapkan: ${migration.name}\n`);
+      count++;
+    }
 
-      console.log(
-        `\n🎉 Migration complete! Applied ${appliedCount} new migration(s), baselined ${baselinedCount} existing migration(s)`
-      );
-    } finally {
-      await sql.end({ timeout: 5 });
-    }
-  } catch (error: any) {
-    if (error?.code === 'ENOTFOUND' || String(error?.message || '').includes('ENOTFOUND')) {
-      console.error('❌ Host database tidak bisa di-resolve.');
-      console.error('   Set DATABASE_URL dari Supabase Database Connection String (Pooler), lalu jalankan ulang:');
-      console.error("   DATABASE_URL='postgresql://...' bun run db:migrate");
-      console.error('');
-    }
-    console.error('❌ Migration failed:', error.message || error);
-    process.exit(1);
+    console.log(`\n🎉 Migrasi selesai! ${count} migrasi baru diterapkan.`);
+  } finally {
+    conn.release();
+    await pool.end();
   }
 }
 
-runMigrations();
+runMigrations().catch(async (error: any) => {
+  logger.error({ err: error }, '[db:migrate] Migrasi gagal');
+  console.error('❌ Migrasi gagal:', error?.message || error);
+  await pool.end().catch(() => {});
+  process.exit(1);
+});

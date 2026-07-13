@@ -38,7 +38,7 @@ export const adminMediaDocs = {
     detail: adminDetail({
       tag: ADMIN_TAGS.media,
       summary: 'Upload Gambar Konten HQ',
-      description: 'Mengoptimasi gambar menjadi WebP quality 80, memvalidasi dimensi, menyimpannya pada bucket Supabase Storage publik khusus konten, mencatat ownership media, dan mengembalikan URL publik.',
+      description: 'Mengoptimasi gambar menjadi WebP quality 80, memvalidasi dimensi, menyimpannya ke storage lokal publik (public/media), mencatat ownership media, dan mengembalikan URL publik.',
       required: ['file', 'Authorization: Bearer <access_token>'],
       optional: ['category'],
       successStatus: 201,
@@ -48,7 +48,7 @@ export const adminMediaDocs = {
         bucket: 'bomb-public-media',
         path: 'promotion/89898989-8989-4898-8989-898989898989.webp',
         visibility: 'public',
-        public_url: 'https://project.supabase.co/storage/v1/object/public/bomb-public-media/promotion/89898989-8989-4898-8989-898989898989.webp',
+        public_url: 'http://localhost:3000/public/media/promotion/89898989-8989-4898-8989-898989898989.webp',
         content_type: 'image/webp',
         size: 184320,
         width: 1080,

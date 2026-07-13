@@ -1,4 +1,4 @@
-import { Elysia } from 'elysia';
+import { Elysia, t } from 'elysia';
 import { setupAuth, customerAuthMiddleware } from '../../../middleware/auth';
 import { CustomerAuthController } from './controller';
 import { customerAuthDocs } from './docs';
@@ -16,7 +16,13 @@ const canonicalAuthRoutes = new Elysia({ prefix: '/api/v1/customers' })
   )
   .use(customerAuthMiddleware)
   .get('/me', CustomerAuthController.getProfile, customerAuthDocs.getProfile)
-  .patch('/me', CustomerAuthController.updateProfile);
+  // Schema validasi body agar hanya field yang diizinkan diterima. (MB10)
+  .patch('/me', CustomerAuthController.updateProfile, {
+    body: t.Object({
+      full_name: t.Optional(t.String({ minLength: 1, maxLength: 100 })),
+      phone: t.Optional(t.String({ minLength: 8, maxLength: 20 }))
+    })
+  });
 
 // ── Deprecated: /api/v1/customer → /api/v1/customers ──────────────────────
 const deprecatedAuthRoutes = new Elysia({ prefix: '/api/v1/customer' })

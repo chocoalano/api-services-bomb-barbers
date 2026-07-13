@@ -1,49 +1,48 @@
-import { supabase } from '../../lib/supabase';
+import { randomUUID } from 'crypto';
+import { db } from '../../lib/db';
+import { snakeKeys } from '../../db/helpers';
+import { barbers, barberWallets, walletTransactions } from '../../db/schema';
+import { eq, desc } from 'drizzle-orm';
+import { asRpcResult, requestWithdrawal } from '../../db/procedures';
+
+async function resolveBarberId(staffUserId: string): Promise<string> {
+  const [barber] = await db
+    .select({ id: barbers.id })
+    .from(barbers)
+    .where(eq(barbers.staffUserId, staffUserId))
+    .limit(1);
+  if (!barber) throw new Error('Data barber tidak ditemukan');
+  return barber.id;
+}
 
 export class WalletService {
   /**
    * Mengambil saldo wallet barber beserta riwayat transaksinya.
    */
   static async getWalletDetails(staffUserId: string) {
-    // Cari barber_id dari staff_user_id
-    const { data: barber, error: barberErr } = await supabase
-      .from('barbers')
-      .select('id')
-      .eq('staff_user_id', staffUserId)
-      .single();
-
-    if (!barber || barberErr) {
-      throw new Error('Data barber tidak ditemukan');
-    }
-
-    const barberId = barber.id;
+    const barberId = await resolveBarberId(staffUserId);
 
     // Pastikan wallet ada, jika tidak ada karena race condition atau data lama, buatkan
-    let { data: wallet, error: walletErr } = await supabase
-      .from('barber_wallets')
-      .select('*')
-      .eq('barber_id', barberId)
-      .single();
+    let [wallet] = snakeKeys(
+      await db.select().from(barberWallets).where(eq(barberWallets.barberId, barberId)).limit(1)
+    );
 
     if (!wallet) {
-      const { data: newWallet, error: createErr } = await supabase
-        .from('barber_wallets')
-        .insert({ barber_id: barberId, balance: 0 })
-        .select()
-        .single();
-        
-      if (createErr) throw new Error('Gagal membuat wallet: ' + createErr.message);
-      wallet = newWallet;
+      const newId = randomUUID();
+      await db.insert(barberWallets).values({ id: newId, barberId, balance: '0' });
+      [wallet] = snakeKeys(
+        await db.select().from(barberWallets).where(eq(barberWallets.id, newId)).limit(1)
+      );
     }
 
-    const { data: transactions, error: txErr } = await supabase
-      .from('wallet_transactions')
-      .select('*')
-      .eq('wallet_id', wallet.id)
-      .order('created_at', { ascending: false })
-      .limit(50);
-
-    if (txErr) throw new Error('Gagal mengambil riwayat transaksi: ' + txErr.message);
+    const transactions = snakeKeys(
+      await db
+        .select()
+        .from(walletTransactions)
+        .where(eq(walletTransactions.walletId, wallet.id))
+        .orderBy(desc(walletTransactions.createdAt))
+        .limit(50)
+    );
 
     return {
       balance: wallet.balance,
@@ -59,24 +58,17 @@ export class WalletService {
       throw new Error('Minimal penarikan dana adalah Rp 50.000');
     }
 
-    // Cari barber_id dari staff_user_id
-    const { data: barber, error: barberErr } = await supabase
-      .from('barbers')
-      .select('id')
-      .eq('staff_user_id', staffUserId)
-      .single();
+    const barberId = await resolveBarberId(staffUserId);
 
-    if (!barber || barberErr) {
-      throw new Error('Data barber tidak ditemukan');
-    }
-
-    const { data: result, error } = await supabase.rpc('request_withdrawal', {
-      p_barber_id: barber.id,
-      p_amount: payload.amount,
-      p_bank_name: payload.bank_name,
-      p_account_number: payload.account_number,
-      p_account_name: payload.account_name
-    });
+    const { data: result, error } = await asRpcResult(() =>
+      requestWithdrawal({
+        barberId,
+        amount: payload.amount,
+        bankName: payload.bank_name,
+        accountNumber: payload.account_number,
+        accountName: payload.account_name
+      })
+    );
 
     if (error) {
       if (error.message.includes('Insufficient balance')) {

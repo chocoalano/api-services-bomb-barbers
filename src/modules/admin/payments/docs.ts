@@ -35,20 +35,20 @@ const webhookBody = t.Object({
     examples: ['midtrans']
   })),
   order_id: t.Optional(t.String({
-    description: 'Payment UUID dari callback Midtrans.',
-    examples: [ADMIN_EXAMPLES.paymentId]
+    description: 'Order ID dari callback Midtrans. Nilai ini disimpan backend pada kolom payments.gateway_reference saat transaksi Snap dibuat, misalnya APPT-XXXXXXXX-1783750994270.',
+    examples: ['APPT-4D1B6AB9-1783750994270']
   })),
   external_id: t.Optional(t.String({
-    description: 'Payment UUID dari callback Xendit.',
-    examples: [ADMIN_EXAMPLES.paymentId]
+    description: 'External ID dari callback Xendit yang dipakai sebagai referensi gateway.',
+    examples: ['APPT-4D1B6AB9-1783750994270']
   })),
   status_code: t.Optional(t.String({
-    description: 'Status HTTP transaksi Midtrans. Nilai 200 menandakan settlement pada mock gateway saat ini.',
-    examples: ['200']
+    description: 'Kode status transaksi dari Midtrans. Umumnya 201 untuk pending dan 200 untuk capture/settlement.',
+    examples: ['201']
   })),
   transaction_status: t.Optional(t.String({
-    description: 'Status transaksi Midtrans.',
-    examples: ['settlement']
+    description: 'Status transaksi Midtrans. Backend memetakan pending menjadi payment pending, settlement/capture menjadi paid, expire menjadi expired, serta deny/cancel/failure menjadi failed.',
+    examples: ['pending']
   })),
   status: t.Optional(t.String({
     description: 'Status callback Xendit. Nilai PAID menandakan pembayaran berhasil.',
@@ -62,7 +62,13 @@ const webhookBody = t.Object({
   additionalProperties: true,
   examples: [
     {
-      order_id: ADMIN_EXAMPLES.paymentId,
+      order_id: 'APPT-4D1B6AB9-1783750994270',
+      status_code: '201',
+      transaction_status: 'pending',
+      gross_amount: '95000.00'
+    },
+    {
+      order_id: 'APPT-4D1B6AB9-1783750994270',
       status_code: '200',
       transaction_status: 'settlement',
       gross_amount: '95000.00'
@@ -215,8 +221,8 @@ export const paymentDocs = {
     detail: adminDetail({
       tag: ADMIN_TAGS.webhooks,
       summary: 'Terima Webhook Payment Gateway',
-      description: 'Menerima callback provider, memverifikasi signature dari header, menandai payment paid, membuat invoice, dan mencatat audit log.',
-      required: ['path provider', 'signature header', 'order_id untuk Midtrans atau external_id untuk Xendit'],
+      description: 'Menerima callback provider, memverifikasi signature, mencocokkan order_id dengan payments.gateway_reference, memperbarui status payment, membuat invoice saat paid, dan mencatat audit log.',
+      required: ['path provider', 'signature_key di body Midtrans atau signature header', 'order_id untuk Midtrans atau external_id untuk Xendit'],
       optional: ['provider body', 'status_code', 'transaction_status', 'status', 'gross_amount', 'field tambahan provider'],
       security: false,
       successMessage: 'Webhook berhasil diproses',
@@ -255,7 +261,69 @@ export const paymentDocs = {
         {
           status: 500,
           description: 'Payload provider tidak dapat diproses.',
-          message: 'Webhook Error: Payment ID tidak ditemukan di payload webhook'
+          message: 'Webhook Error: Order ID tidak ditemukan di payload webhook'
+        }
+      ]
+    })
+  },
+  webhookNotificationAlias: {
+    params: t.Object({
+      provider: t.UnionEnum(['midtrans', 'xendit'], {
+        description: 'Nama payment gateway.',
+        examples: ['midtrans']
+      })
+    }),
+    body: webhookBody,
+    detail: adminDetail({
+      tag: ADMIN_TAGS.webhooks,
+      summary: 'Alias Webhook Notification Gateway',
+      description: 'Alias kompatibilitas untuk payment gateway yang dikonfigurasi memakai pola /payments/{provider}/notification. Perilakunya sama dengan endpoint canonical webhook: signature diverifikasi, order_id dicocokkan dengan payments.gateway_reference, lalu status payment diperbarui sesuai status provider.',
+      required: ['path provider', 'signature_key di body Midtrans atau signature header', 'order_id untuk Midtrans atau external_id untuk Xendit'],
+      optional: ['transaction_status', 'status_code', 'status', 'gross_amount', 'field tambahan provider'],
+      security: false,
+      successMessage: 'Webhook berhasil diproses',
+      successData: null,
+      errors: [
+        {
+          status: 401,
+          description: 'Signature webhook tidak valid.',
+          message: 'Invalid signature'
+        },
+        {
+          status: 404,
+          description: 'Payment tidak ditemukan untuk order_id yang dikirim gateway.',
+          message: 'Webhook Error: Payment tidak ditemukan'
+        }
+      ]
+    })
+  },
+  webhookLegacyNotificationAlias: {
+    params: t.Object({
+      provider: t.UnionEnum(['midtrans', 'xendit'], {
+        description: 'Nama payment gateway.',
+        examples: ['midtrans']
+      })
+    }),
+    body: webhookBody,
+    detail: adminDetail({
+      tag: ADMIN_TAGS.webhooks,
+      summary: 'Alias Legacy Webhook Notification Tanpa /v1',
+      description: 'Endpoint kompatibilitas untuk konfigurasi lama seperti /api/payments/midtrans/notification. Untuk konfigurasi baru, gunakan /api/v1/webhooks/payments/midtrans agar konsisten dengan versi API.',
+      required: ['path provider', 'signature_key di body Midtrans atau signature header', 'order_id untuk Midtrans atau external_id untuk Xendit'],
+      optional: ['transaction_status', 'status_code', 'status', 'gross_amount', 'field tambahan provider'],
+      security: false,
+      successMessage: 'Webhook berhasil diproses',
+      successData: null,
+      errors: [
+        {
+          status: 401,
+          description: 'Signature webhook tidak valid.',
+          message: 'Invalid signature'
+        },
+        {
+          status: 404,
+          description: 'Payment tidak ditemukan untuk order_id yang dikirim gateway.',
+          message: 'Webhook Error: Payment tidak ditemukan'
         }
       ]
     })

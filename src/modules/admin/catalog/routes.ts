@@ -29,9 +29,20 @@ export const adminCatalogRoutes = new Elysia({ prefix: '/api/v1/hq' })
     ...adminCatalogDocs.listBarbers,
     beforeHandle: requirePermission('manage_barber')
   })
+  // POST create sengaja di top-level (sejajar GET), BUKAN di dalam group('/barbers').
+  // Kombinasi get('/barbers') + group('/barbers').post('/') membuat route POST hanya
+  // ter-resolve setelah kompilasi penuh via .listen() dan menghasilkan 404 pada
+  // app.handle() (dipakai test). Menaruhnya di top-level menghindari ambiguitas
+  // trailing-slash tersebut sehingga konsisten di runtime maupun test.
+  .post('/barbers', AdminCatalogController.createBarber, {
+    ...adminCatalogDocs.createBarber,
+    beforeHandle: requirePermission('manage_barber')
+  })
   .group('/barbers', (app) => app
     .onBeforeHandle(requirePermission('manage_barber'))
-    .post('/', AdminCatalogController.createBarber, adminCatalogDocs.createBarber)
+    // [REVISI C1] Onboarding kepster: daftar pending & konfirmasi (approve/reject).
+    .get('/pending', AdminCatalogController.listPendingBarbers, adminCatalogDocs.listPendingBarbers)
+    .patch('/:id/approval', AdminCatalogController.updateBarberApproval, adminCatalogDocs.updateBarberApproval)
     .put('/:id', AdminCatalogController.updateBarber, adminCatalogDocs.updateBarber)
     .delete('/:id', AdminCatalogController.deleteBarber, adminCatalogDocs.deleteBarber)
   )

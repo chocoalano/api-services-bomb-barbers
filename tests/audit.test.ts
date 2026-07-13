@@ -1,6 +1,6 @@
 import { describe, expect, it, beforeAll, afterAll } from 'bun:test';
 import { app } from '../src/app';
-import { supabase } from '../src/lib/supabase';
+import { testDb } from '../src/lib/test-db';
 import * as argon2 from 'argon2';
 
 const API_PREFIX = '/api/v1';
@@ -24,10 +24,10 @@ describe('Audit Full Flow: 50/50 Commission Split', () => {
     const suffix = crypto.randomUUID().split('-')[0];
 
     // 1. Setup Branch & Region
-    const { data: region } = await supabase.from('regions').insert({ code: `AUD${suffix}`, name: 'Audit Region' }).select('id').single();
-    const { data: branch } = await supabase.from('branches').insert({ name: 'Audit Branch', region_id: region?.id }).select('id').single();
+    const { data: region } = await testDb.from('regions').insert({ code: `AUD${suffix}`, name: 'Audit Region' }).select('id').single();
+    const { data: branch } = await testDb.from('branches').insert({ name: 'Audit Branch', region_id: region?.id }).select('id').single();
     if (branch) branchId = branch.id;
-    await supabase.from('branch_operating_hours').insert(
+    await testDb.from('branch_operating_hours').insert(
       Array.from({ length: 7 }, (_, day) => ({
         branch_id: branchId,
         day_of_week: day,
@@ -37,34 +37,34 @@ describe('Audit Full Flow: 50/50 Commission Split', () => {
     );
 
     // 2. Setup Customer
-    const { data: customer } = await supabase.from('customers').insert({ full_name: 'Audit Cust', email: `ac${suffix}@test.com`, phone: `888${suffix}`, password_hash: pwHash }).select('id').single();
+    const { data: customer } = await testDb.from('customers').insert({ full_name: 'Audit Cust', email: `ac${suffix}@test.com`, phone: `888${suffix}`, password_hash: pwHash }).select('id').single();
     if (customer) customerId = customer.id;
 
     // 3. Setup Barber
-    const { data: barberStaff } = await supabase.from('staff_users').insert({ full_name: 'Audit Barber', email: `ab${suffix}@test.com`, password_hash: pwHash }).select('id').single();
-    const { data: barber } = await supabase.from('barbers').insert({ staff_user_id: barberStaff?.id, branch_id: branchId, display_name: 'Audit Barber' }).select('id').single();
+    const { data: barberStaff } = await testDb.from('staff_users').insert({ full_name: 'Audit Barber', email: `ab${suffix}@test.com`, password_hash: pwHash }).select('id').single();
+    const { data: barber } = await testDb.from('barbers').insert({ staff_user_id: barberStaff?.id, branch_id: branchId, display_name: 'Audit Barber' }).select('id').single();
     if (barber) barberId = barber.id;
 
     // 4. Setup Admin
-    const { data: adminStaff } = await supabase.from('staff_users').insert({ full_name: 'Audit Admin', email: `aa${suffix}@test.com`, password_hash: pwHash }).select('id').single();
-    const { data: roleAdmin } = await supabase.from('roles').select('id').eq('name', 'branch_admin').single();
+    const { data: adminStaff } = await testDb.from('staff_users').insert({ full_name: 'Audit Admin', email: `aa${suffix}@test.com`, password_hash: pwHash }).select('id').single();
+    const { data: roleAdmin } = await testDb.from('roles').select('id').eq('name', 'branch_admin').single();
     if (roleAdmin && adminStaff) {
-      await supabase.from('staff_user_roles').insert({
+      await testDb.from('staff_user_roles').insert({
         staff_user_id: adminStaff.id, role_id: roleAdmin.id, branch_id: branchId
       });
     }
 
     // 5. Setup Service
-    const { data: srv, error: srvErr } = await supabase.from('services').insert({ name: 'Audit Haircut', description: '50/50 test', default_duration_min: 30 }).select('id').single();
+    const { data: srv, error: srvErr } = await testDb.from('services').insert({ name: 'Audit Haircut', description: '50/50 test', default_duration_min: 30 }).select('id').single();
     if (srvErr) throw new Error("Service Insert Error: " + srvErr.message);
     if (srv) {
       serviceId = srv.id;
-      const { error: spErr } = await supabase.from('service_prices').insert({ branch_id: branchId, service_id: serviceId, price_amount: PRICE, effective_from: new Date(Date.now() - 86400000).toISOString() });
+      const { error: spErr } = await testDb.from('service_prices').insert({ branch_id: branchId, service_id: serviceId, price_amount: PRICE, effective_from: new Date(Date.now() - 86400000).toISOString() });
       if (spErr) throw new Error("Service Price Insert Error: " + spErr.message);
     }
 
     // 6. Setup 50/50 Commission Rule for this Barber
-    const { data: rule, error: ruleErr } = await supabase.from('commission_rules').insert({
+    const { data: rule, error: ruleErr } = await testDb.from('commission_rules').insert({
       scope: 'barber',
       scope_ref_id: barberId,
       barber_pct: 50,

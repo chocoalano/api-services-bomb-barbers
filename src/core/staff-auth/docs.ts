@@ -22,7 +22,22 @@ export const staffAuthDocs = {
     detail: {
       tags: ['Staff Auth'],
       summary: 'Refresh Token Staff',
-      description: 'Endpoint ini digunakan untuk memperbarui access token staff yang sudah kedaluwarsa menggunakan refresh token.'
+      description: 'Endpoint ini digunakan untuk menerbitkan ulang pasangan access token dan refresh token staff dari refresh token yang valid.'
+    }
+  },
+  register: {
+    body: t.Object({
+      full_name: t.String({ description: 'Nama lengkap kepster' }),
+      email: t.String({ format: 'email', description: 'Alamat email kepster yang valid' }),
+      password: t.String({ minLength: 6, description: 'Kata sandi (minimal 6 karakter)' }),
+      phone: t.Optional(t.String({ description: 'Nomor telepon (opsional)' })),
+      branch_id: t.String({ description: 'ID cabang tempat kepster mendaftar' }),
+      display_name: t.Optional(t.String({ description: 'Nama tampilan barber (opsional)' }))
+    }),
+    detail: {
+      tags: ['Staff Auth'],
+      summary: 'Pendaftaran Kepster',
+      description: 'Endpoint publik untuk pendaftaran mandiri kepster. Akun dibuat dengan status menunggu konfirmasi admin dan tidak menerbitkan token. Kepster baru baru dapat login setelah disetujui admin.'
     }
   },
   logout: {

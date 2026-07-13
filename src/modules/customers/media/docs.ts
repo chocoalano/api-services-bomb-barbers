@@ -41,7 +41,7 @@ export const mediaDocs = {
     detail: customerDetail({
       tag: CUSTOMER_TAGS.media,
       summary: 'Upload Foto Referensi Customer',
-      description: 'Memvalidasi MIME type, ukuran, dimensi, serta jumlah piksel; mengoptimasi gambar menjadi WebP quality 80; menyimpan object pada bucket private Supabase Storage; mencatat ownership pada media_assets; dan mengembalikan asset_id beserta signed URL sementara.',
+      description: 'Memvalidasi MIME type, ukuran, dimensi, serta jumlah piksel; mengoptimasi gambar menjadi WebP quality 80; menyimpan object ke storage lokal (public/media); mencatat ownership pada media_assets; dan mengembalikan asset_id beserta signed URL sementara.',
       required: ['Authorization: Bearer <customer_access_token>', 'multipart file'],
       optional: ['multipart purpose'],
       successStatus: 201,
@@ -51,8 +51,8 @@ export const mediaDocs = {
         bucket: 'bomb-private-media',
         path: `customer/${CUSTOMER_EXAMPLES.customerId}/2026-06-20/hair_style_reference-15151515-1515-4515-8515-151515151515.webp`,
         visibility: 'private',
-        signed_url: 'https://project.supabase.co/storage/v1/object/sign/bomb-private-media/example',
-        public_url: 'https://project.supabase.co/storage/v1/object/sign/bomb-private-media/example',
+        signed_url: 'http://localhost:3000/media/private/example.webp?expires=1700000000&sig=<hmac>',
+        public_url: 'http://localhost:3000/public/media/example.webp',
         expires_in: 3600,
         content_type: 'image/webp',
         size: 184320,
@@ -88,7 +88,7 @@ export const mediaDocs = {
       successMessage: 'Signed URL media berhasil dibuat',
       successData: {
         asset_id: '15151515-1515-4515-8515-151515151515',
-        signed_url: 'https://project.supabase.co/storage/v1/object/sign/bomb-private-media/example',
+        signed_url: 'http://localhost:3000/media/private/example.webp?expires=1700000000&sig=<hmac>',
         expires_in: 3600,
         content_type: 'image/webp',
         size: 184320,

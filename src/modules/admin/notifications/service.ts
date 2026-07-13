@@ -1,4 +1,6 @@
-import { supabase } from '../../../lib/supabase';
+import { db } from '../../../lib/db';
+import { adminNotificationSettings } from '../../../db/schema-extra';
+import { eq } from 'drizzle-orm';
 
 const DEFAULT_SETTINGS = {
   new_appointment: true,
@@ -18,24 +20,30 @@ export class NotificationSettingsService {
    * Jika belum ada record, mengembalikan nilai default.
    */
   static async getSettings(staffId: string): Promise<NotificationSettings> {
-    const { data, error } = await supabase
-      .from('admin_notification_settings')
-      .select('new_appointment, appointment_reminder, appointment_cancelled, whatsapp, email, daily_summary, weekly_report')
-      .eq('staff_user_id', staffId)
-      .maybeSingle();
-
-    if (error) throw new Error('Gagal mengambil pengaturan notifikasi: ' + error.message);
+    const [data] = await db
+      .select({
+        newAppointment: adminNotificationSettings.newAppointment,
+        appointmentReminder: adminNotificationSettings.appointmentReminder,
+        appointmentCancelled: adminNotificationSettings.appointmentCancelled,
+        whatsapp: adminNotificationSettings.whatsapp,
+        email: adminNotificationSettings.email,
+        dailySummary: adminNotificationSettings.dailySummary,
+        weeklyReport: adminNotificationSettings.weeklyReport
+      })
+      .from(adminNotificationSettings)
+      .where(eq(adminNotificationSettings.staffUserId, staffId))
+      .limit(1);
 
     if (!data) return { ...DEFAULT_SETTINGS };
 
     return {
-      new_appointment: data.new_appointment ?? DEFAULT_SETTINGS.new_appointment,
-      appointment_reminder: data.appointment_reminder ?? DEFAULT_SETTINGS.appointment_reminder,
-      appointment_cancelled: data.appointment_cancelled ?? DEFAULT_SETTINGS.appointment_cancelled,
+      new_appointment: data.newAppointment ?? DEFAULT_SETTINGS.new_appointment,
+      appointment_reminder: data.appointmentReminder ?? DEFAULT_SETTINGS.appointment_reminder,
+      appointment_cancelled: data.appointmentCancelled ?? DEFAULT_SETTINGS.appointment_cancelled,
       whatsapp: data.whatsapp ?? DEFAULT_SETTINGS.whatsapp,
       email: data.email ?? DEFAULT_SETTINGS.email,
-      daily_summary: data.daily_summary ?? DEFAULT_SETTINGS.daily_summary,
-      weekly_report: data.weekly_report ?? DEFAULT_SETTINGS.weekly_report
+      daily_summary: data.dailySummary ?? DEFAULT_SETTINGS.daily_summary,
+      weekly_report: data.weeklyReport ?? DEFAULT_SETTINGS.weekly_report
     };
   }
 
@@ -43,35 +51,31 @@ export class NotificationSettingsService {
    * Menyimpan (upsert) pengaturan notifikasi untuk staff tertentu.
    * Mengembalikan data yang berhasil disimpan.
    */
-  static async updateSettings(staffId: string, settings: Partial<NotificationSettings>): Promise<NotificationSettings> {
-    const payload = {
-      staff_user_id: staffId,
-      new_appointment: settings.new_appointment,
-      appointment_reminder: settings.appointment_reminder,
-      appointment_cancelled: settings.appointment_cancelled,
+  static async updateSettings(
+    staffId: string,
+    settings: Partial<NotificationSettings>
+  ): Promise<NotificationSettings> {
+    const values = {
+      staffUserId: staffId,
+      newAppointment: settings.new_appointment,
+      appointmentReminder: settings.appointment_reminder,
+      appointmentCancelled: settings.appointment_cancelled,
       whatsapp: settings.whatsapp,
       email: settings.email,
-      daily_summary: settings.daily_summary,
-      weekly_report: settings.weekly_report,
-      updated_at: new Date().toISOString()
+      dailySummary: settings.daily_summary,
+      weeklyReport: settings.weekly_report
     };
 
-    const { data, error } = await supabase
-      .from('admin_notification_settings')
-      .upsert(payload, { onConflict: 'staff_user_id' })
-      .select('new_appointment, appointment_reminder, appointment_cancelled, whatsapp, email, daily_summary, weekly_report')
-      .single();
+    // Buang key undefined agar tidak menimpa nilai lama dengan undefined saat update.
+    const setClause = Object.fromEntries(
+      Object.entries(values).filter(([k, v]) => k !== 'staffUserId' && v !== undefined)
+    );
 
-    if (error) throw new Error('Gagal memperbarui pengaturan notifikasi: ' + error.message);
+    await db
+      .insert(adminNotificationSettings)
+      .values(values as any)
+      .onDuplicateKeyUpdate({ set: setClause });
 
-    return {
-      new_appointment: data.new_appointment,
-      appointment_reminder: data.appointment_reminder,
-      appointment_cancelled: data.appointment_cancelled,
-      whatsapp: data.whatsapp,
-      email: data.email,
-      daily_summary: data.daily_summary,
-      weekly_report: data.weekly_report
-    };
+    return this.getSettings(staffId);
   }
 }

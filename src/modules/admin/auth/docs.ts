@@ -48,7 +48,7 @@ export const adminAuthDocs = {
     detail: adminDetail({
       tag: ADMIN_TAGS.auth,
       summary: 'Login Admin',
-      description: 'Mengautentikasi staff admin dan menghasilkan access token berumur pendek serta refresh token. Role dan scope cabang divalidasi kembali pada endpoint operasional.',
+      description: 'Mengautentikasi staff admin dan menghasilkan access token serta refresh token tanpa masa kedaluwarsa. Role dan scope cabang divalidasi kembali pada endpoint operasional.',
       required: ['email', 'password'],
       optional: [],
       security: false,
@@ -102,7 +102,7 @@ export const adminAuthDocs = {
       errors: [
         {
           status: 401,
-          description: 'Refresh token tidak valid, kedaluwarsa, atau akun staff sudah tidak aktif.',
+          description: 'Refresh token tidak valid, session sudah dicabut, atau akun staff sudah tidak aktif.',
           message: 'Refresh token tidak valid'
         },
         {

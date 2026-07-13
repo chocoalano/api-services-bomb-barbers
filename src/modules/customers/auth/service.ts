@@ -1,5 +1,9 @@
 import * as argon2 from 'argon2';
-import { supabase } from '../../../lib/supabase';
+import { randomUUID } from 'crypto';
+import { db } from '../../../lib/db';
+import { customers, customerWallets } from '../../../db/schema';
+import { and, eq, isNull, ne } from 'drizzle-orm';
+import { isDuplicateKeyError } from '../../../db/procedures';
 
 type RegisterCustomerInput = {
   full_name: string;
@@ -41,30 +45,22 @@ export class CustomerAuthService {
       throw new Error('Nomor telepon wajib diisi');
     }
 
-    const { data: existingPhone, error: phoneLookupError } = await supabase
-      .from('customers')
-      .select('id')
-      .eq('phone', phone)
-      .maybeSingle();
-
-    if (phoneLookupError) {
-      throw new Error('Gagal memeriksa nomor telepon pelanggan');
-    }
+    const [existingPhone] = await db
+      .select({ id: customers.id })
+      .from(customers)
+      .where(eq(customers.phone, phone))
+      .limit(1);
 
     if (existingPhone) {
       throw new Error('Nomor telepon sudah terdaftar');
     }
 
     if (email) {
-      const { data: existingEmail, error: emailLookupError } = await supabase
-        .from('customers')
-        .select('id')
-        .eq('email', email)
-        .maybeSingle();
-
-      if (emailLookupError) {
-        throw new Error('Gagal memeriksa email pelanggan');
-      }
+      const [existingEmail] = await db
+        .select({ id: customers.id })
+        .from(customers)
+        .where(eq(customers.email, email))
+        .limit(1);
 
       if (existingEmail) {
         throw new Error('Email sudah terdaftar');
@@ -73,28 +69,37 @@ export class CustomerAuthService {
 
     const password_hash = await argon2.hash(password);
 
-    const { data: newCustomer, error } = await supabase
-      .from('customers')
-      .insert({
-        full_name,
-        email,
-        phone,
-        password_hash
-      })
-      .select('id, full_name, email, phone, is_active')
-      .single();
-
-    if (error) {
-      if (error.code === '23505' && error.message.includes('customers_phone')) {
+    const id = randomUUID();
+    try {
+      await db.insert(customers).values({ id, fullName: full_name, email, phone, passwordHash: password_hash });
+    } catch (error: any) {
+      const msg = String(error?.message ?? '');
+      if (isDuplicateKeyError(error) && msg.includes('phone')) {
         throw new Error('Nomor telepon sudah terdaftar');
       }
-
-      if (error.code === '23505' && error.message.includes('customers_email')) {
+      if (isDuplicateKeyError(error) && msg.includes('email')) {
         throw new Error('Email sudah terdaftar');
       }
-
       throw new Error('Gagal mendaftarkan akun pelanggan');
     }
+
+    // Pengganti trigger create_wallet_for_new_customer.
+    await db
+      .insert(customerWallets)
+      .values({ id: randomUUID(), customerId: id, balance: '0' })
+      .onDuplicateKeyUpdate({ set: { customerId: id } });
+
+    const [newCustomer] = await db
+      .select({
+        id: customers.id,
+        full_name: customers.fullName,
+        email: customers.email,
+        phone: customers.phone,
+        is_active: customers.isActive
+      })
+      .from(customers)
+      .where(eq(customers.id, id))
+      .limit(1);
 
     if (!newCustomer) {
       throw new Error('Gagal mendaftarkan akun pelanggan');
@@ -112,15 +117,11 @@ export class CustomerAuthService {
       throw new Error('Email atau nomor telepon wajib diisi');
     }
 
-    const customerQuery = supabase
-      .from('customers')
-      .select('id, password_hash, is_active')
-      .is('deleted_at', null);
-
-    const { data: customer } = await (email
-      ? customerQuery.eq('email', email)
-      : customerQuery.eq('phone', phone)
-    ).maybeSingle();
+    const [customer] = await db
+      .select({ id: customers.id, password_hash: customers.passwordHash, is_active: customers.isActive })
+      .from(customers)
+      .where(and(isNull(customers.deletedAt), email ? eq(customers.email, email) : eq(customers.phone, phone!)))
+      .limit(1);
 
     if (!customer) {
       throw new Error('Kredensial tidak valid');
@@ -147,12 +148,11 @@ export class CustomerAuthService {
       throw new Error('Refresh token tidak valid');
     }
 
-    const { data: customer } = await supabase
-      .from('customers')
-      .select('id, is_active')
-      .eq('id', payload.sub)
-      .is('deleted_at', null)
-      .single();
+    const [customer] = await db
+      .select({ id: customers.id, is_active: customers.isActive })
+      .from(customers)
+      .where(and(eq(customers.id, payload.sub), isNull(customers.deletedAt)))
+      .limit(1);
 
     if (!customer || !customer.is_active) {
       throw new Error('Pelanggan tidak aktif atau tidak ditemukan');
@@ -167,18 +167,17 @@ export class CustomerAuthService {
     if (data.full_name !== undefined) {
       const name = data.full_name.trim();
       if (!name) throw new Error('Nama lengkap tidak boleh kosong');
-      updates.full_name = name;
+      updates.fullName = name;
     }
 
     if (data.phone !== undefined) {
       const phone = data.phone.trim();
       if (!phone) throw new Error('Nomor telepon tidak boleh kosong');
-      const { data: existing } = await supabase
-        .from('customers')
-        .select('id')
-        .eq('phone', phone)
-        .neq('id', customerId)
-        .maybeSingle();
+      const [existing] = await db
+        .select({ id: customers.id })
+        .from(customers)
+        .where(and(eq(customers.phone, phone), ne(customers.id, customerId)))
+        .limit(1);
       if (existing) throw new Error('Nomor telepon sudah digunakan akun lain');
       updates.phone = phone;
     }
@@ -187,25 +186,41 @@ export class CustomerAuthService {
       throw new Error('Tidak ada data yang diperbarui (kirim full_name atau phone)');
     }
 
-    const { data: updated, error } = await supabase
-      .from('customers')
-      .update({ ...updates, updated_at: new Date().toISOString() })
-      .eq('id', customerId)
-      .is('deleted_at', null)
-      .select('id, full_name, phone, email, points_balance, updated_at')
-      .single();
+    await db
+      .update(customers)
+      .set(updates)
+      .where(and(eq(customers.id, customerId), isNull(customers.deletedAt)));
 
-    if (error || !updated) throw new Error('Gagal memperbarui profil pelanggan');
+    const [updated] = await db
+      .select({
+        id: customers.id,
+        full_name: customers.fullName,
+        phone: customers.phone,
+        email: customers.email,
+        points_balance: customers.pointsBalance,
+        updated_at: customers.updatedAt
+      })
+      .from(customers)
+      .where(and(eq(customers.id, customerId), isNull(customers.deletedAt)))
+      .limit(1);
+
+    if (!updated) throw new Error('Gagal memperbarui profil pelanggan');
     return updated;
   }
 
   static async getProfile(customerId: string) {
-    const { data: customer } = await supabase
-      .from('customers')
-      .select('id, full_name, phone, email, points_balance, created_at')
-      .eq('id', customerId)
-      .is('deleted_at', null)
-      .single();
+    const [customer] = await db
+      .select({
+        id: customers.id,
+        full_name: customers.fullName,
+        phone: customers.phone,
+        email: customers.email,
+        points_balance: customers.pointsBalance,
+        created_at: customers.createdAt
+      })
+      .from(customers)
+      .where(and(eq(customers.id, customerId), isNull(customers.deletedAt)))
+      .limit(1);
 
     if (!customer) {
       throw new Error('Pelanggan tidak ditemukan');

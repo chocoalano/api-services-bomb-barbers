@@ -1,6 +1,6 @@
 import { describe, expect, it, beforeAll, afterAll } from 'bun:test';
 import { app } from '../src/app';
-import { supabase } from '../src/lib/supabase';
+import { testDb } from '../src/lib/test-db';
 import * as argon2 from 'argon2';
 
 const API_PREFIX = '/api/v1';
@@ -26,13 +26,13 @@ describe('Payments & Invoice Module', () => {
     const otherEmail = `cp-other${suffix}@test.com`;
     const aEmail = `ap${suffix}@test.com`;
 
-    const { data: region } = await supabase.from('regions').insert({ code: `RP${suffix.toString().slice(-4)}`, name: 'Pay Region' }).select('id').single();
-    const { data: branch } = await supabase.from('branches').insert({ name: 'Pay Branch', region_id: region?.id }).select('id').single();
+    const { data: region } = await testDb.from('regions').insert({ code: `RP${suffix.toString().slice(-4)}`, name: 'Pay Region' }).select('id').single();
+    const { data: branch } = await testDb.from('branches').insert({ name: 'Pay Branch', region_id: region?.id }).select('id').single();
     if (branch) branchId = branch.id;
 
-    const { data: customer } = await supabase.from('customers').insert({ full_name: 'CPay', email: cEmail, phone: `222${suffix}`, password_hash: pwHash }).select('id').single();
+    const { data: customer } = await testDb.from('customers').insert({ full_name: 'CPay', email: cEmail, phone: `222${suffix}`, password_hash: pwHash }).select('id').single();
     if (customer) customerId = customer.id;
-    const { data: otherCustomer } = await supabase.from('customers').insert({
+    const { data: otherCustomer } = await testDb.from('customers').insert({
       full_name: 'Other CPay',
       email: otherEmail,
       phone: `223${suffix}`,
@@ -40,23 +40,23 @@ describe('Payments & Invoice Module', () => {
     }).select('id').single();
     if (otherCustomer) otherCustomerId = otherCustomer.id;
 
-    const { data: adminStaff } = await supabase.from('staff_users').insert({ full_name: 'APay', email: aEmail, password_hash: pwHash }).select('id').single();
+    const { data: adminStaff } = await testDb.from('staff_users').insert({ full_name: 'APay', email: aEmail, password_hash: pwHash }).select('id').single();
     if (adminStaff) adminStaffId = adminStaff.id;
 
     // Ensure admin staff has a role with global access for tests
-    let { data: role } = await supabase.from('roles').select('id').eq('name', 'test_admin_role').maybeSingle();
+    let { data: role } = await testDb.from('roles').select('id').eq('name', 'test_admin_role').maybeSingle();
     if (!role) {
-      const { data: insertedRole } = await supabase.from('roles').insert({ name: 'test_admin_role' }).select('id').single();
+      const { data: insertedRole } = await testDb.from('roles').insert({ name: 'test_admin_role' }).select('id').single();
       role = insertedRole;
     }
     if (role) {
-      await supabase.from('staff_user_roles').insert({ staff_user_id: adminStaffId, role_id: role.id, branch_id: null });
+      await testDb.from('staff_user_roles').insert({ staff_user_id: adminStaffId, role_id: role.id, branch_id: null });
     }
 
-    const { data: svc } = await supabase.from('services').insert({ name: 'PayCut', default_duration_min: 30 }).select('id').single();
+    const { data: svc } = await testDb.from('services').insert({ name: 'PayCut', default_duration_min: 30 }).select('id').single();
     if (svc) serviceId = svc.id;
 
-    await supabase.from('service_prices').insert({ service_id: serviceId, branch_id: branchId, price_amount: 75000, effective_from: new Date(Date.now() - 10000).toISOString() });
+    await testDb.from('service_prices').insert({ service_id: serviceId, branch_id: branchId, price_amount: 75000, effective_from: new Date(Date.now() - 10000).toISOString() });
 
     // Login Admin
     const loginA = await app.handle(new Request(`http://localhost${API_PREFIX}/staff/auth/login`, {
@@ -78,28 +78,28 @@ describe('Payments & Invoice Module', () => {
     otherCustomerToken = loginOther.data.accessToken;
 
     // Create Appointment for Payment Test
-    const { data: apt } = await supabase.from('appointments').insert({
+    const { data: apt } = await testDb.from('appointments').insert({
       branch_id: branchId, customer_id: customerId, source: 'walk_in', status: 'in_queue'
     }).select('id').single();
     if (apt) appointmentId = apt.id;
 
-    await supabase.from('appointment_services').insert({
+    await testDb.from('appointment_services').insert({
       appointment_id: appointmentId, service_id: serviceId, price_amount: 75000, duration_min: 30
     });
   });
 
   afterAll(async () => {
     // Teardown
-    await supabase.from('audit_logs').delete().eq('entity_id', appointmentId); // Hacky clean
-    await supabase.from('invoices').delete().neq('id', '00000000-0000-0000-0000-000000000000'); // Clean all test invoices
-    await supabase.from('payments').delete().eq('appointment_id', appointmentId);
-    await supabase.from('appointment_services').delete().eq('appointment_id', appointmentId);
-    await supabase.from('appointments').delete().eq('id', appointmentId);
-    await supabase.from('service_prices').delete().eq('service_id', serviceId);
-    await supabase.from('services').delete().eq('id', serviceId);
-    await supabase.from('staff_users').delete().eq('id', adminStaffId);
-    await supabase.from('customers').delete().in('id', [customerId, otherCustomerId]);
-    await supabase.from('branches').delete().eq('id', branchId);
+    await testDb.from('audit_logs').delete().eq('entity_id', appointmentId); // Hacky clean
+    await testDb.from('invoices').delete().neq('id', '00000000-0000-0000-0000-000000000000'); // Clean all test invoices
+    await testDb.from('payments').delete().eq('appointment_id', appointmentId);
+    await testDb.from('appointment_services').delete().eq('appointment_id', appointmentId);
+    await testDb.from('appointments').delete().eq('id', appointmentId);
+    await testDb.from('service_prices').delete().eq('service_id', serviceId);
+    await testDb.from('services').delete().eq('id', serviceId);
+    await testDb.from('staff_users').delete().eq('id', adminStaffId);
+    await testDb.from('customers').delete().in('id', [customerId, otherCustomerId]);
+    await testDb.from('branches').delete().eq('id', branchId);
   });
 
   let paymentId = '';
@@ -132,7 +132,7 @@ describe('Payments & Invoice Module', () => {
     expect(invoiceNumber).toContain('INV-');
     
     // Pastikan masuk ke table invoices
-    const { data } = await supabase.from('invoices').select('*').eq('invoice_number', invoiceNumber).single();
+    const { data } = await testDb.from('invoices').select('*').eq('invoice_number', invoiceNumber).single();
     expect(data).toBeDefined();
     expect(data?.payment_id).toBe(paymentId);
   });
@@ -141,7 +141,7 @@ describe('Payments & Invoice Module', () => {
     // Beri waktu BullMQ Worker mengeksekusi job (Non-blocking)
     await new Promise(r => setTimeout(r, 500));
 
-    const { data } = await supabase.from('audit_logs').select('*').eq('entity_id', paymentId).single();
+    const { data } = await testDb.from('audit_logs').select('*').eq('entity_id', paymentId).single();
     expect(data).toBeDefined();
     expect(data?.action).toBe('CREATE_PAYMENT');
     expect(data?.before).toBeNull();
@@ -196,10 +196,10 @@ describe('Payments & Invoice Module', () => {
 
   it('7. Customer dapat menginisiasi pembayaran via gateway (Midtrans mock)', async () => {
     // Create a fresh appointment owned by customer
-    const { data: apt } = await supabase.from('appointments').insert({ branch_id: branchId, customer_id: customerId, source: 'online_booking', status: 'pending' }).select('id').single();
+    const { data: apt } = await testDb.from('appointments').insert({ branch_id: branchId, customer_id: customerId, source: 'online_booking', status: 'pending' }).select('id').single();
     const newAppointmentId = apt!.id;
 
-    await supabase.from('appointment_services').insert({ appointment_id: newAppointmentId, service_id: serviceId, price_amount: 75000, duration_min: 30 });
+    await testDb.from('appointment_services').insert({ appointment_id: newAppointmentId, service_id: serviceId, price_amount: 75000, duration_min: 30 });
 
     const res = await app.handle(new Request(`http://localhost${API_PREFIX}/customer/appointments/${newAppointmentId}/payment`, {
       method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${customerToken}` },
@@ -213,8 +213,8 @@ describe('Payments & Invoice Module', () => {
     expect(body.data.token).toContain('SNAP-');
 
     // cleanup
-    await supabase.from('payments').delete().eq('appointment_id', newAppointmentId);
-    await supabase.from('appointment_services').delete().eq('appointment_id', newAppointmentId);
-    await supabase.from('appointments').delete().eq('id', newAppointmentId);
+    await testDb.from('payments').delete().eq('appointment_id', newAppointmentId);
+    await testDb.from('appointment_services').delete().eq('appointment_id', newAppointmentId);
+    await testDb.from('appointments').delete().eq('id', newAppointmentId);
   });
 });

@@ -1,13 +1,21 @@
 import sharp from 'sharp';
-import { supabase } from '../../lib/supabase';
+import { randomUUID } from 'node:crypto';
+import { db } from '../../lib/db';
+import { mediaAssets } from '../../db/schema';
+import { and, eq, isNull } from 'drizzle-orm';
+import { toDbDate } from '../../db/helpers';
+import { isDuplicateKeyError } from '../../db/procedures';
+import { LocalStorage } from '../../lib/storage';
 
 const MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024;
 const MAX_IMAGE_WIDTH = Number(process.env.MEDIA_MAX_WIDTH || 6000);
 const MAX_IMAGE_HEIGHT = Number(process.env.MEDIA_MAX_HEIGHT || 6000);
 const MAX_IMAGE_PIXELS = Number(process.env.MEDIA_MAX_PIXELS || 25_000_000);
 const SIGNED_URL_TTL_SECONDS = Number(process.env.MEDIA_SIGNED_URL_TTL_SECONDS || 3600);
-const PRIVATE_BUCKET = process.env.SUPABASE_PRIVATE_MEDIA_BUCKET || 'bomb-private-media';
-const PUBLIC_BUCKET = process.env.SUPABASE_PUBLIC_MEDIA_BUCKET || 'bomb-public-media';
+// Nama "bucket" dipertahankan sebagai label logis pada kolom media_assets.bucket
+// (kompatibilitas data lama); pada storage lokal ini hanya penanda public/private.
+const PRIVATE_BUCKET = process.env.MEDIA_PRIVATE_BUCKET || 'bomb-private-media';
+const PUBLIC_BUCKET = process.env.MEDIA_PUBLIC_BUCKET || 'bomb-public-media';
 const ALLOWED_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 const VALID_CONTENT_CATEGORIES = new Set(['promotion', 'service', 'portfolio', 'branch', 'general']);
 
@@ -84,20 +92,6 @@ const optimizeImage = async (file: File) => {
   return { optimized, width, height };
 };
 
-const ensureBucket = async (bucket: string, isPublic: boolean) => {
-  const { data } = await supabase.storage.getBucket(bucket);
-  if (data) return;
-
-  const { error } = await supabase.storage.createBucket(bucket, {
-    public: isPublic,
-    fileSizeLimit: MAX_FILE_SIZE_BYTES,
-    allowedMimeTypes: Array.from(ALLOWED_MIME_TYPES)
-  });
-  if (error && !error.message.toLowerCase().includes('already exists')) {
-    throw new Error(`Bucket media tidak tersedia: ${error.message}`);
-  }
-};
-
 const persistAsset = async ({
   id,
   ownerType,
@@ -121,27 +115,28 @@ const persistAsset = async ({
   width: number;
   height: number;
 }) => {
-  const { error } = await supabase.from('media_assets' as any).insert({
-    id,
-    owner_type: ownerType,
-    owner_id: ownerId,
-    bucket,
-    object_path: objectPath,
-    visibility,
-    purpose,
-    content_type: 'image/webp',
-    size_bytes: size,
-    width,
-    height
-  });
-
-  if (error) {
-    await supabase.storage.from(bucket).remove([objectPath]);
-    throw new Error(
-      error.code === 'PGRST205' || error.code === '42P01'
-        ? 'Migration media_assets belum diterapkan'
-        : `Gagal mencatat aset media: ${error.message}`
-    );
+  try {
+    await db.insert(mediaAssets).values({
+      id,
+      ownerType,
+      ownerId,
+      bucket,
+      objectPath,
+      visibility,
+      purpose,
+      contentType: 'image/webp',
+      sizeBytes: size,
+      width,
+      height
+    } as any);
+  } catch (error: any) {
+    // Rollback file bila pencatatan gagal (idempotensi upload).
+    if (visibility === 'public') await LocalStorage.removePublic(objectPath);
+    else await LocalStorage.removePrivate(objectPath);
+    if (isDuplicateKeyError(error)) {
+      throw new Error('Aset media dengan path tersebut sudah ada');
+    }
+    throw new Error(`Gagal mencatat aset media: ${error?.message ?? 'unknown'}`);
   }
 };
 
@@ -154,9 +149,10 @@ export class MediaService {
   }: UploadMediaInput) {
     const safePurpose = sanitizePurpose(purpose);
     const { optimized, width, height } = await optimizeImage(file);
-    await ensureBucket(PRIVATE_BUCKET, false);
-
-    const assetId = crypto.randomUUID();
+    // Dokumentasi appointment (foto before/after) HARUS durable: URL-nya disimpan
+    // permanen di appointment (`customer_media_urls`). Karena itu disimpan sebagai
+    // publik (path UUID tak tertebak) agar URL stabil selamanya.
+    const assetId = randomUUID();
     const date = new Date().toISOString().slice(0, 10);
     const objectPath = [
       ownerType,
@@ -165,45 +161,32 @@ export class MediaService {
       `${safePurpose}-${assetId}.webp`
     ].join('/');
 
-    const { error: uploadError } = await supabase.storage
-      .from(PRIVATE_BUCKET)
-      .upload(objectPath, optimized, {
-        contentType: 'image/webp',
-        cacheControl: 'private, max-age=300',
-        upsert: false
-      });
-    if (uploadError) {
-      throw new Error(`Gagal mengupload gambar ke private storage: ${uploadError.message}`);
-    }
+    await LocalStorage.savePublic(objectPath, optimized);
 
     await persistAsset({
       id: assetId,
       ownerType,
       ownerId: uploaderId,
-      bucket: PRIVATE_BUCKET,
+      bucket: PUBLIC_BUCKET,
       objectPath,
-      visibility: 'private',
+      visibility: 'public',
       purpose: safePurpose,
       size: optimized.length,
       width,
       height
     });
 
-    const { data: signed, error: signedError } = await supabase.storage
-      .from(PRIVATE_BUCKET)
-      .createSignedUrl(objectPath, SIGNED_URL_TTL_SECONDS);
-    if (signedError || !signed?.signedUrl) {
-      throw new Error(`Gagal membuat signed URL media: ${signedError?.message || 'unknown'}`);
-    }
+    const durableUrl = LocalStorage.publicUrl(objectPath);
 
     return {
       asset_id: assetId,
-      bucket: PRIVATE_BUCKET,
+      bucket: PUBLIC_BUCKET,
       path: objectPath,
-      visibility: 'private',
-      signed_url: signed.signedUrl,
-      public_url: signed.signedUrl,
-      expires_in: SIGNED_URL_TTL_SECONDS,
+      visibility: 'public',
+      // signed_url dipertahankan (= public_url) demi kompatibilitas konsumen lama.
+      signed_url: durableUrl,
+      public_url: durableUrl,
+      expires_in: null,
       content_type: 'image/webp',
       size: optimized.length,
       width,
@@ -217,30 +200,38 @@ export class MediaService {
     ownerId: string,
     assetId: string
   ) {
-    const { data: asset, error } = await supabase
-      .from('media_assets' as any)
-      .select('id, bucket, object_path, content_type, size_bytes, width, height, purpose')
-      .eq('id', assetId)
-      .eq('owner_type', ownerType)
-      .eq('owner_id', ownerId)
-      .eq('visibility', 'private')
-      .is('deleted_at', null)
-      .maybeSingle();
+    const [asset] = await db
+      .select({
+        id: mediaAssets.id,
+        bucket: mediaAssets.bucket,
+        object_path: mediaAssets.objectPath,
+        content_type: mediaAssets.contentType,
+        size_bytes: mediaAssets.sizeBytes,
+        width: mediaAssets.width,
+        height: mediaAssets.height,
+        purpose: mediaAssets.purpose
+      })
+      .from(mediaAssets)
+      .where(
+        and(
+          eq(mediaAssets.id, assetId),
+          eq(mediaAssets.ownerType, ownerType),
+          eq(mediaAssets.ownerId, ownerId),
+          eq(mediaAssets.visibility, 'private'),
+          isNull(mediaAssets.deletedAt)
+        )
+      )
+      .limit(1);
 
-    if (error || !asset) {
+    if (!asset) {
       throw new Error('Media tidak ditemukan atau bukan milik Anda');
     }
 
-    const { data: signed, error: signedError } = await supabase.storage
-      .from(asset.bucket)
-      .createSignedUrl(asset.object_path, SIGNED_URL_TTL_SECONDS);
-    if (signedError || !signed?.signedUrl) {
-      throw new Error('Gagal membuat signed URL media');
-    }
+    const signedUrl = LocalStorage.signedUrl(asset.object_path, SIGNED_URL_TTL_SECONDS);
 
     return {
       asset_id: asset.id,
-      signed_url: signed.signedUrl,
+      signed_url: signedUrl,
       expires_in: SIGNED_URL_TTL_SECONDS,
       content_type: asset.content_type,
       size: Number(asset.size_bytes),
@@ -255,35 +246,30 @@ export class MediaService {
     ownerId: string,
     assetId: string
   ) {
-    const { data: asset, error } = await supabase
-      .from('media_assets' as any)
-      .select('id, bucket, object_path')
-      .eq('id', assetId)
-      .eq('owner_type', ownerType)
-      .eq('owner_id', ownerId)
-      .eq('visibility', 'private')
-      .is('deleted_at', null)
-      .maybeSingle();
+    const [asset] = await db
+      .select({ id: mediaAssets.id, bucket: mediaAssets.bucket, object_path: mediaAssets.objectPath })
+      .from(mediaAssets)
+      .where(
+        and(
+          eq(mediaAssets.id, assetId),
+          eq(mediaAssets.ownerType, ownerType),
+          eq(mediaAssets.ownerId, ownerId),
+          eq(mediaAssets.visibility, 'private'),
+          isNull(mediaAssets.deletedAt)
+        )
+      )
+      .limit(1);
 
-    if (error || !asset) {
+    if (!asset) {
       throw new Error('Media tidak ditemukan atau bukan milik Anda');
     }
 
-    const { error: removeError } = await supabase.storage
-      .from(asset.bucket)
-      .remove([asset.object_path]);
-    if (removeError) {
-      throw new Error(`Gagal menghapus object media: ${removeError.message}`);
-    }
+    await LocalStorage.removePrivate(asset.object_path);
 
-    const deletedAt = new Date().toISOString();
-    const { error: updateError } = await supabase
-      .from('media_assets' as any)
-      .update({ deleted_at: deletedAt, updated_at: deletedAt })
-      .eq('id', assetId);
-    if (updateError) {
-      throw new Error(`Gagal menandai media terhapus: ${updateError.message}`);
-    }
+    await db
+      .update(mediaAssets)
+      .set({ deletedAt: toDbDate(new Date()) })
+      .where(eq(mediaAssets.id, assetId));
   }
 
   static async uploadContentImage({
@@ -293,20 +279,11 @@ export class MediaService {
   }: UploadContentInput) {
     const safeCategory = sanitizeCategory(category);
     const { optimized, width, height } = await optimizeImage(file);
-    await ensureBucket(PUBLIC_BUCKET, true);
 
-    const assetId = crypto.randomUUID();
+    const assetId = randomUUID();
     const objectPath = `${safeCategory}/${assetId}.webp`;
-    const { error: uploadError } = await supabase.storage
-      .from(PUBLIC_BUCKET)
-      .upload(objectPath, optimized, {
-        contentType: 'image/webp',
-        cacheControl: 'public, max-age=31536000, immutable',
-        upsert: false
-      });
-    if (uploadError) {
-      throw new Error(`Gagal mengupload gambar konten: ${uploadError.message}`);
-    }
+
+    await LocalStorage.savePublic(objectPath, optimized);
 
     await persistAsset({
       id: assetId,
@@ -321,16 +298,12 @@ export class MediaService {
       height
     });
 
-    const { data: publicData } = supabase.storage
-      .from(PUBLIC_BUCKET)
-      .getPublicUrl(objectPath);
-
     return {
       asset_id: assetId,
       bucket: PUBLIC_BUCKET,
       path: objectPath,
       visibility: 'public',
-      public_url: publicData.publicUrl,
+      public_url: LocalStorage.publicUrl(objectPath),
       content_type: 'image/webp',
       size: optimized.length,
       width,
@@ -339,3 +312,5 @@ export class MediaService {
     };
   }
 }
+
+export { PRIVATE_BUCKET };

@@ -103,6 +103,34 @@ export const adminCatalogDocs = {
       errors: commonMutationErrors
     })
   },
+  listPendingBarbers: {
+    detail: adminDetail({
+      tag: ADMIN_TAGS.barbers,
+      summary: 'Daftar Kepster Menunggu Konfirmasi (HQ)',
+      description: 'Mengambil kepster yang mendaftar mandiri dan masih menunggu konfirmasi admin (approval_status = pending), lengkap dengan data staff dan cabang.',
+      required: ['Authorization: Bearer <access_token>', "permission 'manage_barber'"],
+      optional: [],
+      successMessage: 'Daftar kepster menunggu konfirmasi',
+      successData: [barberExample],
+      errors: commonMutationErrors
+    })
+  },
+  updateBarberApproval: {
+    body: t.Object({
+      action: t.Union([t.Literal('approve'), t.Literal('reject')], { description: 'approve untuk menyetujui, reject untuk menolak' }),
+      reason: t.Optional(t.String({ description: 'Alasan (opsional, dicatat pada audit log)' }))
+    }),
+    detail: adminDetail({
+      tag: ADMIN_TAGS.barbers,
+      summary: 'Konfirmasi Pendaftaran Kepster (HQ)',
+      description: 'Menyetujui atau menolak pendaftaran kepster. approve mengubah approval_status menjadi approved (kepster dapat login), reject menjadi rejected.',
+      required: ['Authorization: Bearer <access_token>', "permission 'manage_barber'"],
+      optional: [],
+      successMessage: 'Kepster disetujui',
+      successData: barberExample,
+      errors: commonMutationErrors
+    })
+  },
   listServices: {
     detail: adminDetail({
       tag: ADMIN_TAGS.services,
@@ -235,50 +263,64 @@ export const adminCatalogDocs = {
   },
 
   createBarber: {
+    // [ADMIN] Admin membuat AKUN kepster baru langsung (bukan memilih staff user
+    // yang sudah ada): membuat staff_users + barbers sekaligus, langsung approved.
     body: t.Object({
-      staff_user_id: uuidField('UUID staff user yang menjadi akun login barber.', ADMIN_EXAMPLES.staffId),
-      branch_id: uuidField('UUID cabang penempatan barber.', ADMIN_EXAMPLES.branchId),
-      display_name: t.String({
+      full_name: t.String({
         minLength: 2,
         maxLength: 255,
-        description: 'Nama barber yang tampil di aplikasi.',
+        description: 'Nama lengkap kepster (untuk akun staff).',
         examples: ['Budi Santoso']
       }),
-      bio: t.Optional(t.String({
-        maxLength: 1000,
-        description: 'Biografi atau spesialisasi barber.',
-        examples: ['Spesialis fade dan classic cut.']
+      email: t.String({
+        format: 'email',
+        description: 'Email login kepster (harus unik).',
+        examples: ['budi@bombbarbers.id']
+      }),
+      password: t.String({
+        minLength: 6,
+        description: 'Password awal login kepster (min 6 karakter).',
+        examples: ['rahasia123']
+      }),
+      phone: t.Optional(t.String({
+        maxLength: 32,
+        description: 'Nomor telepon kepster.',
+        examples: ['62811000001']
       })),
+      display_name: t.Optional(t.String({
+        minLength: 2,
+        maxLength: 255,
+        description: 'Nama tampilan di aplikasi (default = nama lengkap).',
+        examples: ['Budi']
+      })),
+      branch_id: t.Optional(uuidField('UUID cabang penempatan (opsional).', ADMIN_EXAMPLES.branchId)),
       service_radius_km: t.Optional(t.Numeric({
         minimum: 0,
         description: 'Radius layanan home service dalam kilometer.',
         examples: [5]
-      })),
-      default_commission_rule_id: t.Optional(uuidField(
-        'UUID aturan komisi default barber.',
-        '67676767-6767-4676-8676-676767676767'
-      ))
+      }))
     }, requestExamples(
       {
-        staff_user_id: ADMIN_EXAMPLES.staffId,
-        branch_id: ADMIN_EXAMPLES.branchId,
-        display_name: 'Budi Santoso'
+        full_name: 'Budi Santoso',
+        email: 'budi@bombbarbers.id',
+        password: 'rahasia123'
       },
       {
-        staff_user_id: ADMIN_EXAMPLES.staffId,
+        full_name: 'Budi Santoso',
+        email: 'budi@bombbarbers.id',
+        password: 'rahasia123',
+        phone: '62811000001',
+        display_name: 'Budi',
         branch_id: ADMIN_EXAMPLES.branchId,
-        display_name: 'Budi Santoso',
-        bio: 'Spesialis fade dan classic cut.',
-        service_radius_km: 5,
-        default_commission_rule_id: '67676767-6767-4676-8676-676767676767'
+        service_radius_km: 5
       }
     )),
     detail: adminDetail({
       tag: ADMIN_TAGS.barbers,
-      summary: 'Buat Profil Barber',
-      description: 'Menghubungkan akun staff dengan profil barber dan menempatkannya pada cabang tertentu.',
-      required: ['staff_user_id', 'branch_id', 'display_name', 'Authorization: Bearer <access_token>', "permission 'manage_barber'"],
-      optional: ['bio', 'service_radius_km', 'default_commission_rule_id'],
+      summary: 'Buat Akun Kepster Baru',
+      description: 'Membuat akun staff + profil kepster sekaligus (langsung approved) dan menempatkannya pada cabang.',
+      required: ['full_name', 'email', 'password', 'Authorization: Bearer <access_token>', "permission 'manage_barber'"],
+      optional: ['phone', 'display_name', 'branch_id', 'service_radius_km'],
       successStatus: 201,
       successMessage: 'Barber dibuat',
       successData: barberExample,
@@ -291,7 +333,8 @@ export const adminCatalogDocs = {
       staff_user_id: t.Optional(uuidField('UUID staff user pengganti.', ADMIN_EXAMPLES.staffId)),
       branch_id: t.Optional(uuidField('UUID cabang penempatan baru.', ADMIN_EXAMPLES.branchId)),
       display_name: t.Optional(t.String({ minLength: 2, examples: ['Budi The Barber'] })),
-      bio: t.Optional(t.String({ maxLength: 1000, examples: ['Spesialis modern fade.'] })),
+      // Boleh string atau null: null/kosong berarti mengosongkan bio pada profil.
+      bio: t.Optional(t.Union([t.String({ maxLength: 1000, examples: ['Spesialis modern fade.'] }), t.Null()])),
       service_radius_km: t.Optional(t.Numeric({ minimum: 0, examples: [8] })),
       live_status: t.Optional(t.UnionEnum(['offline', 'available', 'serving'], {
         description: 'Status barber tersimpan. Status realtime utama tetap berasal dari Redis.',

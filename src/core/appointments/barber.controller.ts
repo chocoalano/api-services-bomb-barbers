@@ -1,24 +1,48 @@
 import { createSuccessResponse, createErrorResponse } from '../../shared/response';
+import { handleControllerError } from '../../shared/controller-error';
+import { logger } from '../../lib/logger';
 import { AppointmentService } from './service';
-import { supabase } from '../../lib/supabase';
-import { emitBarberLocation } from '../../lib/socket';
+import { db } from '../../lib/db';
+import { snakeKeys, toDbDate } from '../../db/helpers';
+import { barbers, appointments, payments, appointmentServices, services, branches, customers } from '../../db/schema';
+import { and, eq } from 'drizzle-orm';
+import { asRpcResult, refundPaymentToWallet } from '../../db/procedures';
+import { emitBarberLocation, emitWalletRefundCredited, emitAppointmentStatusChanged } from '../../lib/socket';
 import { RealtimeTrackingService } from '../tracking/service';
 import { redis, getBarberStatusKey, getTrackingRouteKey, getTrackingCustomerKey } from '../../lib/redis';
+import { GatewayFactory } from '../payments/gateways/factory';
+import { PaymentService } from '../payments/service';
 
 const VALID_PRESENCE_STATUSES = ['online', 'offline', 'unavailable'] as const;
 
 async function resolveBarber(staffId: string) {
-  const { data: barber } = await supabase.from('barbers').select('id').eq('staff_user_id', staffId).single();
-  return barber;
+  const [barber] = await db.select({ id: barbers.id }).from(barbers).where(eq(barbers.staffUserId, staffId)).limit(1);
+  return barber ?? null;
 }
 
 async function resolveAppointmentForBarber(appointmentId: string, barberId: string) {
-  const { data: apt } = await supabase
-    .from('appointments')
-    .select('barber_id, status, customer_media_urls, fulfillment_type, appointment_services(id)')
-    .eq('id', appointmentId)
-    .single();
+  const [apt] = snakeKeys(
+    await db
+      .select({
+        barber_id: appointments.barberId,
+        customer_id: appointments.customerId,
+        branch_id: appointments.branchId,
+        status: appointments.status,
+        scheduled_at: appointments.scheduledAt,
+        journey_status: appointments.journeyStatus,
+        customer_media_urls: appointments.customerMediaUrls,
+        fulfillment_type: appointments.fulfillmentType
+      })
+      .from(appointments)
+      .where(eq(appointments.id, appointmentId))
+      .limit(1)
+  );
   if (!apt || apt.barber_id !== barberId) return null;
+  const svc = await db
+    .select({ id: appointmentServices.id })
+    .from(appointmentServices)
+    .where(eq(appointmentServices.appointmentId, appointmentId));
+  apt.appointment_services = svc;
   return apt;
 }
 
@@ -28,8 +52,7 @@ export class BarberAppointmentController {
       const queue = await AppointmentService.getBarberDashboardQueue(staffId);
       return createSuccessResponse('Daftar antrean dan order berjalan barber', queue);
     } catch (err: any) {
-      set.status = err.status || 400;
-      return createErrorResponse(err.message);
+      return handleControllerError(err, set, 'barber.getMyQueue', { detail: false });
     }
   }
 
@@ -44,6 +67,11 @@ export class BarberAppointmentController {
         set.status = 400; return createErrorResponse('Pesanan hanya bisa diterima jika statusnya pending');
       }
 
+      // [REVISI B8] Tolak jika kepster sudah melampaui kuota harian (order ini dikecualikan).
+      if (apt.scheduled_at) {
+        await AppointmentService.assertBarberDailyQuota(barber.id, apt.scheduled_at, params.id);
+      }
+
       const res = await AppointmentService.updateAppointmentStatus(params.id, 'confirmed', {
         actor: { type: 'staff', id: staffId, role: 'barber' },
         reason: 'Order diterima oleh barber'
@@ -54,8 +82,88 @@ export class BarberAppointmentController {
         raw_status: res.status
       });
     } catch (err: any) {
-      set.status = err.status || 400;
-      return createErrorResponse(err.message);
+      return handleControllerError(err, set, 'barber.acceptOrder', { detail: false });
+    }
+  }
+
+  /**
+   * Barber memverifikasi status pembayaran ke Midtrans — TANPA menerima order.
+   * Setelah endpoint ini sukses, barber bisa memilih terima (/accept) atau tolak (/reject).
+   *
+   * - Cash / tidak ada payment → langsung return payment_status: 'cash'
+   * - Sudah paid di DB → return payment_status: 'paid' (tidak ada aksi)
+   * - Belum paid, ada gateway_reference → cek Midtrans → jika settlement → tandai paid
+   * - Belum paid, tidak ada gateway_reference → error (pelanggan belum bayar)
+   */
+  static async verifyPaymentOnly({ params, staffId, set }: any) {
+    try {
+      const barber = await resolveBarber(staffId);
+      if (!barber) { set.status = 403; return createErrorResponse('Hanya barber yang dapat melakukan ini'); }
+
+      const apt = await resolveAppointmentForBarber(params.id, barber.id);
+      if (!apt) { set.status = 403; return createErrorResponse('Tidak dapat mengakses pesanan barber lain'); }
+      if (apt.status !== 'pending') {
+        set.status = 400;
+        return createErrorResponse('Pengecekan pembayaran hanya berlaku untuk pesanan dengan status pending');
+      }
+
+      const [payment] = await db
+        .select({ id: payments.id, status: payments.status, method: payments.method, gateway_reference: payments.gatewayReference, total_amount: payments.totalAmount })
+        .from(payments)
+        .where(eq(payments.appointmentId, params.id))
+        .limit(1);
+
+      const onlinePaymentMethods = ['qris', 'card', 'bank_transfer', 'ewallet'];
+      const isOnlinePayment = payment && onlinePaymentMethods.includes(payment.method ?? '');
+
+      // Cash atau tidak ada payment → tidak perlu verifikasi
+      if (!isOnlinePayment) {
+        return createSuccessResponse('Order ini menggunakan pembayaran tunai, tidak perlu verifikasi', {
+          payment_status: 'cash',
+          needs_verify: false
+        });
+      }
+
+      // Sudah paid di DB → tidak perlu ke Midtrans lagi
+      if (payment.status === 'paid') {
+        return createSuccessResponse('Pembayaran sudah terkonfirmasi', {
+          payment_status: 'paid',
+          needs_verify: false
+        });
+      }
+
+      // Pelanggan belum memulai transaksi
+      if (!payment.gateway_reference) {
+        set.status = 400;
+        return createErrorResponse('Pelanggan belum menyelesaikan pembayaran. Minta pelanggan untuk membuka aplikasi dan melakukan pembayaran terlebih dahulu.');
+      }
+
+      // Cek ke Midtrans
+      const gateway = GatewayFactory.getGateway('midtrans');
+      if (!gateway.checkTransactionStatus) {
+        set.status = 500;
+        return createErrorResponse('Gateway tidak mendukung verifikasi status transaksi');
+      }
+
+      const statusData = await gateway.checkTransactionStatus(payment.gateway_reference);
+      const paidStatuses = ['settlement', 'capture'];
+
+      if (!paidStatuses.includes(statusData.transaction_status)) {
+        set.status = 400;
+        return createErrorResponse(
+          `Pembayaran belum selesai di Midtrans (status: ${statusData.transaction_status}). Minta pelanggan menyelesaikan pembayaran.`
+        );
+      }
+
+      // Midtrans mengkonfirmasi → tandai paid di DB, tapi JANGAN accept order
+      await PaymentService.updatePaymentStatus(payment.id, 'paid', staffId, 'staff');
+
+      return createSuccessResponse('Pembayaran terkonfirmasi. Silakan terima atau tolak order.', {
+        payment_status: 'paid',
+        needs_verify: false
+      });
+    } catch (err: any) {
+      return handleControllerError(err, set, 'barber.verifyPaymentOnly', { detail: false });
     }
   }
 
@@ -84,10 +192,8 @@ export class BarberAppointmentController {
 
       return createSuccessResponse('Lokasi berhasil diperbarui', tracking);
     } catch (err: any) {
-      set.status = err.message.includes('Profil barber') || err.message.includes('Akses')
-        ? 403
-        : 400;
-      return createErrorResponse(err.message);
+      const status = err.message?.includes('Profil barber') || err.message?.includes('Akses') ? 403 : 400;
+      return handleControllerError(err, set, 'barber.pushLocation', { status, detail: false });
     }
   }
 
@@ -122,8 +228,60 @@ export class BarberAppointmentController {
         raw_status: res.status
       });
     } catch (err: any) {
-      set.status = err.status || 400;
-      return createErrorResponse(err.message);
+      return handleControllerError(err, set, 'barber.arriveAtLocation', { detail: false });
+    }
+  }
+
+  /**
+   * Barber menekan "Menuju Lokasi". Menandai barber sedang dalam perjalanan
+   * (journey_status = 'en_route') dan memberi tahu customer secara realtime.
+   *
+   * Gerbang waktu (§workflow): hanya boleh dimulai maksimal 1 jam sebelum jadwal
+   * booking. Perbandingan memakai instan absolut (timestamptz), setara dengan
+   * evaluasi di zona Asia/Jakarta. Validasi ini WAJIB di backend, tidak boleh
+   * hanya mengandalkan frontend.
+   */
+  static async departToLocation({ params, staffId, set }: any) {
+    try {
+      const barber = await resolveBarber(staffId);
+      if (!barber) { set.status = 403; return createErrorResponse('Hanya barber yang dapat melakukan ini'); }
+
+      const apt = await resolveAppointmentForBarber(params.id, barber.id);
+      if (!apt) { set.status = 403; return createErrorResponse('Tidak dapat memulai perjalanan untuk pesanan barber lain'); }
+      if (apt.status !== 'confirmed') {
+        set.status = 400; return createErrorResponse('Barber hanya bisa menuju lokasi jika status order adalah confirmed');
+      }
+      if (!apt.scheduled_at) {
+        set.status = 400; return createErrorResponse('Jadwal booking tidak tersedia untuk pesanan ini.');
+      }
+
+      const trackingAvailableAtMs = new Date(apt.scheduled_at).getTime() - 60 * 60 * 1000;
+      if (Date.now() < trackingAvailableAtMs) {
+        set.status = 400;
+        return createErrorResponse('Order baru dapat dimulai 1 jam sebelum waktu booking.');
+      }
+
+      await RealtimeTrackingService.setJourneyStatus(params.id, 'en_route');
+
+      // Beritahu customer (realtime) bahwa barber sudah menuju lokasi — status
+      // appointment tetap 'confirmed', hanya journey_status yang berubah.
+      emitAppointmentStatusChanged({
+        appointment_id: params.id,
+        status: 'on_the_way',
+        raw_status: apt.status,
+        barber_id: barber.id,
+        customer_id: (apt as any).customer_id ?? null,
+        branch_id: (apt as any).branch_id ?? null,
+        timestamp: new Date().toISOString()
+      });
+
+      return createSuccessResponse('Barber menuju lokasi customer', {
+        journey_status: 'en_route',
+        status: 'on_the_way',
+        raw_status: apt.status
+      });
+    } catch (err: any) {
+      return handleControllerError(err, set, 'barber.departToLocation', { detail: false });
     }
   }
 
@@ -141,19 +299,79 @@ export class BarberAppointmentController {
       const reason = (body?.reason ?? '').trim();
       if (!reason) { set.status = 400; return createErrorResponse('Alasan penolakan wajib diisi'); }
 
+      // Ambil data appointment lengkap (butuh customer_id untuk refund)
+      const [fullApt] = await db
+        .select({ id: appointments.id, customer_id: appointments.customerId })
+        .from(appointments)
+        .where(eq(appointments.id, params.id))
+        .limit(1);
+
+      // Cek apakah ada payment yang sudah lunas → perlu refund
+      const [payment] = await db
+        .select({ id: payments.id, status: payments.status, total_amount: payments.totalAmount, method: payments.method })
+        .from(payments)
+        .where(eq(payments.appointmentId, params.id))
+        .limit(1);
+
+      // Batalkan appointment
       const res = await AppointmentService.updateAppointmentStatus(params.id, 'cancelled', {
         actor: { type: 'staff', id: staffId, role: 'barber' },
         reason: `Ditolak barber: ${reason}`
       });
+
+      // Refund ke wallet customer jika payment sudah 'paid' (bukan cash)
+      let walletCredited = false;
+      let refundAmount = 0;
+
+      const onlinePaymentMethods = ['qris', 'card', 'bank_transfer', 'ewallet'];
+      const isPaidOnline = payment &&
+        payment.status === 'paid' &&
+        onlinePaymentMethods.includes(payment.method ?? '');
+
+      if (isPaidOnline && fullApt?.customer_id) {
+        refundAmount = Number(payment.total_amount);
+
+        try {
+          // Transisi payment→refunded, catat refund, dan kredit wallet dalam SATU
+          // transaksi atomik. Bila ada langkah gagal, semua rollback sehingga tidak
+          // ada payment ter-refund tanpa wallet dikredit. (M6)
+          const { data: refundResult, error: refundErr } = await asRpcResult(() =>
+            refundPaymentToWallet({
+              paymentId: payment.id,
+              customerId: fullApt.customer_id as string,
+              amount: refundAmount,
+              reason: `Refund order ditolak barber - ${reason}`,
+              processedBy: staffId
+            })
+          );
+
+          if (refundErr) throw new Error(refundErr.message);
+
+          walletCredited = true;
+
+          // Notifikasi real-time ke customer app
+          emitWalletRefundCredited({
+            customer_id: fullApt.customer_id,
+            appointment_id: params.id,
+            amount: refundAmount,
+            new_balance: refundResult?.new_balance ?? 0
+          });
+        } catch (refundErr: any) {
+          logger.error({ err: refundErr, appointmentId: params.id }, '[rejectOrder] Gagal proses refund');
+          // Jangan gagalkan penolakan karena error refund — catat saja untuk follow-up manual
+        }
+      }
+
       return createSuccessResponse('Order berhasil ditolak', {
         ...res,
         status: 'rejected',
         raw_status: res.status,
-        reject_reason: reason
+        reject_reason: reason,
+        refund_amount: walletCredited ? refundAmount : 0,
+        wallet_credited: walletCredited
       });
     } catch (err: any) {
-      set.status = err.status || 400;
-      return createErrorResponse(err.message);
+      return handleControllerError(err, set, 'barber.rejectOrder', { detail: false });
     }
   }
 
@@ -179,8 +397,7 @@ export class BarberAppointmentController {
         raw_status: res.status
       });
     } catch (err: any) {
-      set.status = err.status || 400;
-      return createErrorResponse(err.message);
+      return handleControllerError(err, set, 'barber.markNoShow', { detail: false });
     }
   }
 
@@ -195,18 +412,13 @@ export class BarberAppointmentController {
       const barber = await resolveBarber(staffId);
       if (!barber) { set.status = 403; return createErrorResponse('Profil barber tidak ditemukan'); }
 
-      const { error } = await supabase
-        .from('barbers')
-        .update({ live_status: status, updated_at: new Date().toISOString() })
-        .eq('id', barber.id);
-      if (error) throw new Error('Gagal memperbarui status kehadiran: ' + error.message);
+      await db.update(barbers).set({ liveStatus: status }).where(eq(barbers.id, barber.id));
 
       await redis.set(getBarberStatusKey(barber.id), status);
 
       return createSuccessResponse('Status kehadiran berhasil diperbarui', { status });
     } catch (err: any) {
-      set.status = err.status || 400;
-      return createErrorResponse(err.message);
+      return handleControllerError(err, set, 'barber.setPresenceStatus', { detail: false });
     }
   }
 
@@ -215,12 +427,23 @@ export class BarberAppointmentController {
       const barber = await resolveBarber(staffId);
       if (!barber) { set.status = 403; return createErrorResponse('Hanya barber yang dapat melakukan ini'); }
 
-      const { data: apt } = await supabase
-        .from('appointments')
-        .select('id, status, fulfillment_type, service_address, destination_latitude, destination_longitude, location_notes, customer_media_urls, journey_status')
-        .eq('id', params.id)
-        .eq('barber_id', barber.id)
-        .maybeSingle();
+      const [apt] = snakeKeys(
+        await db
+          .select({
+            id: appointments.id,
+            status: appointments.status,
+            fulfillment_type: appointments.fulfillmentType,
+            service_address: appointments.serviceAddress,
+            destination_latitude: appointments.destinationLatitude,
+            destination_longitude: appointments.destinationLongitude,
+            location_notes: appointments.locationNotes,
+            customer_media_urls: appointments.customerMediaUrls,
+            journey_status: appointments.journeyStatus
+          })
+          .from(appointments)
+          .where(and(eq(appointments.id, params.id), eq(appointments.barberId, barber.id)))
+          .limit(1)
+      );
 
       if (!apt) { set.status = 404; return createErrorResponse('Appointment tidak ditemukan'); }
 
@@ -251,8 +474,7 @@ export class BarberAppointmentController {
         customer_location: customerLocation
       });
     } catch (err: any) {
-      set.status = err.status || 400;
-      return createErrorResponse(err.message);
+      return handleControllerError(err, set, 'barber.getNavigation', { detail: false });
     }
   }
 
@@ -261,8 +483,8 @@ export class BarberAppointmentController {
       const res = await AppointmentService.getBarberAppointmentHistory(staffId, query ?? {});
       return createSuccessResponse('Riwayat appointment barber', res.data, res.meta);
     } catch (err: any) {
-      set.status = err.message.includes('limit') || err.message.includes('page') ? 400 : 500;
-      return createErrorResponse(err.message);
+      const status = err.message?.includes('limit') || err.message?.includes('page') ? 400 : 500;
+      return handleControllerError(err, set, 'barber.getHistory', { status, detail: false });
     }
   }
 
@@ -271,25 +493,46 @@ export class BarberAppointmentController {
       const barber = await resolveBarber(staffId);
       if (!barber) { set.status = 403; return createErrorResponse('Hanya barber yang dapat melakukan ini'); }
 
-      const { data: apt } = await supabase
-        .from('appointments')
-        .select(`
-          *,
-          appointment_services (id, service_id, price_amount, duration_min,
-            services (id, name, image_url)
-          ),
-          branches (id, name, address, latitude, longitude),
-          customers (id, full_name, phone)
-        `)
-        .eq('id', params.id)
-        .eq('barber_id', barber.id)
-        .maybeSingle();
+      const [row] = await db
+        .select({ appt: appointments, branchId: branches.id, branchName: branches.name, branchAddress: branches.address, branchLat: branches.latitude, branchLng: branches.longitude, custId: customers.id, custFullName: customers.fullName, custPhone: customers.phone })
+        .from(appointments)
+        .leftJoin(branches, eq(appointments.branchId, branches.id))
+        .leftJoin(customers, eq(appointments.customerId, customers.id))
+        .where(and(eq(appointments.id, params.id), eq(appointments.barberId, barber.id)))
+        .limit(1);
 
-      if (!apt) { set.status = 404; return createErrorResponse('Appointment tidak ditemukan'); }
+      if (!row) { set.status = 404; return createErrorResponse('Appointment tidak ditemukan'); }
+
+      const svcRows = await db
+        .select({
+          id: appointmentServices.id,
+          service_id: appointmentServices.serviceId,
+          price_amount: appointmentServices.priceAmount,
+          duration_min: appointmentServices.durationMin,
+          serviceName: services.name,
+          serviceImageUrl: services.imageUrl,
+          serviceIdRef: services.id
+        })
+        .from(appointmentServices)
+        .leftJoin(services, eq(appointmentServices.serviceId, services.id))
+        .where(eq(appointmentServices.appointmentId, params.id));
+
+      const apt = {
+        ...snakeKeys(row.appt),
+        appointment_services: svcRows.map((s) => ({
+          id: s.id,
+          service_id: s.service_id,
+          price_amount: s.price_amount,
+          duration_min: s.duration_min,
+          services: s.serviceIdRef ? { id: s.serviceIdRef, name: s.serviceName, image_url: s.serviceImageUrl } : null
+        })),
+        branches: row.branchId ? { id: row.branchId, name: row.branchName, address: row.branchAddress, latitude: row.branchLat, longitude: row.branchLng } : null,
+        customers: row.custId ? { id: row.custId, full_name: row.custFullName, phone: row.custPhone } : null
+      };
+
       return createSuccessResponse('Detail appointment', apt);
     } catch (err: any) {
-      set.status = err.status || 400;
-      return createErrorResponse(err.message);
+      return handleControllerError(err, set, 'barber.getDetail', { detail: false });
     }
   }
 
@@ -298,8 +541,8 @@ export class BarberAppointmentController {
       const snapshot = await RealtimeTrackingService.getBarberSnapshot(params.id, staffId);
       return createSuccessResponse('Tracking snapshot', snapshot);
     } catch (err: any) {
-      set.status = err.message.includes('Akses') || err.message.includes('ditemukan') ? 403 : 400;
-      return createErrorResponse(err.message);
+      const status = err.message?.includes('Akses') || err.message?.includes('ditemukan') ? 403 : 400;
+      return handleControllerError(err, set, 'barber.getTracking', { status, detail: false });
     }
   }
 
@@ -315,10 +558,15 @@ export class BarberAppointmentController {
         actor: { type: 'staff', id: staffId, role: 'barber' },
         reason: 'Pelayanan dimulai oleh barber'
       });
+
+      // [REVISI A11] Penyelesaian order tetap manual & LANGSUNG saat kepster
+      // menekan "Layanan Selesai" (pendapatan tak tertunda). Grace 30 menit
+      // "auto-done" hanya soal tampilan di sisi customer (order completed tetap
+      // terlihat 30 menit sebelum pindah ke Riwayat), ditangani di app customer.
+
       return createSuccessResponse('Pelayanan dimulai', res);
     } catch (err: any) {
-      set.status = err.status || 400;
-      return createErrorResponse(err.message);
+      return handleControllerError(err, set, 'barber.startService', { detail: false });
     }
   }
 
@@ -350,8 +598,7 @@ export class BarberAppointmentController {
       });
       return createSuccessResponse('Pelayanan diselesaikan', res);
     } catch (err: any) {
-      set.status = err.status || 400;
-      return createErrorResponse(err.message);
+      return handleControllerError(err, set, 'barber.completeService', { detail: false });
     }
   }
 }

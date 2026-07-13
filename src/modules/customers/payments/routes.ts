@@ -19,6 +19,7 @@ export const customerPaymentRoutes = new Elysia()
     .use(customerAuthMiddleware)
     .get('/:id/payment', CustomerPaymentController.getPaymentByAppointment)
     .post('/:id/payments', CustomerPaymentController.createPayment, paymentDocs.customerCreatePayment)
+    .patch('/:id/payments/confirm', CustomerPaymentController.confirmPayment)
   )
   // ── Deprecated: /api/v1/invoices → /api/v1/customers/invoices ─────────────
   .get('/api/v1/invoices/:invoiceNumber', deprecated('/api/v1/customers/invoices/:invoiceNumber', InvoiceController.getPublicInvoiceReceipt), deprecatedDetail)

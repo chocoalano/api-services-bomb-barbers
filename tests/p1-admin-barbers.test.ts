@@ -10,7 +10,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import * as argon2 from 'argon2';
 import { app } from '../src/app';
 import { redis, getBarberStatusKey } from '../src/lib/redis';
-import { supabase } from '../src/lib/supabase';
+import { testDb } from '../src/lib/test-db';
 
 const API = '/api/v1';
 
@@ -62,15 +62,15 @@ const createAndLogin = async (
   roleName: string,
   branchId: string | null
 ): Promise<{ id: string; token: string }> => {
-  const { data: staff } = await supabase
+  const { data: staff } = await testDb
     .from('staff_users')
     .insert({ full_name: `P1 Test ${roleName}`, email, password_hash: pwHash })
     .select('id')
     .single();
 
-  const { data: role } = await supabase.from('roles').select('id').eq('name', roleName).single();
+  const { data: role } = await testDb.from('roles').select('id').eq('name', roleName).single();
 
-  await supabase.from('staff_user_roles').insert({
+  await testDb.from('staff_user_roles').insert({
     staff_user_id: staff!.id,
     role_id: role!.id,
     branch_id: branchId
@@ -90,7 +90,7 @@ beforeAll(async () => {
   await redis.del(getBarberStatusKey(ANDI_BARBER));
 
   // Restore Budi/Andi live_status ke available di DB (mungkin dirty dari test lain)
-  await supabase.from('barbers').update({ live_status: 'available' }).in('id', [BUDI_BARBER, ANDI_BARBER]);
+  await testDb.from('barbers').update({ live_status: 'available' }).in('id', [BUDI_BARBER, ANDI_BARBER]);
 
   const hq    = await createAndLogin(`hqp1_${suffix}@test.com`,    pwHash, 'super_admin',  null);
   const ancol = await createAndLogin(`ancolp1_${suffix}@test.com`, pwHash, 'branch_admin', ANCOL_BRANCH);
@@ -105,14 +105,14 @@ beforeAll(async () => {
   twoWeeksNoon.setUTCHours(9, 0, 0, 0);
 
   // Bersihkan stale future appointments untuk BUDI
-  const { data: staleBudi } = await supabase
+  const { data: staleBudi } = await testDb
     .from('appointments').select('id').eq('barber_id', BUDI_BARBER)
     .gte('scheduled_at', twoWeeksNoon.toISOString());
   if (staleBudi?.length) {
     const ids = staleBudi.map((a: any) => a.id);
-    await supabase.from('appointment_events').delete().in('appointment_id', ids);
-    await supabase.from('appointment_services').delete().in('appointment_id', ids);
-    await supabase.from('appointments').delete().in('id', ids);
+    await testDb.from('appointment_events').delete().in('appointment_id', ids);
+    await testDb.from('appointment_services').delete().in('appointment_id', ids);
+    await testDb.from('appointments').delete().in('id', ids);
   }
 
   const walkinRes = await req(
@@ -127,18 +127,18 @@ beforeAll(async () => {
 
 afterAll(async () => {
   if (testAptId) {
-    await supabase.from('appointment_events').delete().eq('appointment_id', testAptId);
-    await supabase.from('appointment_services').delete().eq('appointment_id', testAptId);
-    await supabase.from('appointments').delete().eq('id', testAptId);
+    await testDb.from('appointment_events').delete().eq('appointment_id', testAptId);
+    await testDb.from('appointment_services').delete().eq('appointment_id', testAptId);
+    await testDb.from('appointments').delete().eq('id', testAptId);
   }
   for (const id of [hqStaffId, ancolStaffId, utaraStaffId]) {
     if (id) {
-      await supabase.from('staff_user_roles').delete().eq('staff_user_id', id);
-      await supabase.from('staff_users').delete().eq('id', id);
+      await testDb.from('staff_user_roles').delete().eq('staff_user_id', id);
+      await testDb.from('staff_users').delete().eq('id', id);
     }
   }
   // Restore barber status
-  await supabase.from('barbers').update({ live_status: 'available' }).eq('id', BUDI_BARBER);
+  await testDb.from('barbers').update({ live_status: 'available' }).eq('id', BUDI_BARBER);
   await redis.del(getBarberStatusKey(BUDI_BARBER));
   await redis.del(getBarberStatusKey(ANDI_BARBER));
 });
@@ -257,7 +257,7 @@ describe('PATCH /admin/branches/:branchId/barbers/:barberId/status', () => {
   });
 
   it('DB live_status juga diperbarui', async () => {
-    const { data: b } = await supabase.from('barbers').select('live_status').eq('id', BUDI_BARBER).single();
+    const { data: b } = await testDb.from('barbers').select('live_status').eq('id', BUDI_BARBER).single();
     expect(b!.live_status).toBe('offline');
   });
 
@@ -336,7 +336,7 @@ describe('PATCH /admin/appointments/:id/barber', () => {
   });
 
   it('appointment_events memiliki entri BARBER_REASSIGNED', async () => {
-    const { data } = await supabase
+    const { data } = await testDb
       .from('appointment_events')
       .select('event_type, reason')
       .eq('appointment_id', testAptId)

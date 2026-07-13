@@ -1,6 +1,7 @@
 import { createSuccessResponse, createErrorResponse } from '../../../shared/response';
 import { CustomerAuthService } from './service';
 import { AuthSessionService } from '../../../core/auth/session.service';
+import { NON_EXPIRING_JWT_VERIFY_OPTIONS } from '../../../middleware/auth';
 import {
   AuthRateLimitError,
   AuthSecurityService,
@@ -19,9 +20,9 @@ export class CustomerAuthController {
     }
   }
 
-  static async login({ body, jwtAccess, jwtRefresh, request, set }: any) {
+  static async login({ body, jwtAccess, jwtRefresh, request, server, set }: any) {
     try {
-      const metadata = getAuthRequestMetadata(request);
+      const metadata = getAuthRequestMetadata(request, server);
       const identifier = body.email || body.phone || 'unknown';
       const rateLimit = await AuthSecurityService.assertLoginAllowed(
         'customer',
@@ -89,11 +90,11 @@ export class CustomerAuthController {
     }
   }
 
-  static async refresh({ body, jwtAccess, jwtRefresh, request, set }: any) {
+  static async refresh({ body, jwtAccess, jwtRefresh, request, server, set }: any) {
     try {
-      const metadata = getAuthRequestMetadata(request);
+      const metadata = getAuthRequestMetadata(request, server);
       await AuthSecurityService.assertRefreshAllowed(metadata);
-      const payload = await jwtRefresh.verify(body.refreshToken);
+      const payload = await jwtRefresh.verify(body.refreshToken, NON_EXPIRING_JWT_VERIFY_OPTIONS);
       if (
         !payload ||
         payload.role !== 'customer' ||
@@ -144,9 +145,9 @@ export class CustomerAuthController {
     }
   }
 
-  static async logout({ body, jwtRefresh, request, set }: any) {
+  static async logout({ body, jwtRefresh, request, server, set }: any) {
     try {
-      const payload = await jwtRefresh.verify(body.refreshToken);
+      const payload = await jwtRefresh.verify(body.refreshToken, NON_EXPIRING_JWT_VERIFY_OPTIONS);
       if (
         !payload ||
         payload.role !== 'customer' ||
@@ -160,7 +161,7 @@ export class CustomerAuthController {
         'customer',
         payload.sub,
         'logout',
-        getAuthRequestMetadata(request)
+        getAuthRequestMetadata(request, server)
       );
       return createSuccessResponse('Logout berhasil', null);
     } catch (error: any) {

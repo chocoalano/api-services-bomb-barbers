@@ -1,0 +1,14 @@
+import { db, pool } from './src/lib/db';
+import { sql } from 'drizzle-orm';
+import './src/core/appointments/service';
+import './src/core/payments/controller';
+import './src/core/dashboard/service';
+import './src/core/tracking/service';
+import './src/modules/admin/catalog/service';
+import './src/modules/admin/appointments/list.controller';
+import './src/core/staff-auth/service';
+import './src/middleware/rbac';
+console.log('MODULES_OK');
+const r: any = await db.execute(sql`SELECT COUNT(*) c FROM appointments`);
+console.log('QUERY_OK count=' + (Array.isArray(r)?r[0]:r)[0].c);
+await pool.end();

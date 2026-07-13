@@ -1,4 +1,9 @@
-import { supabase } from '../../../lib/supabase';
+import { randomUUID } from 'crypto';
+import { db } from '../../../lib/db';
+import { snakeKeys, toDbDate } from '../../../db/helpers';
+import { checkIns, appointments } from '../../../db/schema';
+import { eq } from 'drizzle-orm';
+import { isDuplicateKeyError } from '../../../db/procedures';
 import {
   LocationInput,
   RealtimeTrackingService
@@ -68,41 +73,39 @@ export class TrackingService {
       );
     }
 
-    const { data: existing } = await supabase
-      .from('check_ins')
-      .select('id')
-      .eq('appointment_id', appointmentId)
-      .maybeSingle();
+    const [existing] = await db
+      .select({ id: checkIns.id })
+      .from(checkIns)
+      .where(eq(checkIns.appointmentId, appointmentId))
+      .limit(1);
 
     if (existing) {
       throw new Error('Appointment sudah pernah check-in');
     }
 
-    const checkedInAt = new Date().toISOString();
-    const { data: checkIn, error } = await supabase
-      .from('check_ins')
-      .insert({
-        appointment_id: appointmentId,
+    const checkedInAt = new Date();
+    const checkInId = randomUUID();
+    try {
+      await db.insert(checkIns).values({
+        id: checkInId,
+        appointmentId,
         method,
-        location_lat: payload.lat,
-        location_lng: payload.lng,
-        checked_in_at: checkedInAt,
-        distance_m: distanceM
-      })
-      .select('*')
-      .single();
-
-    if (error || !checkIn) {
-      if (error?.code === '23505') {
-        throw new Error('Appointment sudah pernah check-in');
-      }
-      throw new Error(`Gagal melakukan check-in: ${error?.message || 'unknown'}`);
+        locationLat: payload.lat != null ? String(payload.lat) : null,
+        locationLng: payload.lng != null ? String(payload.lng) : null,
+        checkedInAt: toDbDate(checkedInAt),
+        distanceM: distanceM != null ? String(distanceM) : null
+      } as any);
+    } catch (e: any) {
+      if (isDuplicateKeyError(e)) throw new Error('Appointment sudah pernah check-in');
+      throw new Error(`Gagal melakukan check-in: ${e?.message || 'unknown'}`);
     }
 
-    await supabase
-      .from('appointments')
-      .update({ checked_in_at: checkedInAt, updated_at: checkedInAt })
-      .eq('id', appointmentId);
+    const [checkIn] = snakeKeys(await db.select().from(checkIns).where(eq(checkIns.id, checkInId)).limit(1));
+
+    await db
+      .update(appointments)
+      .set({ checkedInAt: toDbDate(checkedInAt) })
+      .where(eq(appointments.id, appointmentId));
 
     await RealtimeTrackingService.completeSession(appointmentId, 'completed');
     return checkIn;

@@ -1,6 +1,6 @@
 import { describe, expect, it, beforeAll, afterAll } from 'bun:test';
 import { app } from '../src/app';
-import { supabase } from '../src/lib/supabase';
+import { testDb } from '../src/lib/test-db';
 import { appointmentQueue } from '../src/lib/queue';
 import {
   getTrackingBarberKey,
@@ -33,7 +33,7 @@ describe('Appointments & Queue Module', () => {
 
   beforeAll(async () => {
     pwHash = await argon2.hash(password);
-    const { error: homeServiceSchemaError } = await supabase
+    const { error: homeServiceSchemaError } = await testDb
       .from('appointments')
       .select('fulfillment_type')
       .limit(1);
@@ -45,11 +45,11 @@ describe('Appointments & Queue Module', () => {
     const cPhone = `111${suffix}`;
     const bEmail = `b${suffix}@test.com`;
 
-    const { data: region, error: e1 } = await supabase.from('regions').insert({ code: `A${suffix.toString().slice(-4)}`, name: 'Apt Region' }).select('id').single();
+    const { data: region, error: e1 } = await testDb.from('regions').insert({ code: `A${suffix.toString().slice(-4)}`, name: 'Apt Region' }).select('id').single();
     if (e1) console.error('Region err:', e1);
     if (region) regionId = region.id;
 
-    const { data: branch, error: e2 } = await supabase.from('branches').insert({
+    const { data: branch, error: e2 } = await testDb.from('branches').insert({
       name: 'Apt Branch',
       region_id: regionId,
       latitude: -6.260721,
@@ -57,7 +57,7 @@ describe('Appointments & Queue Module', () => {
     }).select('id').single();
     if (e2) console.error('Branch err:', e2);
     if (branch) branchId = branch.id;
-    await supabase.from('branch_operating_hours').insert(
+    await testDb.from('branch_operating_hours').insert(
       Array.from({ length: 7 }, (_, day) => ({
         branch_id: branchId,
         day_of_week: day,
@@ -66,25 +66,25 @@ describe('Appointments & Queue Module', () => {
       }))
     );
 
-    const { data: customer, error: e3 } = await supabase.from('customers').insert({ full_name: 'C', email: cEmail, phone: cPhone, password_hash: pwHash }).select('id').single();
+    const { data: customer, error: e3 } = await testDb.from('customers').insert({ full_name: 'C', email: cEmail, phone: cPhone, password_hash: pwHash }).select('id').single();
     if (e3) console.error('Customer err:', e3);
     if (customer) customerId = customer.id;
 
-    const { data: barberStaff, error: e4 } = await supabase.from('staff_users').insert({ full_name: 'B', email: bEmail, password_hash: pwHash }).select('id').single();
+    const { data: barberStaff, error: e4 } = await testDb.from('staff_users').insert({ full_name: 'B', email: bEmail, password_hash: pwHash }).select('id').single();
     if (e4) console.error('Staff err:', e4);
     if (barberStaff) barberStaffId = barberStaff.id;
 
-    const { data: barberRec, error: e5 } = await supabase.from('barbers').insert({ staff_user_id: barberStaffId, branch_id: branchId, display_name: 'Barber B' }).select('id').single();
+    const { data: barberRec, error: e5 } = await testDb.from('barbers').insert({ staff_user_id: barberStaffId, branch_id: branchId, display_name: 'Barber B' }).select('id').single();
     if (e5) console.error('Barber err:', e5);
     if (barberRec) barberId = barberRec.id;
 
-    const { data: svc, error: e6 } = await supabase.from('services').insert({ name: 'Cut', default_duration_min: 30 }).select('id').single();
+    const { data: svc, error: e6 } = await testDb.from('services').insert({ name: 'Cut', default_duration_min: 30 }).select('id').single();
     if (e6) console.error('Service err:', e6);
     if (svc) serviceId = svc.id;
 
     const now = new Date();
     const past = new Date(now.getTime() - 100000).toISOString();
-    await supabase.from('service_prices').insert({ service_id: serviceId, branch_id: branchId, price_amount: 50000, effective_from: past });
+    await testDb.from('service_prices').insert({ service_id: serviceId, branch_id: branchId, price_amount: 50000, effective_from: past });
 
     // 2. Login
     const loginC = await app.handle(new Request(`http://localhost${API_PREFIX}/customer/auth/login`, {
@@ -104,23 +104,23 @@ describe('Appointments & Queue Module', () => {
 
   afterAll(async () => {
     // Delete service prices
-    await supabase.from('service_prices').delete().eq('service_id', serviceId);
+    await testDb.from('service_prices').delete().eq('service_id', serviceId);
     
     // Delete appointments (cascade or manual)
-    await supabase.from('check_ins').delete().in('appointment_id', [onlineAptId, walkInAptId].filter(Boolean));
-    await supabase.from('tracking_sessions').delete().in('appointment_id', [onlineAptId, walkInAptId].filter(Boolean));
-    await supabase.from('appointment_services').delete().in('appointment_id', [onlineAptId, walkInAptId].filter(Boolean));
-    await supabase.from('appointment_events').delete().in('appointment_id', [onlineAptId, walkInAptId].filter(Boolean));
-    await supabase.from('appointments').delete().in('id', [onlineAptId, walkInAptId].filter(Boolean));
+    await testDb.from('check_ins').delete().in('appointment_id', [onlineAptId, walkInAptId].filter(Boolean));
+    await testDb.from('tracking_sessions').delete().in('appointment_id', [onlineAptId, walkInAptId].filter(Boolean));
+    await testDb.from('appointment_services').delete().in('appointment_id', [onlineAptId, walkInAptId].filter(Boolean));
+    await testDb.from('appointment_events').delete().in('appointment_id', [onlineAptId, walkInAptId].filter(Boolean));
+    await testDb.from('appointments').delete().in('id', [onlineAptId, walkInAptId].filter(Boolean));
     
     // Delete base data
-    await supabase.from('services').delete().eq('id', serviceId);
-    await supabase.from('barbers').delete().eq('id', barberId);
-    await supabase.from('staff_users').delete().eq('id', barberStaffId);
-    await supabase.from('customers').delete().eq('id', customerId);
-    await supabase.from('branch_operating_hours').delete().eq('branch_id', branchId);
-    await supabase.from('branches').delete().eq('id', branchId);
-    await supabase.from('regions').delete().eq('id', regionId);
+    await testDb.from('services').delete().eq('id', serviceId);
+    await testDb.from('barbers').delete().eq('id', barberId);
+    await testDb.from('staff_users').delete().eq('id', barberStaffId);
+    await testDb.from('customers').delete().eq('id', customerId);
+    await testDb.from('branch_operating_hours').delete().eq('branch_id', branchId);
+    await testDb.from('branches').delete().eq('id', branchId);
+    await testDb.from('regions').delete().eq('id', regionId);
     await redis.del(`appointment:eta:${onlineAptId}`);
     await redis.del(`appointment:eta:${walkInAptId}`);
     for (const appointmentId of [onlineAptId, walkInAptId].filter(Boolean)) {
@@ -323,7 +323,7 @@ describe('Appointments & Queue Module', () => {
     const redisValue = await redis.get(`appointment:eta:${onlineAptId}`);
     expect(redisValue).toBeNull();
 
-    const { data: trackingSession } = await supabase
+    const { data: trackingSession } = await testDb
       .from('tracking_sessions')
       .select('status')
       .eq('appointment_id', onlineAptId)
@@ -334,16 +334,16 @@ describe('Appointments & Queue Module', () => {
   });
 
   it('4. Harga tersimpan sebagai snapshot', async () => {
-    const { data } = await supabase.from('appointment_services').select('price_amount').eq('appointment_id', onlineAptId).single();
+    const { data } = await testDb.from('appointment_services').select('price_amount').eq('appointment_id', onlineAptId).single();
     expect(data?.price_amount).toBe(50000);
   });
 
   it('5. Perubahan service_prices tidak mengubah appointment_services lama', async () => {
     // Ubah harga service jadi 100k
-    await supabase.from('service_prices').update({ price_amount: 100000 }).eq('service_id', serviceId);
+    await testDb.from('service_prices').update({ price_amount: 100000 }).eq('service_id', serviceId);
 
     // Cek snapshot lama
-    const { data } = await supabase.from('appointment_services').select('price_amount').eq('appointment_id', onlineAptId).single();
+    const { data } = await testDb.from('appointment_services').select('price_amount').eq('appointment_id', onlineAptId).single();
     expect(data?.price_amount).toBe(50000); // Harus tetap 50k
   });
 

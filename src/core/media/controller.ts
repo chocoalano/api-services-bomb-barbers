@@ -28,7 +28,7 @@ export class MediaController {
     } catch (error: any) {
       if (error.message === 'Invalid token') {
         set.status = 401;
-        return createErrorResponse('Token tidak valid atau sudah kadaluarsa');
+        return createErrorResponse('Token tidak valid');
       }
       set.status = error.message.includes('Gagal mengupload') ? 500 : 400;
       return createErrorResponse(error.message);

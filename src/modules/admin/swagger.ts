@@ -189,7 +189,7 @@ export const adminDetail = ({
 export const commonAuthErrors = [
   {
     status: 401,
-    description: 'Access token tidak tersedia, tidak valid, atau kedaluwarsa.',
+    description: 'Access token tidak tersedia, tidak valid, session sudah dicabut, atau akun tidak aktif.',
     message: 'Missing or invalid token'
   },
   {

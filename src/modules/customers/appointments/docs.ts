@@ -200,7 +200,7 @@ export const appointmentDocs = {
     detail: customerDetail({
       tag: CUSTOMER_TAGS.appointments,
       summary: 'Buat Booking Online',
-      description: 'Membuat appointment online secara atomik melalui transaksi PostgreSQL. Backend memvalidasi cabang aktif, barber aktif dan satu cabang, layanan beserta harga efektif, jam operasional, cuti barber, benturan jadwal, queue position, serta idempotency. scheduled_end_at dihitung dari total durasi snapshot layanan. Home service juga memakai travel buffer untuk mencegah jadwal terlalu rapat.',
+      description: 'Membuat appointment online secara atomik melalui transaksi database. Backend memvalidasi cabang aktif, barber aktif dan satu cabang, layanan beserta harga efektif, jam operasional, cuti barber, benturan jadwal, queue position, serta idempotency. scheduled_end_at dihitung dari total durasi snapshot layanan. Home service juga memakai travel buffer untuk mencegah jadwal terlalu rapat.',
       required: [
         'Authorization: Bearer <customer_access_token>',
         'header.Idempotency-Key',

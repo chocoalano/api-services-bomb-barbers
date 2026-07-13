@@ -1,21 +1,35 @@
-import { supabase } from '../../lib/supabase';
+import { db } from '../../lib/db';
+import { snakeKeys } from '../../db/helpers';
+import { commissionRules, appointments, branches, appointmentServices, payments } from '../../db/schema';
+import { and, or, eq, isNull, lte, gte, inArray } from 'drizzle-orm';
+import { asRpcResult, recordCommissionAtomic } from '../../db/procedures';
 
 export class CommissionService {
   static async resolveCommissionRule(barberId: string, serviceId: string, branchId: string, regionId: string) {
     const now = new Date().toISOString();
     
     // Fetch active rules that match our scopes
-    const { data: rules, error } = await supabase
-      .from('commission_rules')
-      .select('*')
-      .lte('effective_from', now)
-      .or(`effective_to.is.null,effective_to.gte.${now}`)
-      .or(`scope.eq.global,scope_ref_id.in.(${barberId},${serviceId},${branchId},${regionId})`);
+    const scopeRefs = [barberId, serviceId, branchId, regionId].filter(Boolean) as string[];
+    const rules = snakeKeys(
+      await db
+        .select()
+        .from(commissionRules)
+        .where(
+          and(
+            lte(commissionRules.effectiveFrom, now),
+            or(isNull(commissionRules.effectiveTo), gte(commissionRules.effectiveTo, now)),
+            or(
+              eq(commissionRules.scope, 'global'),
+              scopeRefs.length ? inArray(commissionRules.scopeRefId, scopeRefs) : undefined
+            )
+          )
+        )
+    );
 
-    if (error || !rules) throw new Error('Gagal mengambil commission rules: ' + error?.message);
+    if (!rules) throw new Error('Gagal mengambil commission rules');
 
     // Filter secara presisi di memori untuk memastikan ID-nya benar-benar tepat
-    const validRules = rules.filter(r => {
+    const validRules = rules.filter((r: any) => {
       if (r.scope === 'global') return true;
       if (r.scope === 'barber' && r.scope_ref_id === barberId) return true;
       if (r.scope === 'service' && r.scope_ref_id === serviceId) return true;
@@ -29,21 +43,38 @@ export class CommissionService {
     // Urutkan berdasarkan prioritas: barber (5) > service (4) > branch (3) > region (2) > global (1)
     const priorityMap: Record<string, number> = { barber: 5, service: 4, branch: 3, region: 2, global: 1 };
     
-    validRules.sort((a, b) => priorityMap[b.scope] - priorityMap[a.scope]);
-
-    console.log(`[DEBUG] Resolved Rule for Barber ${barberId}, Service ${serviceId}:`, validRules[0]);
+    validRules.sort((a: any, b: any) => priorityMap[b.scope] - priorityMap[a.scope]);
 
     return validRules[0];
   }
 
   static async calculateCommission(appointmentId: string) {
-    const { data: apt, error: aptErr } = await supabase
-      .from('appointments')
-      .select(`*, branches(region_id), barbers(id), appointment_services(service_id, price_amount), payments(status, tip_amount)`)
-      .eq('id', appointmentId)
-      .single();
+    const [apt] = snakeKeys(
+      await db.select().from(appointments).where(eq(appointments.id, appointmentId)).limit(1)
+    );
 
-    if (aptErr || !apt) throw new Error('Appointment tidak ditemukan');
+    if (!apt) throw new Error('Appointment tidak ditemukan');
+
+    // Rangkai relasi embedded (pengganti nested select relasi).
+    const [branchRow] = await db
+      .select({ region_id: branches.regionId })
+      .from(branches)
+      .where(eq(branches.id, apt.branch_id))
+      .limit(1);
+    apt.branches = branchRow ?? null;
+    apt.barbers = apt.barber_id ? { id: apt.barber_id } : null;
+    apt.appointment_services = snakeKeys(
+      await db
+        .select({ service_id: appointmentServices.serviceId, price_amount: appointmentServices.priceAmount })
+        .from(appointmentServices)
+        .where(eq(appointmentServices.appointmentId, appointmentId))
+    );
+    apt.payments = snakeKeys(
+      await db
+        .select({ status: payments.status, tip_amount: payments.tipAmount })
+        .from(payments)
+        .where(eq(payments.appointmentId, appointmentId))
+    );
     
     const payment = Array.isArray(apt.payments) ? apt.payments[0] : apt.payments;
     if (!payment || payment.status !== 'paid') throw new Error('Pesanan ini belum lunas dibayar');
@@ -123,90 +154,35 @@ export class CommissionService {
       }
     }
 
-    const entryData = {
-      appointment_id: appointmentId,
-      commission_rule_id: strongestRule.id,
-      base_amount: totalBaseAmount,
-      barber_share: totalBarberShare,
-      branch_share: totalBranchShare,
-      hq_share: totalHqShare,
-      tip_amount: tipAmount,
-      calculated_at: new Date().toISOString()
-    };
-
-    const { data: newEntry, error: insertErr } = await supabase.from('commission_entries').insert(entryData).select().single();
-    if (insertErr) {
-      if (insertErr.code === '23505') throw new Error('Komisi untuk pesanan ini sudah pernah dihitung (Idempotency Protection)');
-      throw new Error('Gagal menyimpan komisi: ' + insertErr.message);
-    }
-
     const summaryDate = new Date().toISOString().slice(0, 10);
-    await this.updateBarberDailyStats(barberId, branchId, summaryDate, totalBarberShare);
-    await this.updateDailyBranchSummaries(branchId, summaryDate, totalBaseAmount, totalBranchShare, totalHqShare);
+    const description = `Komisi layanan (${totalBaseAmount})` + (tipAmount > 0 ? ` + Tip (${tipAmount})` : '');
 
-    if (totalBarberShare > 0) {
-      const { error: walletErr } = await supabase.rpc('deposit_commission', {
-        p_barber_id: barberId,
-        p_amount: totalBarberShare,
-        p_commission_id: newEntry.id,
-        p_description: `Komisi layanan (${totalBaseAmount})` + (tipAmount > 0 ? ` + Tip (${tipAmount})` : '')
-      });
-      if (walletErr) {
-        console.error(`[CommissionService] Gagal deposit komisi ke wallet barber ${barberId}:`, walletErr);
+    // Rekam entry komisi + deposit wallet + agregat harian dalam satu transaksi
+    // atomik. Bila deposit gagal, entry ikut rollback → re-run bisa retry bersih
+    // (tidak ada entry yatim yang mengunci idempotency). (H1, M2)
+    const { data: newEntry, error: rpcErr } = await asRpcResult(() =>
+      recordCommissionAtomic({
+        appointmentId,
+        commissionRuleId: strongestRule.id,
+        baseAmount: totalBaseAmount,
+        barberShare: totalBarberShare,
+        branchShare: totalBranchShare,
+        hqShare: totalHqShare,
+        tipAmount,
+        barberId,
+        branchId,
+        summaryDate,
+        description
+      })
+    );
+
+    if (rpcErr) {
+      if (rpcErr.code === '23505' || /commission_entries_appointment_id_unique/.test(rpcErr.message || '')) {
+        throw new Error('Komisi untuk pesanan ini sudah pernah dihitung (Idempotency Protection)');
       }
+      throw new Error('Gagal menyimpan komisi: ' + rpcErr.message);
     }
 
     return newEntry;
-  }
-
-  static async updateBarberDailyStats(barberId: string, branchId: string, date: string, commissionEarned: number) {
-    const { data: existing } = await supabase
-      .from('barber_daily_stats')
-      .select('id, heads_count, commission_earned')
-      .eq('barber_id', barberId)
-      .eq('summary_date', date)
-      .single();
-
-    if (existing) {
-      await supabase.from('barber_daily_stats').update({
-        heads_count: existing.heads_count + 1,
-        commission_earned: Number(existing.commission_earned) + commissionEarned
-      }).eq('id', existing.id);
-    } else {
-      await supabase.from('barber_daily_stats').insert({
-        barber_id: barberId,
-        branch_id: branchId,
-        summary_date: date,
-        heads_count: 1,
-        commission_earned: commissionEarned
-      });
-    }
-  }
-
-  static async updateDailyBranchSummaries(branchId: string, date: string, revenue: number, branchShare: number, hqShare: number) {
-    const { data: existing } = await supabase
-      .from('daily_branch_summaries')
-      .select('id, total_revenue, branch_share_total, hq_share_total, total_appointments')
-      .eq('branch_id', branchId)
-      .eq('summary_date', date)
-      .single();
-
-    if (existing) {
-      await supabase.from('daily_branch_summaries').update({
-        total_appointments: existing.total_appointments + 1,
-        total_revenue: Number(existing.total_revenue) + revenue,
-        branch_share_total: Number(existing.branch_share_total) + branchShare,
-        hq_share_total: Number(existing.hq_share_total) + hqShare
-      }).eq('id', existing.id);
-    } else {
-      await supabase.from('daily_branch_summaries').insert({
-        branch_id: branchId,
-        summary_date: date,
-        total_appointments: 1,
-        total_revenue: revenue,
-        branch_share_total: branchShare,
-        hq_share_total: hqShare
-      });
-    }
   }
 }

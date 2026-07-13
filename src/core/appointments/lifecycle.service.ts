@@ -1,4 +1,9 @@
-import { supabase } from '../../lib/supabase';
+import { db } from '../../lib/db';
+import { snakeKeys } from '../../db/helpers';
+import { appointments } from '../../db/schema';
+import { eq } from 'drizzle-orm';
+import { asRpcResult } from '../../db/procedures';
+import { transitionAppointmentStatusAtomic } from '../../db/appointment-procedures';
 import { getBarberStatusKey, redis } from '../../lib/redis';
 import { emitAppointmentStatusChanged } from '../../lib/socket';
 import { RealtimeTrackingService } from '../tracking/service';
@@ -20,7 +25,7 @@ type TransitionMetadata = {
     role: 'customer' | 'barber' | 'admin' | 'system';
   };
   reason: string;
-  event_type?: 'STATUS_TRANSITION' | 'ORDER_ACCEPTANCE_TIMEOUT' | 'APPOINTMENT_NO_SHOW_TIMEOUT';
+  event_type?: 'STATUS_TRANSITION' | 'ORDER_ACCEPTANCE_TIMEOUT' | 'APPOINTMENT_NO_SHOW_TIMEOUT' | 'APPOINTMENT_AUTO_COMPLETE_TIMEOUT';
   customer_media_urls?: string[];
 };
 
@@ -46,13 +51,11 @@ export class AppointmentLifecycleService {
     targetStatus: string,
     metadata: TransitionMetadata
   ) {
-    const { data: current, error: currentError } = await supabase
-      .from('appointments')
-      .select('*')
-      .eq('id', appointmentId)
-      .maybeSingle();
+    const [current] = snakeKeys(
+      await db.select().from(appointments).where(eq(appointments.id, appointmentId)).limit(1)
+    );
 
-    if (currentError || !current) {
+    if (!current) {
       throw new Error('Appointment tidak ditemukan');
     }
 
@@ -64,20 +67,19 @@ export class AppointmentLifecycleService {
       throw new Error('Actor dan reason wajib disertakan pada setiap transisi status');
     }
 
-    const now = new Date().toISOString();
-    const { data: updated, error } = await (supabase as any)
-      .rpc('transition_appointment_status_atomic', {
-        p_appointment_id: appointmentId,
-        p_target_status: targetStatus,
-        p_expected_version: Number(current.version ?? 1),
-        p_actor_type: metadata.actor.type,
-        p_actor_id: metadata.actor.id,
-        p_actor_role: metadata.actor.role,
-        p_reason: metadata.reason.trim(),
-        p_event_type: metadata.event_type || 'STATUS_TRANSITION',
-        p_customer_media_urls: metadata.customer_media_urls ?? null
+    const { data: updated, error } = await asRpcResult(() =>
+      transitionAppointmentStatusAtomic({
+        appointmentId,
+        targetStatus,
+        expectedVersion: Number(current.version ?? 1),
+        actorType: metadata.actor.type,
+        actorId: metadata.actor.id,
+        actorRole: metadata.actor.role,
+        reason: metadata.reason.trim(),
+        eventType: metadata.event_type || 'STATUS_TRANSITION',
+        customerMediaUrls: metadata.customer_media_urls ?? null
       })
-      .single();
+    );
 
     if (error) {
       throw toLifecycleError(error);
@@ -108,7 +110,7 @@ export class AppointmentLifecycleService {
       barber_id: updated.barber_id ?? null,
       customer_id: updated.customer_id ?? null,
       branch_id: updated.branch_id ?? null,
-      timestamp: now
+      timestamp: new Date().toISOString()
     });
 
     return updated;

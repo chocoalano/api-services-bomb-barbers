@@ -173,7 +173,7 @@ export const barberDetail = ({
 
 export const barberAuthError: BarberResponseExample = {
   status: 401,
-  description: 'Access token staff tidak tersedia, tidak valid, kedaluwarsa, atau akun staff tidak aktif.',
+  description: 'Access token staff tidak tersedia, tidak valid, session sudah dicabut, atau akun staff tidak aktif.',
   message: 'Missing or invalid token'
 };
 

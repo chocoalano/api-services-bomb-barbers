@@ -1,3 +1,5 @@
+import { logger } from '../lib/logger';
+
 /** Sunset date for all deprecated aliases — 2028-01-01 UTC */
 export const SUNSET_DATE = 'Sat, 01 Jan 2028 00:00:00 GMT';
 
@@ -17,7 +19,7 @@ export function deprecated(canonical: string, handler: (ctx: any) => any) {
     ctx.set.headers['Link'] = `<${canonical}>; rel="canonical"`;
     const method = ctx.request?.method ?? '';
     const path = ctx.request ? new URL(ctx.request.url).pathname : '';
-    console.warn(`[DEPRECATED] ${method} ${path} → ${canonical}`);
+    logger.warn({ method, path, canonical }, '[DEPRECATED] Route alias used');
     return handler(ctx);
   };
 }

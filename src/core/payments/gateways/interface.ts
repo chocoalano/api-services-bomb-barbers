@@ -17,4 +17,5 @@ export type TransactionResponse = {
 export interface IPaymentGateway {
   createTransaction(payload: TransactionPayload): Promise<TransactionResponse>;
   verifyWebhookSignature(signature: string, body: any): boolean;
+  checkTransactionStatus?(orderId: string): Promise<{ transaction_status: string; status_code: string; fraud_status?: string; gross_amount?: string }>;
 }

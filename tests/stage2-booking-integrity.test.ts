@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import { AppointmentLifecycleService } from '../src/core/appointments/lifecycle.service';
-import { supabase } from '../src/lib/supabase';
+import { testDb } from '../src/lib/test-db';
 
 let customerId = '';
 let barberId = '';
@@ -33,7 +33,7 @@ const createAtomic = async (input: {
   targetBranchId?: string;
   targetBarberId?: string | null;
 }) => {
-  const response = await (supabase as any).rpc('create_appointment_atomic', {
+  const response = await (testDb as any).rpc('create_appointment_atomic', {
     p_branch_id: input.targetBranchId || branchId,
     p_barber_id: input.targetBarberId === undefined ? barberId : input.targetBarberId,
     p_customer_id: customerId,
@@ -57,21 +57,21 @@ const createAtomic = async (input: {
 };
 
 beforeAll(async () => {
-  const { data: customer } = await supabase
+  const { data: customer } = await testDb
     .from('customers')
     .select('id')
     .eq('email', 'fajar.customer@example.com')
     .single();
   customerId = customer!.id;
 
-  const { data: staff } = await supabase
+  const { data: staff } = await testDb
     .from('staff_users')
     .select('id')
     .eq('email', 'davies@bombbarbershop.com')
     .single();
   barberStaffId = staff!.id;
 
-  const { data: barber } = await supabase
+  const { data: barber } = await testDb
     .from('barbers')
     .select('id, branch_id')
     .eq('staff_user_id', barberStaffId)
@@ -79,7 +79,7 @@ beforeAll(async () => {
   barberId = barber!.id;
   branchId = barber!.branch_id;
 
-  const { data: otherBranch } = await supabase
+  const { data: otherBranch } = await testDb
     .from('branches')
     .select('id')
     .neq('id', branchId)
@@ -89,7 +89,7 @@ beforeAll(async () => {
     .single();
   otherBranchId = otherBranch!.id;
 
-  const { data: service } = await supabase
+  const { data: service } = await testDb
     .from('services')
     .select('id')
     .eq('name', 'Haircut')
@@ -102,21 +102,21 @@ beforeAll(async () => {
 afterAll(async () => {
   const uniqueAppointmentIds = Array.from(new Set(appointmentIds));
   if (uniqueAppointmentIds.length > 0) {
-    await supabase
+    await testDb
       .from('appointment_events')
       .delete()
       .in('appointment_id', uniqueAppointmentIds);
-    await supabase
+    await testDb
       .from('appointment_services')
       .delete()
       .in('appointment_id', uniqueAppointmentIds);
-    await supabase
+    await testDb
       .from('appointments')
       .delete()
       .in('id', uniqueAppointmentIds);
   }
   if (timeOffIds.length > 0) {
-    await supabase.from('barber_time_off').delete().in('id', timeOffIds);
+    await testDb.from('barber_time_off').delete().in('id', timeOffIds);
   }
 });
 
@@ -153,7 +153,7 @@ describe('Tahap 2 - booking atomik', () => {
     expect(second.error).toBeNull();
     expect(second.data.id).toBe(first.data.id);
 
-    const { count } = await supabase
+    const { count } = await testDb
       .from('appointment_services')
       .select('id', { count: 'exact', head: true })
       .eq('appointment_id', first.data.id);
@@ -179,7 +179,7 @@ describe('Tahap 2 - booking atomik', () => {
     expect(past.data).toBeNull();
     expect(past.error?.message).toContain('sudah lewat');
 
-    const { data: inactiveBranch, error } = await supabase
+    const { data: inactiveBranch, error } = await testDb
       .from('branches')
       .insert({
         name: `Stage 2 Inactive ${uniqueSuffix}`,
@@ -198,13 +198,13 @@ describe('Tahap 2 - booking atomik', () => {
 
     expect(inactive.data).toBeNull();
     expect(inactive.error?.message).toContain('tidak aktif');
-    await supabase.from('branches').delete().eq('id', inactiveBranch!.id);
+    await testDb.from('branches').delete().eq('id', inactiveBranch!.id);
   });
 
   it('menolak booking saat barber memiliki time-off aktif', async () => {
     const scheduledAt = jakartaDateAt(24, 14);
     const endAt = new Date(new Date(scheduledAt).getTime() + 2 * 60 * 60 * 1000).toISOString();
-    const { data: timeOff, error } = await supabase
+    const { data: timeOff, error } = await testDb
       .from('barber_time_off')
       .insert({
         barber_id: barberId,
@@ -241,7 +241,7 @@ describe('Tahap 2 - lifecycle beraktor', () => {
       reason: 'Barber menerima order pada pengujian Tahap 2'
     });
 
-    const { data: event, error } = await supabase
+    const { data: event, error } = await testDb
       .from('appointment_events')
       .select('actor_type, actor_id, actor_role, reason, from_status, to_status')
       .eq('appointment_id', created.data.id)

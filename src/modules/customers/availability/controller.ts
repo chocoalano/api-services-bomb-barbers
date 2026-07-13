@@ -14,8 +14,8 @@ export class AvailabilityController {
       const result = await AvailabilityService.getAvailableSlots(params.id, query);
       return createSuccessResponse('Slot jam tersedia berhasil diambil', result);
     } catch (error: any) {
-      set.status = isBadRequest(error.message) ? 400 : 404;
-      return createErrorResponse(error.message);
+      set.status = error.status || (isBadRequest(error.message) ? 400 : 404);
+      return createErrorResponse(error.message, error.errors ?? null, error.code ?? null, error.data ?? null);
     }
   }
 }

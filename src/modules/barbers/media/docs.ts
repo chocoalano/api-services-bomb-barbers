@@ -41,7 +41,7 @@ export const mediaDocs = {
     detail: barberDetail({
       tag: BARBER_TAGS.media,
       summary: 'Upload Media Barber',
-      description: 'Memvalidasi MIME type, ukuran, dimensi, dan jumlah piksel; mengoptimasi gambar menjadi WebP; menyimpannya pada bucket private Supabase Storage milik staff; serta mengembalikan asset_id dan signed URL sementara.',
+      description: 'Memvalidasi MIME type, ukuran, dimensi, dan jumlah piksel; mengoptimasi gambar menjadi WebP; menyimpannya ke storage lokal (public/media) milik staff; serta mengembalikan asset_id dan signed URL sementara.',
       required: ['Authorization: Bearer <barber_access_token>', 'multipart file'],
       optional: ['multipart purpose'],
       successStatus: 201,
@@ -51,8 +51,8 @@ export const mediaDocs = {
         bucket: 'bomb-private-media',
         path: `staff/${BARBER_EXAMPLES.staffId}/2026-06-20/appointment_reference-eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee.webp`,
         visibility: 'private',
-        signed_url: 'https://project.supabase.co/storage/v1/object/sign/bomb-private-media/example',
-        public_url: 'https://project.supabase.co/storage/v1/object/sign/bomb-private-media/example',
+        signed_url: 'http://localhost:3000/media/private/example.webp?expires=1700000000&sig=<hmac>',
+        public_url: 'http://localhost:3000/public/media/example.webp',
         expires_in: 3600,
         content_type: 'image/webp',
         size: 184320,
@@ -88,7 +88,7 @@ export const mediaDocs = {
       successMessage: 'Signed URL media berhasil dibuat',
       successData: {
         asset_id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
-        signed_url: 'https://project.supabase.co/storage/v1/object/sign/bomb-private-media/example',
+        signed_url: 'http://localhost:3000/media/private/example.webp?expires=1700000000&sig=<hmac>',
         expires_in: 3600,
         content_type: 'image/webp',
         size: 184320,

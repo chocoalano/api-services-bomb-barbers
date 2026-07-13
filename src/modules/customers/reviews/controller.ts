@@ -15,14 +15,18 @@ export class ReviewController {
     } catch (error: any) {
       if (error.message.includes('sudah memberikan')) {
         ctx.set.status = 409;
-        return createErrorResponse('Conflict', error.message);
+        // Pesan asli WAJIB di field `message` (bukan `errors`) — klien membaca
+        // `message` untuk mendeteksi kondisi "sudah pernah diulas" dan
+        // memperlakukannya sebagai sukses idempoten. `code` memberi klien
+        // pengait yang stabil tanpa string-matching.
+        return createErrorResponse(error.message, null, 'REVIEW_ALREADY_EXISTS');
       }
       if (error.message.includes('sudah selesai') || error.message.includes('akses') || error.message.includes('Barber') || error.message.includes('tidak ditemukan') || error.message.includes('Rating')) {
         ctx.set.status = 400;
-        return createErrorResponse('Bad Request', error.message);
+        return createErrorResponse(error.message, null, 'REVIEW_INVALID');
       }
       ctx.set.status = 500;
-      return createErrorResponse('Internal Server Error', error.message);
+      return createErrorResponse(error.message, null, 'INTERNAL_ERROR');
     }
   }
 }

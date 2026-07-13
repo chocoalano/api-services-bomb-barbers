@@ -1,6 +1,6 @@
 import { describe, expect, it, beforeAll, afterAll } from 'bun:test';
 import { app } from '../src/app';
-import { supabase } from '../src/lib/supabase';
+import { testDb } from '../src/lib/test-db';
 import * as argon2 from 'argon2';
 
 const API_PREFIX = '/api/v1';
@@ -20,29 +20,29 @@ describe('Payment Gateways Module (Midtrans & Xendit)', () => {
     const pwHash = await argon2.hash(password);
     const suffix = crypto.randomUUID().split('-')[0];
 
-    const { data: region } = await supabase.from('regions').insert({ code: `RG${suffix.toString().slice(-4)}`, name: 'Gateway Region' }).select('id').single();
-    const { data: branch } = await supabase.from('branches').insert({ name: 'Gateway Branch', region_id: region?.id }).select('id').single();
+    const { data: region } = await testDb.from('regions').insert({ code: `RG${suffix.toString().slice(-4)}`, name: 'Gateway Region' }).select('id').single();
+    const { data: branch } = await testDb.from('branches').insert({ name: 'Gateway Branch', region_id: region?.id }).select('id').single();
     if (branch) branchId = branch.id;
 
-    const { data: customer } = await supabase.from('customers').insert({ full_name: 'CGateway', email: `cg${suffix}@test.com`, phone: `333${suffix}`, password_hash: pwHash }).select('id').single();
+    const { data: customer } = await testDb.from('customers').insert({ full_name: 'CGateway', email: `cg${suffix}@test.com`, phone: `333${suffix}`, password_hash: pwHash }).select('id').single();
     if (customer) customerId = customer.id;
 
-    const { data: adminStaff } = await supabase.from('staff_users').insert({ full_name: 'AGateway', email: `ag${suffix}@test.com`, password_hash: pwHash }).select('id').single();
+    const { data: adminStaff } = await testDb.from('staff_users').insert({ full_name: 'AGateway', email: `ag${suffix}@test.com`, password_hash: pwHash }).select('id').single();
     if (adminStaff) adminStaffId = adminStaff.id;
 
-    let { data: role } = await supabase.from('roles').select('id').eq('name', 'super_admin').maybeSingle();
+    let { data: role } = await testDb.from('roles').select('id').eq('name', 'super_admin').maybeSingle();
     if (!role) {
-      const { data: insertedRole } = await supabase.from('roles').insert({ name: 'super_admin' }).select('id').single();
+      const { data: insertedRole } = await testDb.from('roles').insert({ name: 'super_admin' }).select('id').single();
       role = insertedRole;
     }
     if (role && adminStaff) {
-      await supabase.from('staff_user_roles').insert({ staff_user_id: adminStaff.id, role_id: role.id, branch_id: null });
+      await testDb.from('staff_user_roles').insert({ staff_user_id: adminStaff.id, role_id: role.id, branch_id: null });
     }
 
-    const { data: svc } = await supabase.from('services').insert({ name: 'GateCut', default_duration_min: 30 }).select('id').single();
+    const { data: svc } = await testDb.from('services').insert({ name: 'GateCut', default_duration_min: 30 }).select('id').single();
     if (svc) serviceId = svc.id;
 
-    await supabase.from('service_prices').insert({ service_id: serviceId, branch_id: branchId, price_amount: 50000, effective_from: new Date(Date.now() - 10000).toISOString() });
+    await testDb.from('service_prices').insert({ service_id: serviceId, branch_id: branchId, price_amount: 50000, effective_from: new Date(Date.now() - 10000).toISOString() });
 
     // Login Admin
     const loginA = await app.handle(new Request(`http://localhost${API_PREFIX}/staff/auth/login`, {
@@ -52,17 +52,17 @@ describe('Payment Gateways Module (Midtrans & Xendit)', () => {
     adminToken = loginA.data.accessToken;
 
     // Create 2 Appointments
-    const { data: apt1 } = await supabase.from('appointments').insert({
+    const { data: apt1 } = await testDb.from('appointments').insert({
       branch_id: branchId, customer_id: customerId, source: 'online_booking', status: 'pending'
     }).select('id').single();
     aptMidtransId = apt1?.id || '';
 
-    const { data: apt2 } = await supabase.from('appointments').insert({
+    const { data: apt2 } = await testDb.from('appointments').insert({
       branch_id: branchId, customer_id: customerId, source: 'online_booking', status: 'pending'
     }).select('id').single();
     aptXenditId = apt2?.id || '';
 
-    await supabase.from('appointment_services').insert([
+    await testDb.from('appointment_services').insert([
       { appointment_id: aptMidtransId, service_id: serviceId, price_amount: 50000, duration_min: 30 },
       { appointment_id: aptXenditId, service_id: serviceId, price_amount: 50000, duration_min: 30 }
     ]);
@@ -70,11 +70,11 @@ describe('Payment Gateways Module (Midtrans & Xendit)', () => {
 
   afterAll(async () => {
     // Teardown
-    await supabase.from('audit_logs').delete().in('entity_id', [paymentMidtransId, paymentXenditId]);
-    await supabase.from('invoices').delete().neq('id', '00000000-0000-0000-0000-000000000000');
-    await supabase.from('payments').delete().in('appointment_id', [aptMidtransId, aptXenditId]);
-    await supabase.from('appointment_services').delete().in('appointment_id', [aptMidtransId, aptXenditId]);
-    await supabase.from('appointments').delete().in('id', [aptMidtransId, aptXenditId]);
+    await testDb.from('audit_logs').delete().in('entity_id', [paymentMidtransId, paymentXenditId]);
+    await testDb.from('invoices').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+    await testDb.from('payments').delete().in('appointment_id', [aptMidtransId, aptXenditId]);
+    await testDb.from('appointment_services').delete().in('appointment_id', [aptMidtransId, aptXenditId]);
+    await testDb.from('appointments').delete().in('id', [aptMidtransId, aptXenditId]);
   });
 
   let paymentMidtransId = '';
@@ -116,7 +116,7 @@ describe('Payment Gateways Module (Midtrans & Xendit)', () => {
     expect(res.status).toBe(200);
 
     // Verifikasi DB
-    const { data: dbPayment } = await supabase.from('payments').select('*, invoices(invoice_number)').eq('id', paymentMidtransId).single();
+    const { data: dbPayment } = await testDb.from('payments').select('*, invoices(invoice_number)').eq('id', paymentMidtransId).single();
     expect(dbPayment?.status).toBe('paid');
     expect(dbPayment?.paid_at).toBeDefined();
     expect(dbPayment?.invoices.length).toBeGreaterThan(0);
@@ -175,7 +175,7 @@ describe('Payment Gateways Module (Midtrans & Xendit)', () => {
     expect(res.status).toBe(401);
 
     // Verifikasi DB (Masih Pending)
-    const { data: dbPayment } = await supabase.from('payments').select('status').eq('id', paymentXenditId).single();
+    const { data: dbPayment } = await testDb.from('payments').select('status').eq('id', paymentXenditId).single();
     expect(dbPayment?.status).toBe('pending');
   });
 });

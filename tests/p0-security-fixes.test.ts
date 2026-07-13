@@ -13,7 +13,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import { app } from '../src/app';
-import { supabase } from '../src/lib/supabase';
+import { testDb } from '../src/lib/test-db';
 
 const API = '/api/v1';
 
@@ -61,16 +61,16 @@ const req = async (
 beforeAll(async () => {
   // Bersihkan appointment ANCOL_BARBER di masa depan yang mungkin tersisa dari run sebelumnya
   const futureCutoff = new Date(Date.now() + 2 * 24 * 3600_000).toISOString();
-  const { data: staleApts } = await supabase
+  const { data: staleApts } = await testDb
     .from('appointments')
     .select('id')
     .eq('barber_id', ANCOL_BARBER)
     .gte('scheduled_at', futureCutoff);
   if (staleApts && staleApts.length > 0) {
     const ids = staleApts.map((a: any) => a.id);
-    await supabase.from('appointment_events').delete().in('appointment_id', ids);
-    await supabase.from('appointment_services').delete().in('appointment_id', ids);
-    await supabase.from('appointments').delete().in('id', ids);
+    await testDb.from('appointment_events').delete().in('appointment_id', ids);
+    await testDb.from('appointment_services').delete().in('appointment_id', ids);
+    await testDb.from('appointments').delete().in('id', ids);
   }
 
   // Login HQ (global super_admin)
@@ -82,15 +82,15 @@ beforeAll(async () => {
 
   // Create test staff with super_admin role SCOPED to ANCOL (branch_id non-null)
   // → isGlobal=false, but has manage_barber permission → triggers our branch scope guard
-  const { data: scopedStaff } = await supabase.from('staff_users').insert({
+  const { data: scopedStaff } = await testDb.from('staff_users').insert({
     full_name: 'P0 Scoped Manager',
     email: `p0scope_${Date.now()}@test.com`,
     password_hash: 'irrelevant_for_jwt_test'
   }).select('id').single();
   scopedStaffId = scopedStaff!.id;
 
-  const { data: saRole } = await supabase.from('roles').select('id').eq('name', 'super_admin').single();
-  await supabase.from('staff_user_roles').insert({
+  const { data: saRole } = await testDb.from('roles').select('id').eq('name', 'super_admin').single();
+  await testDb.from('staff_user_roles').insert({
     staff_user_id: scopedStaffId,
     role_id: saRole!.id,
     branch_id: ANCOL_BRANCH  // scoped — isGlobal will be false
@@ -107,8 +107,8 @@ beforeAll(async () => {
   // and create a proper hashed password for the scoped staff.
 
   // Actually, re-create with proper hash
-  await supabase.from('staff_users').delete().eq('id', scopedStaffId);
-  await supabase.from('staff_user_roles').delete().eq('staff_user_id', scopedStaffId);
+  await testDb.from('staff_users').delete().eq('id', scopedStaffId);
+  await testDb.from('staff_user_roles').delete().eq('staff_user_id', scopedStaffId);
 
   const pwHash = await (async () => {
     const { hash } = await import('argon2');
@@ -116,14 +116,14 @@ beforeAll(async () => {
   })();
 
   const suffix = `${Date.now()}`;
-  const { data: ns } = await supabase.from('staff_users').insert({
+  const { data: ns } = await testDb.from('staff_users').insert({
     full_name: 'P0 Scoped Manager',
     email: `p0scope_${suffix}@test.com`,
     password_hash: pwHash
   }).select('id').single();
   scopedStaffId = ns!.id;
 
-  await supabase.from('staff_user_roles').insert({
+  await testDb.from('staff_user_roles').insert({
     staff_user_id: scopedStaffId,
     role_id: saRole!.id,
     branch_id: ANCOL_BRANCH
@@ -136,14 +136,14 @@ beforeAll(async () => {
   scopedToken = scopedLogin.body?.data?.accessToken ?? '';
 
   // Create a temp barber in BRANCH_B for update/delete tests
-  const { data: bStaff } = await supabase.from('staff_users').insert({
+  const { data: bStaff } = await testDb.from('staff_users').insert({
     full_name: 'P0 Temp Barber',
     email: `p0barber_${suffix}@test.com`,
     password_hash: pwHash
   }).select('id').single();
   tempBarberStaffId = bStaff!.id;
 
-  const { data: tb } = await supabase.from('barbers').insert({
+  const { data: tb } = await testDb.from('barbers').insert({
     staff_user_id: tempBarberStaffId,
     branch_id: BRANCH_B,
     display_name: 'P0 Temp Barber'
@@ -153,19 +153,19 @@ beforeAll(async () => {
 
 afterAll(async () => {
   if (validWalkinAptId) {
-    await supabase.from('appointment_events').delete().eq('appointment_id', validWalkinAptId);
-    await supabase.from('appointment_services').delete().eq('appointment_id', validWalkinAptId);
-    await supabase.from('appointments').delete().eq('id', validWalkinAptId);
+    await testDb.from('appointment_events').delete().eq('appointment_id', validWalkinAptId);
+    await testDb.from('appointment_services').delete().eq('appointment_id', validWalkinAptId);
+    await testDb.from('appointments').delete().eq('id', validWalkinAptId);
   }
   if (tempBarberId) {
-    await supabase.from('barbers').delete().eq('id', tempBarberId);
+    await testDb.from('barbers').delete().eq('id', tempBarberId);
   }
   if (tempBarberStaffId) {
-    await supabase.from('staff_users').delete().eq('id', tempBarberStaffId);
+    await testDb.from('staff_users').delete().eq('id', tempBarberStaffId);
   }
   if (scopedStaffId) {
-    await supabase.from('staff_user_roles').delete().eq('staff_user_id', scopedStaffId);
-    await supabase.from('staff_users').delete().eq('id', scopedStaffId);
+    await testDb.from('staff_user_roles').delete().eq('staff_user_id', scopedStaffId);
+    await testDb.from('staff_users').delete().eq('id', scopedStaffId);
   }
 });
 

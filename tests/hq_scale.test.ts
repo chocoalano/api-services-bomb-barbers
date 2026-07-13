@@ -1,6 +1,6 @@
 import { describe, expect, it, beforeAll, afterAll } from 'bun:test';
 import { app } from '../src/app';
-import { supabase } from '../src/lib/supabase';
+import { testDb } from '../src/lib/test-db';
 import * as argon2 from 'argon2';
 
 const API_PREFIX = '/api/v1';
@@ -19,14 +19,14 @@ describe('HQ Scale & Analytics Module (Phase 3)', () => {
   beforeAll(async () => {
     const pwHash = await argon2.hash(password);
     const suffix = crypto.randomUUID().split('-')[0];
-    const { error: homeServiceSchemaError } = await supabase
+    const { error: homeServiceSchemaError } = await testDb
       .from('appointments')
       .select('fulfillment_type')
       .limit(1);
     supportsHomeService = !homeServiceSchemaError;
 
-    const { data: region } = await supabase.from('regions').insert({ code: `HQ${suffix.slice(-4)}`, name: 'HQ Region' }).select('id').single();
-    const { data: branch } = await supabase.from('branches').insert({
+    const { data: region } = await testDb.from('regions').insert({ code: `HQ${suffix.slice(-4)}`, name: 'HQ Region' }).select('id').single();
+    const { data: branch } = await testDb.from('branches').insert({
       name: 'HQ Branch',
       region_id: region?.id,
       latitude: -6.2308,
@@ -34,20 +34,20 @@ describe('HQ Scale & Analytics Module (Phase 3)', () => {
     }).select('id').single();
     if (branch) branchId = branch.id;
 
-    const { data: customer } = await supabase.from('customers').insert({ full_name: 'CHQ', email: `chq${suffix}@test.com`, phone: `777${suffix}`, password_hash: pwHash }).select('id').single();
+    const { data: customer } = await testDb.from('customers').insert({ full_name: 'CHQ', email: `chq${suffix}@test.com`, phone: `777${suffix}`, password_hash: pwHash }).select('id').single();
     if (customer) customerId = customer.id;
 
-    const { data: hqStaff } = await supabase.from('staff_users').insert({ full_name: 'HQAdmin', email: `hq${suffix}@test.com`, password_hash: pwHash }).select('id').single();
+    const { data: hqStaff } = await testDb.from('staff_users').insert({ full_name: 'HQAdmin', email: `hq${suffix}@test.com`, password_hash: pwHash }).select('id').single();
     // Beri HQ akses super_admin
-    const { data: roleHQ } = await supabase.from('roles').select('id').eq('name', 'super_admin').single();
+    const { data: roleHQ } = await testDb.from('roles').select('id').eq('name', 'super_admin').single();
     if (roleHQ && hqStaff) {
-      await supabase.from('staff_user_roles').insert({
+      await testDb.from('staff_user_roles').insert({
         staff_user_id: hqStaff.id, role_id: roleHQ.id
       });
     }
 
-    const { data: barberStaff } = await supabase.from('staff_users').insert({ full_name: 'BHQ', email: `bhq${suffix}@test.com`, password_hash: pwHash }).select('id').single();
-    const { data: barber } = await supabase.from('barbers').insert({ staff_user_id: barberStaff?.id, branch_id: branchId, display_name: 'HQ Barber' }).select('id').single();
+    const { data: barberStaff } = await testDb.from('staff_users').insert({ full_name: 'BHQ', email: `bhq${suffix}@test.com`, password_hash: pwHash }).select('id').single();
+    const { data: barber } = await testDb.from('barbers').insert({ staff_user_id: barberStaff?.id, branch_id: branchId, display_name: 'HQ Barber' }).select('id').single();
     if (barber) barberId = barber.id;
 
     // Login HQ
@@ -81,7 +81,7 @@ describe('HQ Scale & Analytics Module (Phase 3)', () => {
       });
     }
 
-    const { data: aptP } = await supabase.from('appointments').insert({
+    const { data: aptP } = await testDb.from('appointments').insert({
       ...appointmentPayload
     }).select('id').single();
     if (aptP) pendingAptId = aptP.id;
@@ -89,9 +89,9 @@ describe('HQ Scale & Analytics Module (Phase 3)', () => {
 
   afterAll(async () => {
     // Teardown
-    await supabase.from('check_ins').delete().eq('appointment_id', pendingAptId);
-    await supabase.from('tracking_sessions').delete().eq('appointment_id', pendingAptId);
-    await supabase.from('appointments').delete().eq('id', pendingAptId);
+    await testDb.from('check_ins').delete().eq('appointment_id', pendingAptId);
+    await testDb.from('tracking_sessions').delete().eq('appointment_id', pendingAptId);
+    await testDb.from('appointments').delete().eq('id', pendingAptId);
   });
 
   describe('Tracking Feature', () => {

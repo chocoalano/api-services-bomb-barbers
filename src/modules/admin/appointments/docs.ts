@@ -91,7 +91,7 @@ export const appointmentDocs = {
     detail: adminDetail({
       tag: ADMIN_TAGS.appointments,
       summary: 'Catat Appointment Walk-in',
-      description: 'Membuat appointment walk-in secara atomik pada tabel appointments yang sama dengan booking online. Source otomatis walk_in dan status awal in_queue. Validasi cabang, barber, harga, jam operasional, cuti, overlap jadwal, queue position, snapshot layanan, dan idempotency dilakukan dalam satu transaksi PostgreSQL.',
+      description: 'Membuat appointment walk-in secara atomik pada tabel appointments yang sama dengan booking online. Source otomatis walk_in dan status awal in_queue. Validasi cabang, barber, harga, jam operasional, cuti, overlap jadwal, queue position, snapshot layanan, dan idempotency dilakukan dalam satu transaksi database.',
       required: ['path branchId', 'header Idempotency-Key', 'service_ids', 'Authorization: Bearer <access_token>', 'scope cabang'],
       optional: ['barber_id', 'customer_id', 'scheduled_at', 'media_urls'],
       successStatus: 201,
@@ -248,6 +248,66 @@ export const appointmentDocs = {
           message: 'Appointment tidak ditemukan'
         }
       ]
+    })
+  },
+
+  adminList: {
+    query: t.Object({
+      page: t.Optional(t.Integer({ minimum: 1, default: 1, description: 'Nomor halaman (1-based).' })),
+      per_page: t.Optional(t.Integer({ minimum: 1, maximum: 100, default: 20, description: 'Jumlah baris per halaman (maks 100).' })),
+      branch_id: t.Optional(uuidField('Filter cabang tertentu. Super admin: cabang mana pun; branch admin: harus dalam scope.', ADMIN_EXAMPLES.branchId)),
+      status: t.Optional(t.String({ description: 'Daftar status dipisah koma: pending,confirmed,in_queue,in_service,completed,cancelled,no_show.', examples: ['pending,confirmed,in_queue'] })),
+      source: t.Optional(t.String({ description: 'Sumber dipisah koma: online_booking,walk_in.', examples: ['walk_in'] })),
+      fulfillment_type: t.Optional(t.String({ description: 'Jenis layanan dipisah koma: in_store,home_service.', examples: ['home_service'] })),
+      payment_status: t.Optional(t.String({ description: 'Status pembayaran dipisah koma: pending,paid,failed,expired,refunded,partially_refunded.', examples: ['paid'] })),
+      barber_id: t.Optional(uuidField('Filter barber tertentu.', ADMIN_EXAMPLES.barberId)),
+      q: t.Optional(t.String({ description: 'Pencarian bebas pada nama/telepon/email customer.', examples: ['Andi'] })),
+      date_field: t.Optional(t.String({ description: 'Kolom tanggal untuk filter rentang: scheduled_at (default) atau created_at.', examples: ['scheduled_at'] })),
+      date_from: t.Optional(t.String({ description: 'Batas awal rentang (YYYY-MM-DD atau ISO). Tanggal murni memakai batas hari Asia/Jakarta.', examples: ['2026-06-20'] })),
+      date_to: t.Optional(t.String({ description: 'Batas akhir rentang (inklusif untuk tanggal murni).', examples: ['2026-06-20'] })),
+      sort: t.Optional(t.String({ description: 'Kolom urut: scheduled_at,created_at,status,queue_position,completed_at.', examples: ['scheduled_at'] })),
+      order: t.Optional(t.String({ description: 'Arah urut: asc atau desc (default desc).', examples: ['desc'] }))
+    }),
+    detail: adminDetail({
+      tag: ADMIN_TAGS.appointments,
+      summary: 'Daftar Appointment (Server-side, Role-scoped)',
+      description: 'Mengambil daftar appointment dengan pagination server-side, filter kompleks, dan join lintas tabel (branches, barbers, customers, appointment_services→services, payments). Cakupan cabang ditentukan otomatis dari peran: super_admin/HQ melihat seluruh cabang, branch_admin hanya cabang miliknya. Meta berisi total, page, per_page, total_pages, has_prev, has_next.',
+      required: ['Authorization: Bearer <access_token>', 'permission manage_appointment'],
+      optional: ['page', 'per_page', 'branch_id', 'status', 'source', 'fulfillment_type', 'payment_status', 'barber_id', 'q', 'date_from', 'date_to', 'sort', 'order'],
+      successMessage: 'Daftar appointment',
+      successData: [
+        {
+          ...appointmentExample,
+          branches: { id: ADMIN_EXAMPLES.branchId, name: 'Bomb Barbershop Kedoya' },
+          barbers: { id: ADMIN_EXAMPLES.barberId, display_name: 'Budi Santoso', live_status: 'online' },
+          customers: { id: ADMIN_EXAMPLES.customerId, full_name: 'Andi Customer', phone: '081234567890', email: 'andi@example.com' },
+          appointment_services: [{ id: ADMIN_EXAMPLES.serviceId, price_amount: 75000, duration_min: 45, services: { id: ADMIN_EXAMPLES.serviceId, name: 'Haircut + Wash' } }],
+          payments: [{ total_amount: 75000, service_amount: 75000, product_amount: 0, tip_amount: 0, discount_amount: 0, method: 'qris', status: 'paid', paid_at: '2026-06-20T11:20:00.000Z' }]
+        }
+      ],
+      errors: commonAuthErrors
+    })
+  },
+
+  adminStats: {
+    query: t.Object({
+      branch_id: t.Optional(uuidField('Filter cabang tertentu (opsional).', ADMIN_EXAMPLES.branchId)),
+      date_field: t.Optional(t.String({ description: 'Kolom tanggal: scheduled_at (default) atau created_at.', examples: ['scheduled_at'] })),
+      date_from: t.Optional(t.String({ description: 'Batas awal rentang. Default: hari berjalan Asia/Jakarta.', examples: ['2026-06-20'] })),
+      date_to: t.Optional(t.String({ description: 'Batas akhir rentang (inklusif untuk tanggal murni).', examples: ['2026-06-20'] }))
+    }),
+    detail: adminDetail({
+      tag: ADMIN_TAGS.appointments,
+      summary: 'Statistik Appointment (Role-scoped)',
+      description: 'Menghitung ringkasan appointment (total, aktif, in_service, selesai, batal, no_show, walk_in, online, home_service) sesuai cakupan cabang peran. Tanpa rentang tanggal, default ke hari berjalan Asia/Jakarta.',
+      required: ['Authorization: Bearer <access_token>', 'permission manage_appointment'],
+      optional: ['branch_id', 'date_from', 'date_to'],
+      successMessage: 'Statistik appointment',
+      successData: {
+        total: 128, active: 41, in_service: 18, completed: 63,
+        cancelled: 5, no_show: 1, walk_in: 47, online_booking: 81, home_service: 12
+      },
+      errors: commonAuthErrors
     })
   }
 };

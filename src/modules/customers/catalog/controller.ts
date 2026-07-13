@@ -3,13 +3,15 @@ import { CatalogService } from './service';
 import { redis, getBarberStatusKey } from '../../../lib/redis';
 
 export class CatalogController {
-  static async getBranches({ set }: any) {
+  static async getBranches({ query, headers, set }: any) {
     try {
-      const branches = await CatalogService.getBranches();
+      const branches = await CatalogService.getBranches(query ?? {}, {
+        requestId: headers?.['x-request-id'] ?? null
+      });
       return createSuccessResponse('Daftar cabang berhasil diambil', branches);
     } catch (err: any) {
-      set.status = 500;
-      return createErrorResponse(err.message);
+      set.status = err.status || 500;
+      return createErrorResponse(err.message, err.errors ?? null, err.code ?? null, err.data ?? null);
     }
   }
 
@@ -23,9 +25,11 @@ export class CatalogController {
     }
   }
 
-  static async getBranchBarbers({ params, set }: any) {
+  static async getBranchBarbers({ params, query, headers, set }: any) {
     try {
-      const barbers = await CatalogService.getBranchBarbers(params.id);
+      const barbers = await CatalogService.getBranchBarbers(params.id, query ?? {}, {
+        requestId: headers?.['x-request-id'] ?? null
+      });
       
       const enrichedBarbers = await Promise.all(barbers.map(async (b: any) => {
         const status = await redis.get(getBarberStatusKey(b.id));
@@ -37,8 +41,8 @@ export class CatalogController {
 
       return createSuccessResponse('Daftar barber berhasil diambil', enrichedBarbers);
     } catch (err: any) {
-      set.status = 500;
-      return createErrorResponse(err.message);
+      set.status = err.status || 500;
+      return createErrorResponse(err.message, err.errors ?? null, err.code ?? null, err.data ?? null);
     }
   }
 
@@ -54,7 +58,7 @@ export class CatalogController {
       } else {
         set.status = 500;
       }
-      return createErrorResponse(err.message);
+      return createErrorResponse(err.message, err.errors ?? null, err.code ?? null, err.data ?? null);
     }
   }
 

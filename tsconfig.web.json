@@ -1,0 +1,23 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "ignoreDeprecations": "6.0",
+    "jsx": "preserve",
+    "allowArbitraryExtensions": true,
+    "resolveJsonModule": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["bun-types", "vite/client"],
+    "paths": {
+      "@/*": ["resources/js/*"]
+    }
+  },
+  "include": [
+    "resources/**/*.ts",
+    "resources/**/*.vue",
+    "resources/**/*.d.ts",
+    "src/web/**/*.ts",
+    "vite.config.mts"
+  ],
+  "exclude": ["node_modules"]
+}

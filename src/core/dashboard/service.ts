@@ -1,4 +1,18 @@
-import { supabase } from '../../lib/supabase';
+import { db } from '../../lib/db';
+import { snakeKeys } from '../../db/helpers';
+import {
+  appointments,
+  payments,
+  commissionEntries,
+  barbers,
+  dailyBranchSummaries,
+  barberDailyStats,
+  customers,
+  branches,
+  appointmentServices,
+  services
+} from '../../db/schema';
+import { and, eq, inArray, gte, lt, desc, sql } from 'drizzle-orm';
 import { BARBER_QUEUE_STATUSES, formatBarberQueueOrder } from '../appointments/service';
 
 const DEFAULT_STATS_LIMIT = 30;
@@ -66,6 +80,12 @@ const compareNullableDates = (a?: string | null, b?: string | null) => {
 };
 
 export class DashboardService {
+  // [REVISI C2] Seluruh metrik ringkasan dashboard dihitung on-the-fly dengan
+  // batas waktu (di sini: hari berjalan Asia/Jakarta) sehingga counter otomatis
+  // "reset" saat periode berganti — termasuk pergantian bulan — tanpa pernah
+  // menghapus data mentah (appointments/payments/wallet_transactions tetap utuh).
+  // Ringkasan tersimpan (daily_branch_summaries, barber_daily_stats) juga per-hari
+  // dan dikembalikan sebagai daftar, bukan akumulasi sepanjang waktu.
   private static getTodayBounds() {
     const { year, month, day } = getJakartaDateParts(new Date());
     const start = new Date(Date.UTC(year, month - 1, day, -7, 0, 0, 0));
@@ -90,50 +110,59 @@ export class DashboardService {
   }
 
   private static async getCurrentBarberOrder(barberId: string) {
-    const { data, error } = await supabase
-      .from('appointments')
-      .select(`
-        id,
-        branch_id,
-        customer_id,
-        status,
-        scheduled_at,
-        queue_position,
-        created_at,
-        source,
-        fulfillment_type,
-        service_address,
-        destination_latitude,
-        destination_longitude,
-        location_notes,
-        customer_media_urls,
-        journey_status,
-        customers (
-          full_name
-        ),
-        branches (
-          name,
-          address
-        ),
-        appointment_services (
-          price_amount,
-          services (
-            name
-          )
-        )
-      `)
-      .eq('barber_id', barberId)
-      .in('status', BARBER_QUEUE_STATUSES);
+    const rows = snakeKeys(
+      await db
+        .select({
+          appt: {
+            id: appointments.id,
+            branch_id: appointments.branchId,
+            customer_id: appointments.customerId,
+            status: appointments.status,
+            scheduled_at: appointments.scheduledAt,
+            queue_position: appointments.queuePosition,
+            created_at: appointments.createdAt,
+            source: appointments.source,
+            fulfillment_type: appointments.fulfillmentType,
+            service_address: appointments.serviceAddress,
+            destination_latitude: appointments.destinationLatitude,
+            destination_longitude: appointments.destinationLongitude,
+            location_notes: appointments.locationNotes,
+            customer_media_urls: appointments.customerMediaUrls,
+            journey_status: appointments.journeyStatus
+          },
+          custFullName: customers.fullName,
+          branchName: branches.name,
+          branchAddress: branches.address
+        })
+        .from(appointments)
+        .leftJoin(customers, eq(appointments.customerId, customers.id))
+        .leftJoin(branches, eq(appointments.branchId, branches.id))
+        .where(and(eq(appointments.barberId, barberId), inArray(appointments.status, BARBER_QUEUE_STATUSES as any)))
+    ) as any[];
 
-    if (error) {
-      throw new Error('Gagal mengambil current order barber: ' + error.message);
+    const apptIds = rows.map((r) => r.appt.id);
+    const svcRows = apptIds.length
+      ? await db
+          .select({
+            appointmentId: appointmentServices.appointmentId,
+            price_amount: appointmentServices.priceAmount,
+            serviceName: services.name
+          })
+          .from(appointmentServices)
+          .leftJoin(services, eq(appointmentServices.serviceId, services.id))
+          .where(inArray(appointmentServices.appointmentId, apptIds))
+      : [];
+    const svcByAppt: Record<string, any[]> = {};
+    for (const s of svcRows) {
+      (svcByAppt[s.appointmentId] ??= []).push({ price_amount: s.price_amount, services: { name: s.serviceName } });
     }
 
-    const currentOrder = (data ?? [])
-      .map((appointment: any) => ({
-        ...appointment,
-        customers: unwrapRelation(appointment.customers),
-        branches: unwrapRelation(appointment.branches)
+    const currentOrder = rows
+      .map((r) => ({
+        ...r.appt,
+        customers: r.cust_full_name != null ? { full_name: r.cust_full_name } : null,
+        branches: r.branch_name != null ? { name: r.branch_name, address: r.branch_address } : null,
+        appointment_services: svcByAppt[r.appt.id] ?? []
       }))
       .sort(this.sortCurrentOrders)[0];
 
@@ -143,31 +172,57 @@ export class DashboardService {
   static async getAdminTodayDashboard(branchId: string) {
     const { start, end } = this.getTodayBounds();
     
-    const { data: apts } = await supabase.from('appointments').select('id, source, status, barber_id').eq('branch_id', branchId).gte('created_at', start).lt('created_at', end);
-    const { data: payments } = await supabase.from('payments').select('status, total_amount, service_amount, product_amount, tip_amount').eq('branch_id', branchId).gte('created_at', start).lt('created_at', end);
-    const { data: commissions } = await supabase.from('commission_entries').select('*, appointments!inner(branch_id)').eq('appointments.branch_id', branchId).gte('calculated_at', start).lt('calculated_at', end);
+    const apts = await db
+      .select({ id: appointments.id, source: appointments.source, status: appointments.status, barber_id: appointments.barberId })
+      .from(appointments)
+      .where(and(eq(appointments.branchId, branchId), gte(appointments.createdAt, start), lt(appointments.createdAt, end)));
+    const pays = await db
+      .select({
+        status: payments.status,
+        total_amount: payments.totalAmount,
+        service_amount: payments.serviceAmount,
+        product_amount: payments.productAmount,
+        tip_amount: payments.tipAmount
+      })
+      .from(payments)
+      .where(and(eq(payments.branchId, branchId), gte(payments.createdAt, start), lt(payments.createdAt, end)));
+    const commissions = await db
+      .select({
+        barber_share: commissionEntries.barberShare,
+        branch_share: commissionEntries.branchShare,
+        hq_share: commissionEntries.hqShare
+      })
+      .from(commissionEntries)
+      .innerJoin(appointments, eq(commissionEntries.appointmentId, appointments.id))
+      .where(and(eq(appointments.branchId, branchId), gte(commissionEntries.calculatedAt, start), lt(commissionEntries.calculatedAt, end)));
 
-    return this.aggregateDashboard(apts || [], payments || [], commissions || []);
+    return this.aggregateDashboard(apts, pays, commissions);
   }
 
   static async getBarberTodayDashboard(staffId: string) {
     const { start, end } = this.getTodayBounds();
     
-    const { data: barber } = await supabase
-      .from('barbers')
-      .select('id, rating_avg')
-      .eq('staff_user_id', staffId)
-      .single();
+    const [barber] = await db
+      .select({ id: barbers.id, rating_avg: barbers.ratingAvg })
+      .from(barbers)
+      .where(eq(barbers.staffUserId, staffId))
+      .limit(1);
     if (!barber) throw new Error('Profil Barber tidak ditemukan');
     const barberId = barber.id;
 
-    const { data: apts } = await supabase.from('appointments').select('id, source, status, barber_id').eq('barber_id', barberId).gte('created_at', start).lt('created_at', end);
-    const { data: commissions } = await supabase.from('commission_entries').select('*, appointments!inner(barber_id)').eq('appointments.barber_id', barberId).gte('calculated_at', start).lt('calculated_at', end);
+    const aptList = await db
+      .select({ id: appointments.id, source: appointments.source, status: appointments.status, barber_id: appointments.barberId })
+      .from(appointments)
+      .where(and(eq(appointments.barberId, barberId), gte(appointments.createdAt, start), lt(appointments.createdAt, end)));
+    const commissions = await db
+      .select({ barber_share: commissionEntries.barberShare, tip_amount: commissionEntries.tipAmount })
+      .from(commissionEntries)
+      .innerJoin(appointments, eq(commissionEntries.appointmentId, appointments.id))
+      .where(and(eq(appointments.barberId, barberId), gte(commissionEntries.calculatedAt, start), lt(commissionEntries.calculatedAt, end)));
 
-    const appointments = apts || [];
-    const completedApts = appointments.filter(a => a.status === 'completed');
-    const pendingOrders = appointments.filter(a => BARBER_PENDING_STATUSES.includes(a.status)).length;
-    const activeOrders = appointments.filter(a => BARBER_ACTIVE_STATUSES.includes(a.status)).length;
+    const completedApts = aptList.filter(a => a.status === 'completed');
+    const pendingOrders = aptList.filter(a => BARBER_PENDING_STATUSES.includes(a.status)).length;
+    const activeOrders = aptList.filter(a => BARBER_ACTIVE_STATUSES.includes(a.status)).length;
     const barberEarning = (commissions || []).reduce((sum, c) => sum + Number(c.barber_share), 0);
     const barberTip = (commissions || []).reduce((sum, c) => sum + Number(c.tip_amount), 0);
     const rating = Number(barber.rating_avg || 0);
@@ -179,7 +234,7 @@ export class DashboardService {
       completed_today: completedApts.length,
       rating: Number.isFinite(rating) ? rating : 0,
       current_order: currentOrder,
-      total_appointments: appointments.length,
+      total_appointments: aptList.length,
       total_completed: completedApts.length,
       heads_count: completedApts.length,
       // barber_share sudah mencakup porsi tip barber; beri nama eksplisit agar tidak ambigu
@@ -192,11 +247,26 @@ export class DashboardService {
   static async getHQTodayDashboard() {
     const { start, end } = this.getTodayBounds();
     
-    const { data: apts } = await supabase.from('appointments').select('id, source, status, barber_id').gte('created_at', start).lt('created_at', end);
-    const { data: payments } = await supabase.from('payments').select('status, total_amount, service_amount, product_amount, tip_amount').gte('created_at', start).lt('created_at', end);
-    const { data: commissions } = await supabase.from('commission_entries').select('*').gte('calculated_at', start).lt('calculated_at', end);
+    const apts = await db
+      .select({ id: appointments.id, source: appointments.source, status: appointments.status, barber_id: appointments.barberId })
+      .from(appointments)
+      .where(and(gte(appointments.createdAt, start), lt(appointments.createdAt, end)));
+    const pays = await db
+      .select({
+        status: payments.status,
+        total_amount: payments.totalAmount,
+        service_amount: payments.serviceAmount,
+        product_amount: payments.productAmount,
+        tip_amount: payments.tipAmount
+      })
+      .from(payments)
+      .where(and(gte(payments.createdAt, start), lt(payments.createdAt, end)));
+    const commissions = await db
+      .select({ barber_share: commissionEntries.barberShare, branch_share: commissionEntries.branchShare, hq_share: commissionEntries.hqShare })
+      .from(commissionEntries)
+      .where(and(gte(commissionEntries.calculatedAt, start), lt(commissionEntries.calculatedAt, end)));
 
-    return this.aggregateDashboard(apts || [], payments || [], commissions || []);
+    return this.aggregateDashboard(apts, pays, commissions);
   }
 
   private static aggregateDashboard(apts: any[], payments: any[], commissions: any[]) {
@@ -255,17 +325,29 @@ export class DashboardService {
   }
 
   static async getBranchSummary(branchId: string) {
-    const { data } = await supabase.from('daily_branch_summaries').select('*').eq('branch_id', branchId).order('summary_date', { ascending: false });
-    return data || [];
+    return snakeKeys(
+      await db
+        .select()
+        .from(dailyBranchSummaries)
+        .where(eq(dailyBranchSummaries.branchId, branchId))
+        .orderBy(desc(dailyBranchSummaries.summaryDate))
+    );
   }
 
   static async getHQBranchSummary() {
-    const { data } = await supabase.from('daily_branch_summaries').select('*, branches(name)').order('summary_date', { ascending: false });
-    return data || [];
+    const rows = await db
+      .select({ summary: dailyBranchSummaries, branchName: branches.name })
+      .from(dailyBranchSummaries)
+      .leftJoin(branches, eq(dailyBranchSummaries.branchId, branches.id))
+      .orderBy(desc(dailyBranchSummaries.summaryDate));
+    return rows.map((r) => ({
+      ...snakeKeys(r.summary),
+      branches: r.branchName != null ? { name: r.branchName } : null
+    }));
   }
 
   static async getBarberStats(staffId: string, query: { page?: any; limit?: any } = {}) {
-    const { data: barber } = await supabase.from('barbers').select('id').eq('staff_user_id', staffId).single();
+    const [barber] = await db.select({ id: barbers.id }).from(barbers).where(eq(barbers.staffUserId, staffId)).limit(1);
     if (!barber) throw new Error('Profil barber tidak ditemukan');
     const barberId = barber.id;
 
@@ -274,13 +356,13 @@ export class DashboardService {
     const offset = (page - 1) * limit;
 
     const [countResult, dataResult] = await Promise.all([
-      supabase.from('barber_daily_stats').select('*', { count: 'exact', head: true }).eq('barber_id', barberId),
-      supabase.from('barber_daily_stats').select('*').eq('barber_id', barberId).order('summary_date', { ascending: false }).range(offset, offset + limit - 1)
+      db.select({ count: sql<number>`count(*)` }).from(barberDailyStats).where(eq(barberDailyStats.barberId, barberId)),
+      db.select().from(barberDailyStats).where(eq(barberDailyStats.barberId, barberId)).orderBy(desc(barberDailyStats.summaryDate)).limit(limit).offset(offset)
     ]);
 
-    const total = countResult.count ?? 0;
+    const total = Number(countResult[0]?.count ?? 0);
     // barber_daily_stats.commission_earned includes tip portion — alias for clarity
-    const rows = (dataResult.data ?? []).map((row: any) => ({
+    const rows = snakeKeys(dataResult).map((row: any) => ({
       ...row,
       barber_share_including_tip: row.commission_earned
     }));

@@ -12,7 +12,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import { app } from '../src/app';
-import { supabase } from '../src/lib/supabase';
+import { testDb } from '../src/lib/test-db';
 import { SUNSET_DATE } from '../src/shared/deprecation';
 
 const API = '/api/v1';
@@ -69,7 +69,7 @@ beforeAll(async () => {
   barberToken = br.body?.data?.accessToken ?? '';
 
   // Resolve branch ID
-  const { data: branch } = await supabase.from('branches').select('id').limit(1).single();
+  const { data: branch } = await testDb.from('branches').select('id').limit(1).single();
   branchId = branch?.id ?? '';
 });
 

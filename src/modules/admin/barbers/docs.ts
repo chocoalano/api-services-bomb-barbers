@@ -108,5 +108,55 @@ export const adminBarbersDocs = {
         { status: 409, description: 'Barber baru sudah memiliki appointment yang overlap.', message: 'Jadwal barber baru bentrok' }
       ]
     })
+  },
+
+  adminList: {
+    query: t.Object({
+      page: t.Optional(t.Integer({ minimum: 1, default: 1, description: 'Nomor halaman (1-based).' })),
+      per_page: t.Optional(t.Integer({ minimum: 1, maximum: 100, default: 20, description: 'Baris per halaman (maks 100).' })),
+      branch_id: t.Optional(uuidField('Filter cabang tertentu (dalam scope peran).', ADMIN_EXAMPLES.branchId)),
+      live_status: t.Optional(t.String({ description: 'Status live dipisah koma: available,serving,on_break,offline.', examples: ['available,serving'] })),
+      q: t.Optional(t.String({ description: 'Pencarian nama tampilan barber.', examples: ['Budi'] })),
+      sort: t.Optional(t.String({ description: 'Kolom urut: display_name | rating_avg | rating_count | created_at.', examples: ['display_name'] })),
+      order: t.Optional(t.String({ description: 'Arah urut: asc | desc.', examples: ['asc'] }))
+    }),
+    detail: adminDetail({
+      tag: ADMIN_TAGS.appointments,
+      summary: 'Daftar Barber (Server-side, Role-scoped)',
+      description: 'Daftar barber lintas cabang dengan pagination server-side, join staff & cabang, serta agregat appointment (order aktif & total selesai). Cakupan per peran: super_admin melihat semua cabang; branch_admin hanya barber di cabangnya.',
+      required: ['Authorization: Bearer <access_token>', 'permission manage_appointment'],
+      optional: ['page', 'per_page', 'branch_id', 'live_status', 'q', 'sort', 'order'],
+      successMessage: 'Daftar barber',
+      successData: [
+        {
+          id: ADMIN_EXAMPLES.barberId,
+          display_name: 'Budi Santoso',
+          live_status: 'available',
+          rating_avg: 4.8,
+          rating_count: 32,
+          branch_id: ADMIN_EXAMPLES.branchId,
+          staff: { full_name: 'Budi Santoso', phone: '62811000001', email: 'budi@bomb.com' },
+          branches: { id: ADMIN_EXAMPLES.branchId, name: 'Bomb Barbershop Kedoya' },
+          stats: { active_appointments: 2, completed_appointments: 148 }
+        }
+      ],
+      errors: commonAuthErrors
+    })
+  },
+
+  adminStats: {
+    query: t.Object({
+      branch_id: t.Optional(uuidField('Filter cabang tertentu (opsional).', ADMIN_EXAMPLES.branchId))
+    }),
+    detail: adminDetail({
+      tag: ADMIN_TAGS.appointments,
+      summary: 'Statistik Barber (Role-scoped)',
+      description: 'Ringkasan barber sesuai cakupan peran: total, available, serving, on_break, offline, dan rata-rata rating.',
+      required: ['Authorization: Bearer <access_token>', 'permission manage_appointment'],
+      optional: ['branch_id'],
+      successMessage: 'Statistik barber',
+      successData: { total: 186, available: 74, serving: 21, on_break: 8, offline: 83, avg_rating: 4.7 },
+      errors: commonAuthErrors
+    })
   }
 };

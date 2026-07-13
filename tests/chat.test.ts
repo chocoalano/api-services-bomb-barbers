@@ -1,6 +1,6 @@
 import { describe, expect, it, beforeAll, afterAll } from 'bun:test';
 import { app } from '../src/app';
-import { supabase } from '../src/lib/supabase';
+import { testDb } from '../src/lib/test-db';
 import * as argon2 from 'argon2';
 
 const API_PREFIX = '/api/v1';
@@ -21,26 +21,26 @@ describe('Live Chat API', () => {
     const pwHash = await argon2.hash(password);
     const suffix = Date.now();
 
-    const { data: region } = await supabase.from('regions').insert({ code: `C${suffix}`, name: 'Chat Region' }).select('id').single();
+    const { data: region } = await testDb.from('regions').insert({ code: `C${suffix}`, name: 'Chat Region' }).select('id').single();
     regionId = region?.id || '';
 
-    const { data: branch } = await supabase.from('branches').insert({ name: 'Chat Branch', region_id: regionId, latitude: -6.2, longitude: 106.8 }).select('id').single();
+    const { data: branch } = await testDb.from('branches').insert({ name: 'Chat Branch', region_id: regionId, latitude: -6.2, longitude: 106.8 }).select('id').single();
     branchId = branch?.id || '';
 
-    const { data: customer } = await supabase.from('customers').insert({ full_name: 'Chat Customer', email: `cust${suffix}@test.com`, phone: `0812${suffix}`, password_hash: pwHash }).select('id').single();
+    const { data: customer } = await testDb.from('customers').insert({ full_name: 'Chat Customer', email: `cust${suffix}@test.com`, phone: `0812${suffix}`, password_hash: pwHash }).select('id').single();
     customerId = customer?.id || '';
 
-    const { data: barberStaff } = await supabase.from('staff_users').insert({ full_name: 'Chat Barber', email: `barber${suffix}@test.com`, password_hash: pwHash }).select('id').single();
+    const { data: barberStaff } = await testDb.from('staff_users').insert({ full_name: 'Chat Barber', email: `barber${suffix}@test.com`, password_hash: pwHash }).select('id').single();
     barberStaffId = barberStaff?.id || '';
 
-    const { data: barber } = await supabase.from('barbers').insert({ staff_user_id: barberStaffId, branch_id: branchId, display_name: 'Chat Barber' }).select('id').single();
+    const { data: barber } = await testDb.from('barbers').insert({ staff_user_id: barberStaffId, branch_id: branchId, display_name: 'Chat Barber' }).select('id').single();
     barberId = barber?.id || '';
 
-    const { data: svc } = await supabase.from('services').insert({ name: 'Chat Cut', default_duration_min: 30 }).select('id').single();
+    const { data: svc } = await testDb.from('services').insert({ name: 'Chat Cut', default_duration_min: 30 }).select('id').single();
     serviceId = svc?.id || '';
 
     const now = new Date();
-    await supabase.from('service_prices').insert({ service_id: serviceId, branch_id: branchId, price_amount: 50000, effective_from: now.toISOString() });
+    await testDb.from('service_prices').insert({ service_id: serviceId, branch_id: branchId, price_amount: 50000, effective_from: now.toISOString() });
 
     const resCustomer = await app.handle(new Request(`http://localhost${API_PREFIX}/customer/auth/login`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -56,20 +56,20 @@ describe('Live Chat API', () => {
     const bodyBarber = await resBarber.json();
     barberToken = bodyBarber.data.accessToken;
 
-    const appointment = await supabase.from('appointments').insert({ branch_id: branchId, barber_id: barberId, customer_id: customerId, source: 'online_booking', status: 'confirmed' }).select('id').single();
+    const appointment = await testDb.from('appointments').insert({ branch_id: branchId, barber_id: barberId, customer_id: customerId, source: 'online_booking', status: 'confirmed' }).select('id').single();
     appointmentId = appointment.data!.id;
   });
 
   afterAll(async () => {
-    await supabase.from('chat_messages').delete().eq('appointment_id', appointmentId);
-    await supabase.from('appointments').delete().eq('id', appointmentId);
-    await supabase.from('service_prices').delete().eq('service_id', serviceId);
-    await supabase.from('services').delete().eq('id', serviceId);
-    await supabase.from('barbers').delete().eq('id', barberId);
-    await supabase.from('staff_users').delete().eq('id', barberStaffId);
-    await supabase.from('customers').delete().eq('id', customerId);
-    await supabase.from('branches').delete().eq('id', branchId);
-    await supabase.from('regions').delete().eq('id', regionId);
+    await testDb.from('chat_messages').delete().eq('appointment_id', appointmentId);
+    await testDb.from('appointments').delete().eq('id', appointmentId);
+    await testDb.from('service_prices').delete().eq('service_id', serviceId);
+    await testDb.from('services').delete().eq('id', serviceId);
+    await testDb.from('barbers').delete().eq('id', barberId);
+    await testDb.from('staff_users').delete().eq('id', barberStaffId);
+    await testDb.from('customers').delete().eq('id', customerId);
+    await testDb.from('branches').delete().eq('id', branchId);
+    await testDb.from('regions').delete().eq('id', regionId);
   });
 
   it('1. Customer dapat mengambil riwayat chat kosong dengan pagination', async () => {

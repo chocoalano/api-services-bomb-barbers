@@ -1,6 +1,9 @@
 import { createSuccessResponse, createErrorResponse } from '../../shared/response';
 import { CommissionService } from './service';
-import { supabase } from '../../lib/supabase';
+import { db } from '../../lib/db';
+import { snakeKeys } from '../../db/helpers';
+import { commissionEntries, commissionRules, barbers, barberDailyStats, dailyBranchSummaries } from '../../db/schema';
+import { and, eq, desc, sql } from 'drizzle-orm';
 
 export class CommissionController {
   static async calculateCommission({ params, set }: any) {
@@ -17,13 +20,15 @@ export class CommissionController {
 
   static async getCommissionDetail({ params, set }: any) {
     try {
-      const { data, error } = await supabase
-        .from('commission_entries')
-        .select('*, commission_rules(*)')
-        .eq('appointment_id', params.id)
-        .single();
-      
-      if (error || !data) { set.status = 404; return createErrorResponse('Data komisi tidak ditemukan'); }
+      const [row] = await db
+        .select({ entry: commissionEntries, rule: commissionRules })
+        .from(commissionEntries)
+        .leftJoin(commissionRules, eq(commissionEntries.commissionRuleId, commissionRules.id))
+        .where(eq(commissionEntries.appointmentId, params.id))
+        .limit(1);
+
+      if (!row) { set.status = 404; return createErrorResponse('Data komisi tidak ditemukan'); }
+      const data = { ...snakeKeys(row.entry), commission_rules: row.rule ? snakeKeys(row.rule) : null };
       return createSuccessResponse('Detail komisi', data);
     } catch (err: any) {
       set.status = 500;
@@ -33,11 +38,11 @@ export class CommissionController {
 
   static async getBarberCommissions({ staffId, query, set }: any) {
     try {
-      const { data: barber } = await supabase
-        .from('barbers')
-        .select('id')
-        .eq('staff_user_id', staffId)
-        .single();
+      const [barber] = await db
+        .select({ id: barbers.id })
+        .from(barbers)
+        .where(eq(barbers.staffUserId, staffId))
+        .limit(1);
       if (!barber) {
         set.status = 403;
         return createErrorResponse('Profil barber tidak ditemukan');
@@ -63,13 +68,12 @@ export class CommissionController {
       const offset = (page - 1) * limit;
 
       const [countResult, dataResult] = await Promise.all([
-        supabase.from('barber_daily_stats').select('*', { count: 'exact', head: true }).eq('barber_id', barber.id),
-        supabase.from('barber_daily_stats').select('*').eq('barber_id', barber.id).order('summary_date', { ascending: false }).range(offset, offset + limit - 1)
+        db.select({ count: sql<number>`count(*)` }).from(barberDailyStats).where(eq(barberDailyStats.barberId, barber.id)),
+        db.select().from(barberDailyStats).where(eq(barberDailyStats.barberId, barber.id)).orderBy(desc(barberDailyStats.summaryDate)).limit(limit).offset(offset)
       ]);
 
-      if (dataResult.error) throw new Error(dataResult.error.message);
-      const total = countResult.count ?? 0;
-      const rows = (dataResult.data ?? []).map((row: any) => ({
+      const total = Number(countResult[0]?.count ?? 0);
+      const rows = snakeKeys(dataResult).map((row: any) => ({
         ...row,
         barber_share_including_tip: row.commission_earned
       }));
@@ -82,13 +86,13 @@ export class CommissionController {
 
   static async getBranchCommissions({ params, set }: any) {
     try {
-      const { data, error } = await supabase
-        .from('daily_branch_summaries')
-        .select('*')
-        .eq('branch_id', params.branchId)
-        .order('summary_date', { ascending: false });
-        
-      if (error) throw new Error(error.message);
+      const data = snakeKeys(
+        await db
+          .select()
+          .from(dailyBranchSummaries)
+          .where(eq(dailyBranchSummaries.branchId, params.branchId))
+          .orderBy(desc(dailyBranchSummaries.summaryDate))
+      );
       return createSuccessResponse('Laporan Bagi Hasil Cabang', data);
     } catch (err: any) {
       set.status = 500;

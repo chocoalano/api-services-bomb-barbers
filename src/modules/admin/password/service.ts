@@ -1,5 +1,7 @@
 import * as argon2 from 'argon2';
-import { supabase } from '../../../lib/supabase';
+import { db } from '../../../lib/db';
+import { staffUsers } from '../../../db/schema';
+import { and, eq, isNull } from 'drizzle-orm';
 import { AuthSessionService } from '../../../core/auth/session.service';
 
 export class PasswordService {
@@ -8,17 +10,15 @@ export class PasswordService {
    * Mengembalikan true jika cocok, false jika tidak.
    */
   static async verifyCurrentPassword(staffId: string, currentPassword: string): Promise<boolean> {
-    const { data: staff, error } = await supabase
-      .from('staff_users')
-      .select('password_hash')
-      .eq('id', staffId)
-      .is('deleted_at', null)
-      .maybeSingle();
+    const [staff] = await db
+      .select({ passwordHash: staffUsers.passwordHash })
+      .from(staffUsers)
+      .where(and(eq(staffUsers.id, staffId), isNull(staffUsers.deletedAt)))
+      .limit(1);
 
-    if (error) throw new Error('Gagal memverifikasi password: ' + error.message);
-    if (!staff || !staff.password_hash) throw new Error('Akun tidak memiliki password');
+    if (!staff || !staff.passwordHash) throw new Error('Akun tidak memiliki password');
 
-    return argon2.verify(staff.password_hash, currentPassword);
+    return argon2.verify(staff.passwordHash, currentPassword);
   }
 
   /**
@@ -27,16 +27,10 @@ export class PasswordService {
   static async updatePassword(staffId: string, newPassword: string): Promise<void> {
     const newHash = await argon2.hash(newPassword);
 
-    const { error } = await supabase
-      .from('staff_users')
-      .update({
-        password_hash: newHash,
-        updated_at: new Date().toISOString()
-      })
-      .eq('id', staffId)
-      .is('deleted_at', null);
-
-    if (error) throw new Error('Gagal memperbarui password: ' + error.message);
+    await db
+      .update(staffUsers)
+      .set({ passwordHash: newHash })
+      .where(and(eq(staffUsers.id, staffId), isNull(staffUsers.deletedAt)));
   }
 
   /**

@@ -11,10 +11,11 @@ import { expenseRoutes } from './expenses/routes';
 import { queueRoutes } from './queue/routes';
 import { analyticsRoutes } from './analytics/routes';
 import { adminMediaRoutes } from './media/routes';
-import { adminBarberRoutes } from './barbers/routes';
+import { adminBarberRoutes, adminBarberListRoutes } from './barbers/routes';
 import { adminPasswordRoutes } from './password/routes';
 import { adminNotificationRoutes } from './notifications/routes';
 import { adminCustomerRoutes } from './customers/routes';
+import { adminWithdrawalRoutes } from './withdrawals/routes';
 
 export const adminRoutes = new Elysia()
   .use(adminAuthRoutes)
@@ -31,7 +32,9 @@ export const adminRoutes = new Elysia()
   .use(analyticsRoutes)
   .use(adminMediaRoutes)
   .use(adminBarberRoutes)
+  .use(adminBarberListRoutes)
   .use(adminPasswordRoutes)
   .use(adminNotificationRoutes)
-  .use(adminCustomerRoutes);
+  .use(adminCustomerRoutes)
+  .use(adminWithdrawalRoutes);
 

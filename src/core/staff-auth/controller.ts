@@ -1,6 +1,7 @@
 import { createSuccessResponse, createErrorResponse } from '../../shared/response';
 import { StaffAuthService } from './service';
 import { AuthSessionService } from '../auth/session.service';
+import { NON_EXPIRING_JWT_VERIFY_OPTIONS } from '../../middleware/auth';
 import {
   AuthRateLimitError,
   AuthSecurityService,
@@ -8,9 +9,16 @@ import {
 } from '../auth/security.service';
 
 export class StaffAuthController {
-  static async login({ body, jwtAccess, jwtRefresh, request, set }: any) {
+  // `options.allowedRoles` membatasi login ke role tertentu. Dipakai oleh login
+  // backoffice (`/api/v1/admin/auth/login`) agar hanya super_admin & branch_admin
+  // yang bisa masuk, tanpa memengaruhi login staff/kepster yang memakai handler
+  // yang sama tanpa gate ini.
+  static async login(
+    { body, jwtAccess, jwtRefresh, request, server, set }: any,
+    options: { allowedRoles?: string[] } = {}
+  ) {
     try {
-      const metadata = getAuthRequestMetadata(request);
+      const metadata = getAuthRequestMetadata(request, server);
       const rateLimit = await AuthSecurityService.assertLoginAllowed(
         'staff',
         body.email || 'unknown',
@@ -19,6 +27,19 @@ export class StaffAuthController {
       let staff;
       try {
         staff = await StaffAuthService.login(body);
+
+        // Gate role backoffice: tolak akun yang tidak memiliki salah satu role
+        // yang diizinkan (mis. kepster/barber mencoba masuk ke panel admin).
+        if (
+          options.allowedRoles &&
+          !staff.roles.some((role: string) => options.allowedRoles!.includes(role))
+        ) {
+          const forbidden = new Error(
+            'Akun ini tidak memiliki akses ke backoffice'
+          ) as Error & { status?: number };
+          forbidden.status = 403;
+          throw forbidden;
+        }
       } catch (error: any) {
         await AuthSecurityService.recordLoginFailure({
           userType: 'staff',
@@ -74,6 +95,9 @@ export class StaffAuthController {
       if (error instanceof AuthRateLimitError) {
         set.status = 429;
         set.headers['Retry-After'] = String(error.retryAfterSeconds);
+      } else if (typeof error.status === 'number') {
+        // [REVISI C1] Hormati status eksplisit (mis. 403 gating persetujuan kepster).
+        set.status = error.status;
       } else if (error.message.includes('tidak aktif')) {
         set.status = 403;
       } else {
@@ -83,11 +107,23 @@ export class StaffAuthController {
     }
   }
 
-  static async refresh({ body, jwtAccess, jwtRefresh, request, set }: any) {
+  // [REVISI C1] Pendaftaran mandiri kepster (publik). Tidak menerbitkan JWT.
+  static async register({ body, set }: any) {
     try {
-      const metadata = getAuthRequestMetadata(request);
+      await StaffAuthService.register(body);
+      set.status = 201;
+      return createSuccessResponse('Pendaftaran diterima, menunggu konfirmasi admin', null);
+    } catch (error: any) {
+      set.status = typeof error.status === 'number' ? error.status : 400;
+      return createErrorResponse(error.message);
+    }
+  }
+
+  static async refresh({ body, jwtAccess, jwtRefresh, request, server, set }: any) {
+    try {
+      const metadata = getAuthRequestMetadata(request, server);
       await AuthSecurityService.assertRefreshAllowed(metadata);
-      const payload = await jwtRefresh.verify(body.refreshToken);
+      const payload = await jwtRefresh.verify(body.refreshToken, NON_EXPIRING_JWT_VERIFY_OPTIONS);
       if (
         !payload ||
         payload.role !== 'staff' ||
@@ -150,9 +186,9 @@ export class StaffAuthController {
     }
   }
 
-  static async logout({ body, jwtRefresh, request, set }: any) {
+  static async logout({ body, jwtRefresh, request, server, set }: any) {
     try {
-      const payload = await jwtRefresh.verify(body.refreshToken);
+      const payload = await jwtRefresh.verify(body.refreshToken, NON_EXPIRING_JWT_VERIFY_OPTIONS);
       if (
         !payload ||
         payload.role !== 'staff' ||
@@ -166,7 +202,7 @@ export class StaffAuthController {
         'staff',
         payload.sub,
         'logout',
-        getAuthRequestMetadata(request)
+        getAuthRequestMetadata(request, server)
       );
       return createSuccessResponse('Logout berhasil', null);
     } catch (error: any) {

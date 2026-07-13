@@ -1,12 +1,16 @@
+import './boot'; // validasi env & kekuatan secret sebelum modul lain dievaluasi (B6/MB3)
 import { app } from './app';
-import { logger } from './lib/logger';
+import { logger, registerProcessErrorHandlers } from './lib/logger';
 import { closeSocketServer, startSocketServer } from './lib/socket';
 import {
   redis,
+  appRedis,
   socketPubClient,
   socketSubClient
 } from './lib/redis';
 import { stopQueueInfrastructure } from './lib/queue';
+
+registerProcessErrorHandlers('api-server');
 
 const PORT = Number(process.env.APP_PORT || 3000);
 const SOCKET_PORT = Number(process.env.SOCKET_PORT || 3001);
@@ -26,7 +30,9 @@ if (listener && typeof (listener as any).then === 'function') {
   (listener as any)
     .then(() => {
       logger.info({ port: PORT }, 'Elysia REST API started');
-      logger.info({ url: `http://localhost:${PORT}/docs` }, 'Swagger UI available');
+      if (process.env.NODE_ENV !== 'production') {
+        logger.info({ url: `http://localhost:${PORT}/docs` }, 'Swagger UI available');
+      }
     })
     .catch((err: any) => {
       logger.error({ err }, 'Failed to start REST API');
@@ -58,6 +64,7 @@ const shutdown = async (signal: string) => {
     await Promise.allSettled([
       socketSubClient.quit(),
       socketPubClient.quit(),
+      appRedis.quit(),
       redis.quit()
     ]);
     clearTimeout(forceExit);

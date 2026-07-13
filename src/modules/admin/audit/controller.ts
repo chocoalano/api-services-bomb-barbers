@@ -1,5 +1,8 @@
 import { createSuccessResponse, createErrorResponse } from '../../../shared/response';
-import { supabase } from '../../../lib/supabase';
+import { db } from '../../../lib/db';
+import { snakeKeys } from '../../../db/helpers';
+import { auditLogs } from '../../../db/schema';
+import { and, eq, inArray, desc, sql, type SQL } from 'drizzle-orm';
 import { getRbacProfile } from '../../../middleware/rbac';
 
 export class AuditController {
@@ -11,14 +14,9 @@ export class AuditController {
 
       const profile = await getRbacProfile(staffId);
 
-      let dbQuery = supabase
-        .from('audit_logs')
-        .select('*', { count: 'exact' })
-        .order('created_at', { ascending: false })
-        .range(resolvedOffset, resolvedOffset + resolvedLimit - 1);
-
-      if (entity_type) dbQuery = dbQuery.eq('entity_type', entity_type);
-      if (entity_id) dbQuery = dbQuery.eq('entity_id', entity_id);
+      const filters: SQL[] = [];
+      if (entity_type) filters.push(eq(auditLogs.entityType, entity_type));
+      if (entity_id) filters.push(eq(auditLogs.entityId, entity_id));
 
       if (!profile.isGlobal) {
         // Non-global staff hanya bisa melihat log cabang mereka sendiri.
@@ -31,20 +29,29 @@ export class AuditController {
         }
         const targetId = branch_id && allowedIds.includes(branch_id) ? branch_id : null;
         if (targetId) {
-          dbQuery = dbQuery.eq('branch_id', targetId);
+          filters.push(eq(auditLogs.branchId, targetId));
         } else {
-          dbQuery = dbQuery.in('branch_id', allowedIds);
+          filters.push(inArray(auditLogs.branchId, allowedIds));
         }
       } else if (branch_id) {
-        dbQuery = dbQuery.eq('branch_id', branch_id);
+        filters.push(eq(auditLogs.branchId, branch_id));
       }
 
-      const { data, count, error } = await dbQuery;
+      const where = filters.length ? and(...filters) : undefined;
 
-      if (error) throw new Error(error.message);
+      const [rows, countRows] = await Promise.all([
+        db
+          .select()
+          .from(auditLogs)
+          .where(where)
+          .orderBy(desc(auditLogs.createdAt))
+          .limit(resolvedLimit)
+          .offset(resolvedOffset),
+        db.select({ count: sql<number>`count(*)` }).from(auditLogs).where(where)
+      ]);
 
-      return createSuccessResponse('Audit logs berhasil diambil', data, {
-        total: count ?? 0,
+      return createSuccessResponse('Audit logs berhasil diambil', snakeKeys(rows), {
+        total: Number(countRows[0]?.count ?? 0),
         limit: resolvedLimit,
         offset: resolvedOffset
       });

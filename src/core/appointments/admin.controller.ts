@@ -1,6 +1,11 @@
+import { randomUUID } from 'crypto';
 import { createSuccessResponse, createErrorResponse } from '../../shared/response';
+import { handleControllerError } from '../../shared/controller-error';
 import { AppointmentService } from './service';
-import { supabase } from '../../lib/supabase';
+import { db } from '../../lib/db';
+import { snakeKeys, toDbDate } from '../../db/helpers';
+import { barbers, appointments, customers, appointmentEvents } from '../../db/schema';
+import { and, eq, inArray, isNull, asc } from 'drizzle-orm';
 import { AuditService } from '../../modules/admin/audit/service';
 import { emitNewOrder } from '../../lib/socket';
 
@@ -10,12 +15,11 @@ export class AdminAppointmentController {
       // Application-level guard: barber_id (if provided) must belong to the target branch.
       // This prevents cross-branch assignment before the request even reaches the DB RPC.
       if (body?.barber_id) {
-        const { data: barber } = await supabase
-          .from('barbers')
-          .select('branch_id')
-          .eq('id', body.barber_id)
-          .is('deleted_at', null)
-          .maybeSingle();
+        const [barber] = await db
+          .select({ branch_id: barbers.branchId })
+          .from(barbers)
+          .where(and(eq(barbers.id, body.barber_id), isNull(barbers.deletedAt)))
+          .limit(1);
         if (!barber) {
           set.status = 400;
           return createErrorResponse('Barber tidak ditemukan');
@@ -39,25 +43,27 @@ export class AdminAppointmentController {
       set.status = 201;
       return createSuccessResponse('Walk-in berhasil dicatat', apt);
     } catch (err: any) {
-      set.status = err.status || 400;
-      return createErrorResponse(err.message);
+      return handleControllerError(err, set, 'admin.createWalkIn', { detail: false });
     }
   }
 
   static async getBranchQueue({ params, set }: any) {
     try {
-      const { data, error } = await supabase
-        .from('appointments')
-        .select('*, barbers (display_name), customers(full_name)')
-        .eq('branch_id', params.branchId)
-        .in('status', ['pending', 'confirmed', 'in_queue', 'in_service'])
-        .order('queue_position', { ascending: true });
-
-      if (error) throw new Error(error.message);
+      const rows = await db
+        .select({ appt: appointments, barberDisplayName: barbers.displayName, custFullName: customers.fullName })
+        .from(appointments)
+        .leftJoin(barbers, eq(appointments.barberId, barbers.id))
+        .leftJoin(customers, eq(appointments.customerId, customers.id))
+        .where(and(eq(appointments.branchId, params.branchId), inArray(appointments.status, ['pending', 'confirmed', 'in_queue', 'in_service'])))
+        .orderBy(asc(appointments.queuePosition));
+      const data = rows.map((r) => ({
+        ...snakeKeys(r.appt),
+        barbers: r.barberDisplayName != null ? { display_name: r.barberDisplayName } : null,
+        customers: r.custFullName != null ? { full_name: r.custFullName } : null
+      }));
       return createSuccessResponse('Daftar antrean cabang', data);
     } catch (err: any) {
-      set.status = 400;
-      return createErrorResponse(err.message);
+      return handleControllerError(err, set, 'admin.getBranchQueue', { status: 400, detail: false });
     }
   }
 
@@ -72,8 +78,7 @@ export class AdminAppointmentController {
       });
       return createSuccessResponse('Status berhasil diperbarui', apt);
     } catch (err: any) {
-      set.status = err.status || 400;
-      return createErrorResponse(err.message);
+      return handleControllerError(err, set, 'admin.updateStatus', { detail: false });
     }
   }
 
@@ -94,18 +99,23 @@ export class AdminAppointmentController {
 
       return createSuccessResponse('Lokasi tujuan berhasil diperbarui', apt);
     } catch (err: any) {
-      set.status = err.status || 400;
-      return createErrorResponse(err.message);
+      return handleControllerError(err, set, 'admin.updateDestination', { detail: false });
     }
   }
 
   static async reassignBarber({ params, body, staffId, set }: any) {
     try {
-      const { data: apt } = await supabase
-        .from('appointments')
-        .select('id, branch_id, barber_id, status, customer_id')
-        .eq('id', params.id)
-        .maybeSingle();
+      const [apt] = await db
+        .select({
+          id: appointments.id,
+          branch_id: appointments.branchId,
+          barber_id: appointments.barberId,
+          status: appointments.status,
+          customer_id: appointments.customerId
+        })
+        .from(appointments)
+        .where(eq(appointments.id, params.id))
+        .limit(1);
 
       if (!apt) {
         set.status = 404;
@@ -117,12 +127,11 @@ export class AdminAppointmentController {
         return createErrorResponse('Tidak dapat reassign barber pada appointment yang sudah selesai/dibatalkan');
       }
 
-      const { data: newBarber } = await supabase
-        .from('barbers')
-        .select('id, branch_id, display_name')
-        .eq('id', body.barber_id)
-        .is('deleted_at', null)
-        .maybeSingle();
+      const [newBarber] = await db
+        .select({ id: barbers.id, branch_id: barbers.branchId, display_name: barbers.displayName })
+        .from(barbers)
+        .where(and(eq(barbers.id, body.barber_id), isNull(barbers.deletedAt)))
+        .limit(1);
 
       if (!newBarber) {
         set.status = 400;
@@ -134,34 +143,37 @@ export class AdminAppointmentController {
         return createErrorResponse('Barber tidak terdaftar pada cabang appointment ini');
       }
 
-      const { data: updated, error } = await supabase
-        .from('appointments')
-        .update({ barber_id: body.barber_id, updated_at: new Date().toISOString() })
-        .eq('id', params.id)
-        .select()
-        .single();
+      const now = toDbDate(new Date());
+      // Reset chat: barber baru tidak boleh melihat riwayat chat lama. (M7)
+      await db
+        .update(appointments)
+        .set({ barberId: body.barber_id, chatClearedAt: now })
+        .where(eq(appointments.id, params.id));
+      const [updated] = snakeKeys(
+        await db.select().from(appointments).where(eq(appointments.id, params.id)).limit(1)
+      );
 
-      if (error) {
-        if (error.code === '23P01') {
-          set.status = 409;
-          return createErrorResponse('Barber baru sudah memiliki appointment yang overlap pada jadwal ini');
-        }
-        throw new Error(error.message);
-      }
-
-      await supabase.from('appointment_events').insert({
-        appointment_id: params.id,
-        event_type: 'BARBER_REASSIGNED',
-        actor_type: 'staff',
-        actor_id: staffId,
-        actor_role: 'admin',
-        from_status: apt.status,
-        to_status: apt.status,
+      await db.insert(appointmentEvents).values({
+        id: randomUUID(),
+        appointmentId: params.id,
+        eventType: 'BARBER_REASSIGNED',
+        actorType: 'staff',
+        actorId: staffId,
+        actorRole: 'admin',
+        fromStatus: apt.status,
+        toStatus: apt.status,
         reason: `Barber direassign ke ${newBarber.display_name} oleh admin`
-      });
+      } as any);
 
       if (body.barber_id !== apt.barber_id) {
-        emitNewOrder(body.barber_id, { type: 'BARBER_REASSIGNED', appointmentId: params.id } as any);
+        const timestamp = new Date().toISOString();
+        // Notifikasi barber baru dengan payload yang benar (appointment_id/timestamp,
+        // bukan field camelCase yang tak terbaca klien). (M18)
+        emitNewOrder(body.barber_id, { appointment_id: params.id, timestamp });
+        // Beri tahu barber lama agar daftar order-nya menyegar & melepas order ini.
+        if (apt.barber_id) {
+          emitNewOrder(apt.barber_id, { appointment_id: params.id, timestamp });
+        }
       }
 
       await AuditService.logAction(
@@ -171,8 +183,7 @@ export class AdminAppointmentController {
 
       return createSuccessResponse('Barber berhasil direassign', updated);
     } catch (err: any) {
-      set.status = err.status || 400;
-      return createErrorResponse(err.message);
+      return handleControllerError(err, set, 'admin.reassignBarber', { detail: false });
     }
   }
 }

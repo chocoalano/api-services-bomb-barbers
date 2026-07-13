@@ -13,7 +13,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import { app } from '../src/app';
-import { supabase } from '../src/lib/supabase';
+import { testDb } from '../src/lib/test-db';
 import { getTrackingCustomerKey, redis } from '../src/lib/redis';
 import { RealtimeTrackingService } from '../src/core/tracking/service';
 
@@ -73,7 +73,7 @@ const login = async (path: string, email: string) => {
 };
 
 const insertApt = async (extra: Record<string, any>): Promise<string> => {
-  const { data, error } = await supabase
+  const { data, error } = await testDb
     .from('appointments')
     .insert({
       branch_id: branchId,
@@ -92,7 +92,7 @@ const insertApt = async (extra: Record<string, any>): Promise<string> => {
 };
 
 const insertSession = async (appointmentId: string) => {
-  const { error } = await supabase.from('tracking_sessions').insert({
+  const { error } = await testDb.from('tracking_sessions').insert({
     appointment_id: appointmentId,
     status: 'active',
     consent_given_at: new Date().toISOString(),
@@ -118,25 +118,25 @@ beforeAll(async () => {
   barronToken = await login(`${API}/barber/auth/login`, 'barron@bombbarbershop.com');
 
   // Resolve IDs
-  const { data: fajar } = await supabase
+  const { data: fajar } = await testDb
     .from('customers').select('id').eq('email', 'fajar.customer@example.com').single();
   customerId = fajar!.id;
 
-  const { data: daviesStaff } = await supabase
+  const { data: daviesStaff } = await testDb
     .from('staff_users').select('id').eq('email', 'davies@bombbarbershop.com').single();
-  const { data: daviesBarber } = await supabase
+  const { data: daviesBarber } = await testDb
     .from('barbers').select('id, branch_id').eq('staff_user_id', daviesStaff!.id).single();
   barberId = daviesBarber!.id;
   branchId = daviesBarber!.branch_id;
 
   // Ensure branch has coordinates so geofence validation is deterministic
-  const { data: branch } = await supabase
+  const { data: branch } = await testDb
     .from('branches').select('latitude, longitude').eq('id', branchId).single();
   if (branch?.latitude && branch?.longitude) {
     branchLat = Number(branch.latitude);
     branchLng = Number(branch.longitude);
   } else {
-    await supabase
+    await testDb
       .from('branches')
       .update({ latitude: branchLat, longitude: branchLng })
       .eq('id', branchId);
@@ -176,10 +176,10 @@ afterAll(async () => {
     await RealtimeTrackingService.cleanup(id);
   }
   if (allAptIds.length) {
-    await supabase.from('check_ins').delete().in('appointment_id', allAptIds);
-    await supabase.from('tracking_sessions').delete().in('appointment_id', allAptIds);
-    await supabase.from('appointment_events').delete().in('appointment_id', allAptIds);
-    await supabase.from('appointments').delete().in('id', allAptIds);
+    await testDb.from('check_ins').delete().in('appointment_id', allAptIds);
+    await testDb.from('tracking_sessions').delete().in('appointment_id', allAptIds);
+    await testDb.from('appointment_events').delete().in('appointment_id', allAptIds);
+    await testDb.from('appointments').delete().in('id', allAptIds);
   }
 });
 
@@ -373,7 +373,7 @@ describe('Geofence check-in customer', () => {
   });
 
   it('menyimpan distance_m di tabel check_ins setelah GPS check-in berhasil', async () => {
-    const { data: ci } = await supabase
+    const { data: ci } = await testDb
       .from('check_ins')
       .select('method, distance_m, location_lat, location_lng')
       .eq('appointment_id', checkInInsideAptId)
@@ -401,7 +401,7 @@ describe('POST /customer/appointments/:id/tracking/revoke', () => {
   });
 
   it('session diperbarui menjadi revoked di database setelah revoke berhasil', async () => {
-    const { data: session } = await supabase
+    const { data: session } = await testDb
       .from('tracking_sessions')
       .select('status')
       .eq('appointment_id', revokeAptId)

@@ -1,6 +1,6 @@
 import { describe, expect, it, beforeAll, afterAll } from 'bun:test';
 import { app } from '../src/app';
-import { supabase } from '../src/lib/supabase';
+import { testDb } from '../src/lib/test-db';
 import * as argon2 from 'argon2';
 
 const API_PREFIX = '/api/v1';
@@ -30,31 +30,31 @@ describe('RBAC Module', () => {
     pwHash = await argon2.hash(password);
     
     // 1. Get or Create Roles & Permissions
-    const { data: roles } = await supabase.from('roles').select('*');
-    roleSuperAdminId = roles?.find(r => r.name === 'super_admin')?.id || '';
-    roleBranchAdminId = roles?.find(r => r.name === 'branch_admin')?.id || '';
+    const { data: roles } = await testDb.from('roles').select('*');
+    roleSuperAdminId = roles?.find((r: any) => r.name === 'super_admin')?.id || '';
+    roleBranchAdminId = roles?.find((r: any) => r.name === 'branch_admin')?.id || '';
 
-    const { data: perms } = await supabase.from('permissions').select('*');
-    permissionManageStaffId = perms?.find(p => p.code === 'manage_staff')?.id || '';
+    const { data: perms } = await testDb.from('permissions').select('*');
+    permissionManageStaffId = perms?.find((p: any) => p.code === 'manage_staff')?.id || '';
 
     // Assign manage_staff to super_admin and branch_admin if not exists
     // We try to insert and ignore error if it exists
-    await supabase.from('role_permissions').insert([
+    await testDb.from('role_permissions').insert([
       { role_id: roleSuperAdminId, permission_id: permissionManageStaffId },
       { role_id: roleBranchAdminId, permission_id: permissionManageStaffId }
     ]);
 
     // 2. Create Branches
-    const { data: bA } = await supabase.from('branches').insert({ name: 'Branch A', region_id: null }).select('id').single();
-    const { data: bB } = await supabase.from('branches').insert({ name: 'Branch B', region_id: null }).select('id').single();
+    const { data: bA } = await testDb.from('branches').insert({ name: 'Branch A', region_id: null }).select('id').single();
+    const { data: bB } = await testDb.from('branches').insert({ name: 'Branch B', region_id: null }).select('id').single();
     if(bA) branchAId = bA.id;
     if(bB) branchBId = bB.id;
 
     // 3. Create Staff Users
-    const { data: sa } = await supabase.from('staff_users').insert({ full_name: 'Super Admin', email: 'sa@test.com', password_hash: pwHash }).select('id').single();
-    const { data: ba } = await supabase.from('staff_users').insert({ full_name: 'Branch Admin', email: 'ba@test.com', password_hash: pwHash }).select('id').single();
-    const { data: bb } = await supabase.from('staff_users').insert({ full_name: 'Barber', email: 'barber@test.com', password_hash: pwHash }).select('id').single();
-    const { data: np } = await supabase.from('staff_users').insert({ full_name: 'No Perms', email: 'noperms@test.com', password_hash: pwHash }).select('id').single();
+    const { data: sa } = await testDb.from('staff_users').insert({ full_name: 'Super Admin', email: 'sa@test.com', password_hash: pwHash }).select('id').single();
+    const { data: ba } = await testDb.from('staff_users').insert({ full_name: 'Branch Admin', email: 'ba@test.com', password_hash: pwHash }).select('id').single();
+    const { data: bb } = await testDb.from('staff_users').insert({ full_name: 'Barber', email: 'barber@test.com', password_hash: pwHash }).select('id').single();
+    const { data: np } = await testDb.from('staff_users').insert({ full_name: 'No Perms', email: 'noperms@test.com', password_hash: pwHash }).select('id').single();
 
     if(sa) superAdminId = sa.id;
     if(ba) branchAdminId = ba.id;
@@ -63,11 +63,11 @@ describe('RBAC Module', () => {
 
     // 4. Assign Roles
     // Super admin -> global (branch_id: null)
-    await supabase.from('staff_user_roles').insert({ staff_user_id: superAdminId, role_id: roleSuperAdminId, branch_id: null });
+    await testDb.from('staff_user_roles').insert({ staff_user_id: superAdminId, role_id: roleSuperAdminId, branch_id: null });
     // Branch admin -> Branch A
-    await supabase.from('staff_user_roles').insert({ staff_user_id: branchAdminId, role_id: roleBranchAdminId, branch_id: branchAId });
+    await testDb.from('staff_user_roles').insert({ staff_user_id: branchAdminId, role_id: roleBranchAdminId, branch_id: branchAId });
     // Barber -> Branch A
-    await supabase.from('barbers').insert({ staff_user_id: barberId, branch_id: branchAId, display_name: 'Barber A' });
+    await testDb.from('barbers').insert({ staff_user_id: barberId, branch_id: branchAId, display_name: 'Barber A' });
 
     // 5. Login to get tokens
     const login = async (email: string) => {
@@ -88,13 +88,13 @@ describe('RBAC Module', () => {
 
   afterAll(async () => {
     // Cleanup
-    await supabase.from('staff_user_roles').delete().in('staff_user_id', [superAdminId, branchAdminId]);
-    await supabase.from('barbers').delete().eq('staff_user_id', barberId);
-    await supabase.from('staff_users').delete().in('id', [superAdminId, branchAdminId, barberId, noPermsId]);
-    await supabase.from('branches').delete().in('id', [branchAId, branchBId]);
+    await testDb.from('staff_user_roles').delete().in('staff_user_id', [superAdminId, branchAdminId]);
+    await testDb.from('barbers').delete().eq('staff_user_id', barberId);
+    await testDb.from('staff_users').delete().in('id', [superAdminId, branchAdminId, barberId, noPermsId]);
+    await testDb.from('branches').delete().in('id', [branchAId, branchBId]);
     // cleanup role permissions that were added
-    await supabase.from('role_permissions').delete().match({ role_id: roleSuperAdminId, permission_id: permissionManageStaffId });
-    await supabase.from('role_permissions').delete().match({ role_id: roleBranchAdminId, permission_id: permissionManageStaffId });
+    await testDb.from('role_permissions').delete().match({ role_id: roleSuperAdminId, permission_id: permissionManageStaffId });
+    await testDb.from('role_permissions').delete().match({ role_id: roleBranchAdminId, permission_id: permissionManageStaffId });
   });
 
   it('1. Super Admin bisa akses rute admin global', async () => {

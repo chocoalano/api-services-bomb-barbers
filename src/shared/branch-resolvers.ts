@@ -1,4 +1,6 @@
-import { supabase } from '../lib/supabase';
+import { db } from '../lib/db';
+import { appointments, payments } from '../db/schema';
+import { eq } from 'drizzle-orm';
 
 /**
  * Kumpulan resolver async untuk dipakai bersama `requireBranchScopeResolved`.
@@ -8,20 +10,20 @@ import { supabase } from '../lib/supabase';
 
 /** Resolve branch_id dari appointment via param `:id`. */
 export const appointmentBranchResolver = async (ctx: any): Promise<string | null> => {
-  const { data } = await supabase
-    .from('appointments')
-    .select('branch_id')
-    .eq('id', ctx.params.id)
-    .single();
-  return data?.branch_id ?? null;
+  const [row] = await db
+    .select({ branchId: appointments.branchId })
+    .from(appointments)
+    .where(eq(appointments.id, ctx.params.id))
+    .limit(1);
+  return row?.branchId ?? null;
 };
 
 /** Resolve branch_id dari payment via param `:id`. */
 export const paymentBranchResolver = async (ctx: any): Promise<string | null> => {
-  const { data } = await supabase
-    .from('payments')
-    .select('branch_id')
-    .eq('id', ctx.params.id)
-    .single();
-  return data?.branch_id ?? null;
+  const [row] = await db
+    .select({ branchId: payments.branchId })
+    .from(payments)
+    .where(eq(payments.id, ctx.params.id))
+    .limit(1);
+  return row?.branchId ?? null;
 };

@@ -1,15 +1,14 @@
 import pino from 'pino';
 import * as rfs from 'rotating-file-stream';
 import { join } from 'path';
-
-const pretty = process.env.NODE_ENV !== 'production';
+import { mkdirSync } from 'fs';
 
 const logLevel = process.env.LOG_LEVEL || 'info';
 
-let destination: any = undefined;
+const logsPath = join(process.cwd(), 'logs');
+mkdirSync(logsPath, { recursive: true });
 
 if (process.env.LOG_ROTATE === '1' || process.env.LOG_ROTATE === 'true') {
-  const logsPath = process.env.LOG_PATH || join(process.cwd(), 'logs');
   const interval = process.env.LOG_ROTATE_INTERVAL || '1d';
   const compress = process.env.LOG_ROTATE_COMPRESS || 'gzip';
 
@@ -19,23 +18,38 @@ if (process.env.LOG_ROTATE === '1' || process.env.LOG_ROTATE === 'true') {
     return `${date}-app.log`;
   };
 
-  const stream = (rfs as any).createStream(generator, {
+  var destination: any = (rfs as any).createStream(generator, {
     interval,
     compress,
     path: logsPath,
   });
-
-  destination = stream;
+} else {
+  var destination: any = pino.destination({
+    dest: join(logsPath, 'app.log'),
+    mkdir: true,
+    sync: false
+  });
 }
 
 const pinoOptions: any = { level: logLevel };
 
-// If rotating to file, prefer writing directly to the destination stream.
-// Do not set `transport` in that case because transport can override destination.
-if (pretty && !destination) {
-  pinoOptions.transport = { target: 'pino-pretty', options: { colorize: true } };
-}
+export const logger = pino(pinoOptions, destination);
 
-export const logger = destination ? pino(pinoOptions, destination) : pino(pinoOptions);
+let processErrorHandlersRegistered = false;
+
+export function registerProcessErrorHandlers(context = 'process') {
+  if (processErrorHandlersRegistered) return;
+  processErrorHandlersRegistered = true;
+
+  process.on('unhandledRejection', (reason) => {
+    logger.error({ err: reason, context }, '[Process] Unhandled promise rejection');
+  });
+
+  process.on('uncaughtException', (err) => {
+    logger.fatal({ err, context }, '[Process] Uncaught exception');
+    logger.flush?.();
+    setTimeout(() => process.exit(1), 100).unref?.();
+  });
+}
 
 export default logger;

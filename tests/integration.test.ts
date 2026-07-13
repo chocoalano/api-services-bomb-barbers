@@ -1,6 +1,6 @@
 import { describe, expect, it, beforeAll } from 'bun:test';
 import { app } from '../src/app';
-import { supabase } from '../src/lib/supabase';
+import { testDb } from '../src/lib/test-db';
 import * as argon2 from 'argon2';
 
 const API_PREFIX = '/api/v1';
@@ -31,9 +31,9 @@ describe('End-to-End Transaction Loop & Unit Tests', () => {
 
     // Ensure Roles
     const getRole = async (name: string) => {
-      let { data } = await supabase.from('roles').select('id').eq('name', name).single();
+      let { data } = await testDb.from('roles').select('id').eq('name', name).single();
       if (!data) {
-        const { data: ins } = await supabase.from('roles').insert({ name }).select('id').single();
+        const { data: ins } = await testDb.from('roles').insert({ name }).select('id').single();
         data = ins;
       }
       return data!.id;
@@ -43,10 +43,10 @@ describe('End-to-End Transaction Loop & Unit Tests', () => {
     const roleBarber = await getRole('barber');
 
     // 1. Setup Branch
-    const { data: region } = await supabase.from('regions').insert({ code: `RT${suffix}`, name: 'Test Region' }).select('id').single();
-    const { data: branch } = await supabase.from('branches').insert({ name: 'Integration Branch', region_id: region!.id }).select('id').single();
+    const { data: region } = await testDb.from('regions').insert({ code: `RT${suffix}`, name: 'Test Region' }).select('id').single();
+    const { data: branch } = await testDb.from('branches').insert({ name: 'Integration Branch', region_id: region!.id }).select('id').single();
     branchId = branch!.id;
-    await supabase.from('branch_operating_hours').insert(
+    await testDb.from('branch_operating_hours').insert(
       Array.from({ length: 7 }, (_, day) => ({
         branch_id: branchId,
         day_of_week: day,
@@ -56,36 +56,36 @@ describe('End-to-End Transaction Loop & Unit Tests', () => {
     );
 
     // 2. Setup Super Admin
-    const { data: hq } = await supabase.from('staff_users').insert({ full_name: 'HQ Int', email: `hq${suffix}@test.com`, password_hash: pwHash }).select('id').single();
+    const { data: hq } = await testDb.from('staff_users').insert({ full_name: 'HQ Int', email: `hq${suffix}@test.com`, password_hash: pwHash }).select('id').single();
     hqId = hq!.id;
-    await supabase.from('staff_user_roles').insert({ staff_user_id: hqId, role_id: roleHQ });
+    await testDb.from('staff_user_roles').insert({ staff_user_id: hqId, role_id: roleHQ });
 
     // 3. Setup Admin Cabang
-    const { data: admin } = await supabase.from('staff_users').insert({ full_name: 'Admin Int', email: `ad${suffix}@test.com`, password_hash: pwHash }).select('id').single();
+    const { data: admin } = await testDb.from('staff_users').insert({ full_name: 'Admin Int', email: `ad${suffix}@test.com`, password_hash: pwHash }).select('id').single();
     adminId = admin!.id;
-    await supabase.from('staff_user_roles').insert({ staff_user_id: adminId, role_id: roleAdmin, branch_id: branchId });
+    await testDb.from('staff_user_roles').insert({ staff_user_id: adminId, role_id: roleAdmin, branch_id: branchId });
 
     // 4. Setup Barber
-    const { data: barb } = await supabase.from('staff_users').insert({ full_name: 'Barber Int', email: `bb${suffix}@test.com`, password_hash: pwHash }).select('id').single();
-    await supabase.from('staff_user_roles').insert({ staff_user_id: barb!.id, role_id: roleBarber, branch_id: branchId });
-    const { data: realB } = await supabase.from('barbers').insert({ staff_user_id: barb!.id, branch_id: branchId, display_name: 'Barber Int' }).select('id').single();
+    const { data: barb } = await testDb.from('staff_users').insert({ full_name: 'Barber Int', email: `bb${suffix}@test.com`, password_hash: pwHash }).select('id').single();
+    await testDb.from('staff_user_roles').insert({ staff_user_id: barb!.id, role_id: roleBarber, branch_id: branchId });
+    const { data: realB } = await testDb.from('barbers').insert({ staff_user_id: barb!.id, branch_id: branchId, display_name: 'Barber Int' }).select('id').single();
     barberId = realB!.id;
 
     // 5. Setup Customer
-    const { data: cust } = await supabase.from('customers').insert({ full_name: 'Cust Int', email: `cs${suffix}@test.com`, phone: `081${suffix}`, password_hash: pwHash }).select('id').single();
+    const { data: cust } = await testDb.from('customers').insert({ full_name: 'Cust Int', email: `cs${suffix}@test.com`, phone: `081${suffix}`, password_hash: pwHash }).select('id').single();
     customerId = cust!.id;
 
     // 6. Setup 2 Services & 1 Branch Price
-    const { data: s1 } = await supabase.from('services').insert({ name: 'Service Satu', default_duration_min: 1 }).select('id').single();
+    const { data: s1 } = await testDb.from('services').insert({ name: 'Service Satu', default_duration_min: 1 }).select('id').single();
     service1Id = s1!.id;
-    const { data: s2 } = await supabase.from('services').insert({ name: 'Service Dua', default_duration_min: 1 }).select('id').single();
+    const { data: s2 } = await testDb.from('services').insert({ name: 'Service Dua', default_duration_min: 1 }).select('id').single();
     service2Id = s2!.id;
 
-    await supabase.from('service_prices').insert({ service_id: service1Id, branch_id: branchId, price_amount: 50000, effective_from: new Date(Date.now() - 10000).toISOString() });
-    await supabase.from('service_prices').insert({ service_id: service2Id, price_amount: 100000, effective_from: new Date(Date.now() - 10000).toISOString() }); // Global default for s2
+    await testDb.from('service_prices').insert({ service_id: service1Id, branch_id: branchId, price_amount: 50000, effective_from: new Date(Date.now() - 10000).toISOString() });
+    await testDb.from('service_prices').insert({ service_id: service2Id, price_amount: 100000, effective_from: new Date(Date.now() - 10000).toISOString() }); // Global default for s2
 
     // 7. Setup 1 Barber Commission Rule (Priority 5)
-    const { data: rule, error: ruleErr } = await supabase.from('commission_rules').insert({ scope: 'barber', scope_ref_id: barberId, barber_pct: 60, branch_pct: 30, hq_pct: 10, tip_to_barber: true, effective_from: new Date(Date.now() - 10000).toISOString() }).select('id').single();
+    const { data: rule, error: ruleErr } = await testDb.from('commission_rules').insert({ scope: 'barber', scope_ref_id: barberId, barber_pct: 60, branch_pct: 30, hq_pct: 10, tip_to_barber: true, effective_from: new Date(Date.now() - 10000).toISOString() }).select('id').single();
     if (ruleErr) throw new Error('Rule insert failed: ' + ruleErr.message);
     ruleId = rule!.id;
 
@@ -139,7 +139,7 @@ describe('End-to-End Transaction Loop & Unit Tests', () => {
       walkInAptId = body.data.id;
 
       // Cek snapshot harga
-      const { data: svcs } = await supabase.from('appointment_services').select('*').eq('appointment_id', walkInAptId);
+      const { data: svcs } = await testDb.from('appointment_services').select('*').eq('appointment_id', walkInAptId);
       expect(svcs![0].price_amount).toBe(50000);
     });
 
@@ -185,7 +185,7 @@ describe('End-to-End Transaction Loop & Unit Tests', () => {
       await new Promise(r => setTimeout(r, 500));
       
       // Cek Audit Log
-      const { data: audits } = await supabase.from('audit_logs').select('*').eq('entity_id', paymentId);
+      const { data: audits } = await testDb.from('audit_logs').select('*').eq('entity_id', paymentId);
       expect(audits?.length).toBeGreaterThan(0);
       expect(audits![0].action).toBe('CREATE_PAYMENT');
     });
@@ -260,7 +260,7 @@ describe('End-to-End Transaction Loop & Unit Tests', () => {
       }));
       expect(completeRes.status).toBe(200);
       
-      const { data } = await supabase.from('appointments').select('status').eq('id', onlineAptId).single();
+      const { data } = await testDb.from('appointments').select('status').eq('id', onlineAptId).single();
       expect(data?.status).toBe('completed');
     });
 
@@ -282,17 +282,17 @@ describe('End-to-End Transaction Loop & Unit Tests', () => {
 
   describe('Unit Test Isolations (API Logic Verification)', () => {
     it('1. Unit test price resolution: Cek snapshot harga', async () => {
-      const { data: svcs } = await supabase.from('appointment_services').select('price_amount').eq('appointment_id', onlineAptId);
+      const { data: svcs } = await testDb.from('appointment_services').select('price_amount').eq('appointment_id', onlineAptId);
       expect(svcs![0].price_amount).toBe(100000); // default global price
     });
 
     it('2. Unit test commission rule resolution: Cek rule terekam', async () => {
-      const { data: cEntries } = await supabase.from('commission_entries').select('commission_rule_id').eq('appointment_id', onlineAptId);
+      const { data: cEntries } = await testDb.from('commission_entries').select('commission_rule_id').eq('appointment_id', onlineAptId);
       expect(cEntries![0].commission_rule_id).toBe(ruleId);
     });
 
     it('3. Unit test commission split integer: Hitungan harus presisi pembulatan (Barber 60% dari 100k = 60k)', async () => {
-      const { data: cEntries } = await supabase.from('commission_entries').select('*').eq('appointment_id', onlineAptId).single();
+      const { data: cEntries } = await testDb.from('commission_entries').select('*').eq('appointment_id', onlineAptId).single();
       expect(cEntries!.base_amount).toBe(100000);
       expect(cEntries!.barber_share).toBe(60000);
       expect(cEntries!.branch_share).toBe(30000);
@@ -301,7 +301,7 @@ describe('End-to-End Transaction Loop & Unit Tests', () => {
     });
 
     it('4. Unit test RBAC branch scope: Admin Cabang 1 dilarang memanipulasi Cabang 2', async () => {
-      const { data: branch2 } = await supabase.from('branches').select('id').neq('id', branchId).limit(1).single();
+      const { data: branch2 } = await testDb.from('branches').select('id').neq('id', branchId).limit(1).single();
       if (branch2) {
         const res = await app.handle(new Request(`http://localhost${API_PREFIX}/admin/branches/${branch2.id}/dashboard/today`, { headers: { 'Authorization': `Bearer ${adminToken}` } }));
         expect(res.status).toBe(403);
@@ -309,14 +309,14 @@ describe('End-to-End Transaction Loop & Unit Tests', () => {
     });
 
     it('5. Unit test payment total calculation', async () => {
-      const { data: pmt } = await supabase.from('payments').select('*').eq('appointment_id', walkInAptId).single();
+      const { data: pmt } = await testDb.from('payments').select('*').eq('appointment_id', walkInAptId).single();
       expect(pmt!.service_amount).toBe(50000);
       expect(pmt!.tip_amount).toBe(10000);
       expect(pmt!.total_amount).toBe(60000); // 50k + 10k
     });
 
     it('6. Unit test audit log creation', async () => {
-      const { data: audits } = await supabase.from('audit_logs').select('*').limit(1);
+      const { data: audits } = await testDb.from('audit_logs').select('*').limit(1);
       expect(audits!.length).toBeGreaterThan(0);
       expect(audits![0]).toHaveProperty('before');
       expect(audits![0]).toHaveProperty('after');

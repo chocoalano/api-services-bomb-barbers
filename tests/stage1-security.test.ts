@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
-import { decodeJwt } from 'jose';
+import { decodeJwt, SignJWT } from 'jose';
 import * as argon2 from 'argon2';
 import { app } from '../src/app';
-import { supabase } from '../src/lib/supabase';
+import { testDb } from '../src/lib/test-db';
 import { redis } from '../src/lib/redis';
 
 const API_PREFIX = '/api/v1';
@@ -58,14 +58,14 @@ const loginCustomer = async (email: string) => {
 beforeAll(async () => {
   const passwordHash = await argon2.hash(password);
 
-  const { data: region } = await supabase
+  const { data: region } = await testDb
     .from('regions')
     .insert({ code: `S1${suffix.slice(-4)}`, name: 'Stage 1 Security Region' })
     .select('id')
     .single();
   regionId = region!.id;
 
-  const { data: branch } = await supabase
+  const { data: branch } = await testDb
     .from('branches')
     .insert({ name: 'Stage 1 Security Branch', region_id: regionId })
     .select('id')
@@ -98,17 +98,17 @@ beforeAll(async () => {
       password_hash: passwordHash
     }
   ];
-  const { data: customers, error: customerError } = await supabase
+  const { data: customers, error: customerError } = await testDb
     .from('customers')
     .insert(customerRows)
     .select('id, email');
   if (customerError) throw customerError;
-  rotateCustomerId = customers!.find((item) => item.email.startsWith('rotate-'))!.id;
-  logoutCustomerId = customers!.find((item) => item.email.startsWith('logout-'))!.id;
-  deletedCustomerId = customers!.find((item) => item.email.startsWith('deleted-'))!.id;
-  mediaCustomerId = customers!.find((item) => item.email.startsWith('media-'))!.id;
+  rotateCustomerId = customers!.find((item: any) => item.email.startsWith('rotate-'))!.id;
+  logoutCustomerId = customers!.find((item: any) => item.email.startsWith('logout-'))!.id;
+  deletedCustomerId = customers!.find((item: any) => item.email.startsWith('deleted-'))!.id;
+  mediaCustomerId = customers!.find((item: any) => item.email.startsWith('media-'))!.id;
 
-  const { data: barberStaff, error: staffError } = await supabase
+  const { data: barberStaff, error: staffError } = await testDb
     .from('staff_users')
     .insert({
       full_name: 'Stage 1 Barber',
@@ -120,7 +120,7 @@ beforeAll(async () => {
   if (staffError) throw staffError;
   barberStaffId = barberStaff!.id;
 
-  const { data: barber, error: barberError } = await supabase
+  const { data: barber, error: barberError } = await testDb
     .from('barbers')
     .insert({
       staff_user_id: barberStaffId,
@@ -167,7 +167,7 @@ afterAll(async () => {
   for (const sessionId of sessionIds) {
     await redis.del(`auth:session:${sessionId}`);
   }
-  await supabase
+  await testDb
     .from('auth_sessions' as any)
     .delete()
     .in('user_id', [
@@ -177,7 +177,7 @@ afterAll(async () => {
       mediaCustomerId,
       barberStaffId
     ].filter(Boolean));
-  await supabase
+  await testDb
     .from('auth_events' as any)
     .delete()
     .in('user_id', [
@@ -187,17 +187,54 @@ afterAll(async () => {
       mediaCustomerId,
       barberStaffId
     ].filter(Boolean));
-  await supabase.from('barbers').delete().eq('id', barberId);
-  await supabase.from('staff_users').delete().eq('id', barberStaffId);
-  await supabase
+  await testDb.from('barbers').delete().eq('id', barberId);
+  await testDb.from('staff_users').delete().eq('id', barberStaffId);
+  await testDb
     .from('customers')
     .delete()
     .in('id', [rotateCustomerId, logoutCustomerId, deletedCustomerId, mediaCustomerId]);
-  await supabase.from('branches').delete().eq('id', branchId);
-  await supabase.from('regions').delete().eq('id', regionId);
+  await testDb.from('branches').delete().eq('id', branchId);
+  await testDb.from('regions').delete().eq('id', regionId);
 });
 
 describe('Tahap 1 - auth session security', () => {
+  it('menerbitkan token auth tanpa masa kedaluwarsa', async () => {
+    const accessPayload = decodeJwt(rotateAccessToken);
+    const refreshPayload = decodeJwt(rotateRefreshToken);
+
+    expect(accessPayload.exp).toBeUndefined();
+    expect(refreshPayload.exp).toBeUndefined();
+
+    const { data: session } = await testDb
+      .from('auth_sessions' as any)
+      .select('expires_at')
+      .eq('id', accessPayload.sid as string)
+      .maybeSingle();
+
+    expect(String(session?.expires_at).startsWith('9999-12-31')).toBe(true);
+
+    const legacyExpiredAccessToken = await new SignJWT({
+      sub: rotateCustomerId,
+      role: 'customer',
+      sid: accessPayload.sid,
+      jti: crypto.randomUUID()
+    })
+      .setProtectedHeader({ alg: 'HS256' })
+      .setIssuedAt()
+      .setExpirationTime('1 second ago')
+      .sign(new TextEncoder().encode(process.env.JWT_ACCESS_SECRET!));
+
+    expect(decodeJwt(legacyExpiredAccessToken).exp).toBeDefined();
+
+    const response = await app.handle(new Request(
+      `http://localhost${API_PREFIX}/customer/me`,
+      {
+        headers: { Authorization: `Bearer ${legacyExpiredAccessToken}` }
+      }
+    ));
+    expect(response.status).toBe(200);
+  });
+
   it('merotasi refresh token dan menolak pemakaian ulang token lama', async () => {
     const refreshResponse = await app.handle(new Request(
       `http://localhost${API_PREFIX}/customer/auth/refresh`,
@@ -211,6 +248,8 @@ describe('Tahap 1 - auth session security', () => {
 
     expect(refreshResponse.status).toBe(200);
     expect(refreshPayload.data.refreshToken).not.toBe(rotateRefreshToken);
+    expect(decodeJwt(refreshPayload.data.accessToken).exp).toBeUndefined();
+    expect(decodeJwt(refreshPayload.data.refreshToken).exp).toBeUndefined();
     rotatedAccessToken = refreshPayload.data.accessToken;
     rememberSession(rotatedAccessToken);
 
@@ -254,7 +293,7 @@ describe('Tahap 1 - auth session security', () => {
   });
 
   it('akun customer soft-delete langsung kehilangan akses REST', async () => {
-    await supabase
+    await testDb
       .from('customers')
       .update({ deleted_at: new Date().toISOString() })
       .eq('id', deletedCustomerId);
@@ -303,7 +342,7 @@ describe('Tahap 1 - isolasi route media', () => {
 
 describe('Tahap 1 - soft delete staff', () => {
   it('akun staff soft-delete langsung kehilangan akses barber', async () => {
-    await supabase
+    await testDb
       .from('staff_users')
       .update({ deleted_at: new Date().toISOString() })
       .eq('id', barberStaffId);

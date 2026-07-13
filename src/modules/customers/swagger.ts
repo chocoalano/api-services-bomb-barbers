@@ -11,7 +11,8 @@ export const CUSTOMER_TAGS = {
   chat: 'Customers - Chat',
   reviews: 'Customers - Ulasan',
   content: 'Customers - Konten',
-  media: 'Customers - Media'
+  media: 'Customers - Media',
+  addresses: 'Customers - Alamat Tersimpan'
 } as const;
 
 export const CUSTOMER_EXAMPLES = {
@@ -192,7 +193,7 @@ export const customerDetail = ({
 
 export const customerAuthError: CustomerResponseExample = {
   status: 401,
-  description: 'Access token customer tidak tersedia, tidak valid, kedaluwarsa, atau akun customer sudah tidak aktif.',
+  description: 'Access token customer tidak tersedia, tidak valid, session sudah dicabut, atau akun customer sudah tidak aktif.',
   message: 'Missing or invalid token'
 };
 

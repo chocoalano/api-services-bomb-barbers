@@ -24,4 +24,6 @@ export const adminPaymentRoutes = new Elysia()
   )
   .post('/api/v1/webhooks/payments/:provider', WebhookController.handlePaymentWebhook, paymentDocs.webhookWithProvider)
   .post('/api/v1/payments/webhook', WebhookController.handlePaymentWebhook, paymentDocs.webhookFixed)
-  .post('/api/v1/payments/webhook/:provider', WebhookController.handlePaymentWebhook, paymentDocs.webhookWithProvider);
+  .post('/api/v1/payments/webhook/:provider', WebhookController.handlePaymentWebhook, paymentDocs.webhookWithProvider)
+  .post('/api/v1/payments/:provider/notification', WebhookController.handlePaymentWebhook, paymentDocs.webhookNotificationAlias)
+  .post('/api/payments/:provider/notification', WebhookController.handlePaymentWebhook, paymentDocs.webhookLegacyNotificationAlias);

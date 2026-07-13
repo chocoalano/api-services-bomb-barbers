@@ -1,10 +1,23 @@
-import { supabase } from '../../../lib/supabase';
+import { db } from '../../../lib/db';
+import { snakeKeys } from '../../../db/helpers';
+import { branches, barbers, staffUsers, services, servicePrices } from '../../../db/schema';
+import { and, or, eq, isNull, inArray, lte, like, asc, desc, sql } from 'drizzle-orm';
+import {
+  BranchServiceAreaLogContext,
+  BranchServiceAreaService,
+  normalizeLocation,
+  toFiniteNumber
+} from '../../../core/branches/service-area.service';
 
 type BranchServicesQuery = {
   limit?: number | string;
   page?: number | string;
   q?: string;
   search?: string;
+  latitude?: number | string;
+  longitude?: number | string;
+  lat?: number | string;
+  lng?: number | string;
 };
 
 const DEFAULT_SERVICE_LIMIT = 10;
@@ -58,48 +71,83 @@ const resolvePriceForService = (prices: any[], serviceId: string, branchId: stri
 };
 
 export class CatalogService {
-  static async getBranches() {
-    const { data, error } = await supabase
-      .from('branches')
-      .select('*')
-      .is('deleted_at', null);
-      
-    if (error) throw new Error('Gagal mengambil daftar cabang');
-    return data;
+  static async getBranches(
+    query: BranchServicesQuery = {},
+    context: BranchServiceAreaLogContext = {}
+  ) {
+    const rawLat = query.latitude ?? query.lat;
+    const rawLng = query.longitude ?? query.lng;
+    if (rawLat !== undefined || rawLng !== undefined) {
+      const customerLocation = normalizeLocation(rawLat, rawLng);
+      return BranchServiceAreaService.getServiceableBranches(
+        customerLocation,
+        { ...context, source: context.source ?? 'catalog_branches' }
+      );
+    }
+
+    return snakeKeys(
+      await db.select().from(branches).where(and(eq(branches.isActive, true), isNull(branches.deletedAt)))
+    );
   }
 
   static async getBranchDetail(branchId: string) {
-    const { data, error } = await supabase
-      .from('branches')
-      .select('*')
-      .eq('id', branchId)
-      .is('deleted_at', null)
-      .single();
+    const [data] = snakeKeys(
+      await db.select().from(branches).where(and(eq(branches.id, branchId), isNull(branches.deletedAt))).limit(1)
+    );
 
-    if (error || !data) throw new Error('Cabang tidak ditemukan');
+    if (!data) throw new Error('Cabang tidak ditemukan');
     return data;
   }
 
-  static async getBranchBarbers(branchId: string) {
-    const { data, error } = await supabase
-      .from('barbers')
-      .select('*')
-      .eq('branch_id', branchId)
-      .is('deleted_at', null);
+  static async getBranchBarbers(
+    branchId: string,
+    query: BranchServicesQuery = {},
+    context: BranchServiceAreaLogContext = {}
+  ) {
+    const rawLat = query.latitude ?? query.lat;
+    const rawLng = query.longitude ?? query.lng;
+    if (rawLat !== undefined || rawLng !== undefined) {
+      const customerLocation = normalizeLocation(rawLat, rawLng);
+      return BranchServiceAreaService.getEligibleBarbersForBranch(
+        branchId,
+        customerLocation,
+        { ...context, source: context.source ?? 'catalog_branch_barbers' }
+      );
+    }
 
-    if (error) throw new Error('Gagal mengambil daftar barber');
-    return data;
+    const rows = await db
+      .select({ barber: barbers, staffId: staffUsers.id, staffIsActive: staffUsers.isActive, staffDeletedAt: staffUsers.deletedAt })
+      .from(barbers)
+      .leftJoin(staffUsers, eq(barbers.staffUserId, staffUsers.id))
+      .where(
+        and(
+          eq(barbers.branchId, branchId),
+          // [REVISI C1] Hanya kepster yang sudah dikonfirmasi admin yang tampil ke customer.
+          eq(barbers.approvalStatus, 'approved'),
+          isNull(barbers.deletedAt)
+        )
+      );
+
+    const data = rows.map((r) => ({
+      ...snakeKeys(r.barber),
+      staff_users: { id: r.staffId, is_active: r.staffIsActive, deleted_at: r.staffDeletedAt }
+    }));
+
+    return data.filter((barber: any) => {
+      const staff = Array.isArray(barber.staff_users) ? barber.staff_users[0] : barber.staff_users;
+      const radius = toFiniteNumber(barber.service_radius_km);
+      return (
+        (!staff || (staff.is_active !== false && staff.deleted_at == null)) &&
+        radius !== null &&
+        radius > 0
+      );
+    });
   }
 
   static async getActiveServices() {
-    const { data, error } = await supabase
-      .from('services')
-      .select('*')
-      .eq('is_active', true)
-      .is('deleted_at', null);
-
-    if (error) throw new Error('Gagal mengambil daftar layanan');
-    return data;
+    return snakeKeys(
+      await db.select().from(services).where(and(eq(services.isActive, true), isNull(services.deletedAt)))
+    );
   }
 
   static async getBranchServices(branchId: string, query: BranchServicesQuery = {}) {
@@ -107,54 +155,64 @@ export class CatalogService {
     const page = normalizePage(query.page);
     const search = normalizeSearch(query);
 
-    const { data: branch, error: branchError } = await supabase
-      .from('branches')
-      .select('id, region_id, is_active')
-      .eq('id', branchId)
-      .is('deleted_at', null)
-      .single();
+    const [branch] = await db
+      .select({ id: branches.id, region_id: branches.regionId, is_active: branches.isActive })
+      .from(branches)
+      .where(and(eq(branches.id, branchId), isNull(branches.deletedAt)))
+      .limit(1);
 
-    if (branchError || !branch || branch.is_active === false) {
+    if (!branch || branch.is_active === false) {
       throw new Error('Cabang tidak ditemukan atau tidak aktif');
     }
 
-    let serviceQuery = supabase
-      .from('services')
-      .select('id, name, description, default_duration_min, image_url')
-      .eq('is_active', true)
-      .is('deleted_at', null)
-      .order('name', { ascending: true })
+    const serviceConds = [eq(services.isActive, true), isNull(services.deletedAt)];
+    if (search) {
+      const pattern = `%${search}%`;
+      serviceConds.push(or(like(services.name, pattern), like(services.description, pattern))!);
+    }
+
+    const serviceRows = await db
+      .select({
+        id: services.id,
+        name: services.name,
+        description: services.description,
+        default_duration_min: services.defaultDurationMin,
+        image_url: services.imageUrl
+      })
+      .from(services)
+      .where(and(...serviceConds))
+      .orderBy(asc(services.name))
       .limit(MAX_SERVICE_SCAN_LIMIT);
 
-    if (search) {
-      serviceQuery = serviceQuery.or(`name.ilike.*${search}*,description.ilike.*${search}*`);
-    }
-
-    const { data: services, error: serviceError } = await serviceQuery;
-    if (serviceError) {
-      throw new Error('Gagal mengambil daftar layanan');
-    }
-
-    if (!services || services.length === 0) {
+    if (serviceRows.length === 0) {
       return [];
     }
 
-    const serviceIds = services.map((service: any) => service.id);
+    const serviceIds = serviceRows.map((service) => service.id);
     const now = new Date().toISOString();
 
-    const { data: prices, error: priceError } = await supabase
-      .from('service_prices')
-      .select('service_id, branch_id, region_id, price_amount, effective_from, effective_to')
-      .in('service_id', serviceIds)
-      .lte('effective_from', now)
-      .or(`effective_to.is.null,effective_to.gte.${now}`)
-      .order('effective_from', { ascending: false });
+    const prices = snakeKeys(
+      await db
+        .select({
+          service_id: servicePrices.serviceId,
+          branch_id: servicePrices.branchId,
+          region_id: servicePrices.regionId,
+          price_amount: servicePrices.priceAmount,
+          effective_from: servicePrices.effectiveFrom,
+          effective_to: servicePrices.effectiveTo
+        })
+        .from(servicePrices)
+        .where(
+          and(
+            inArray(servicePrices.serviceId, serviceIds),
+            lte(servicePrices.effectiveFrom, now),
+            or(isNull(servicePrices.effectiveTo), sql`${servicePrices.effectiveTo} >= ${now}`)
+          )
+        )
+        .orderBy(desc(servicePrices.effectiveFrom))
+    );
 
-    if (priceError) {
-      throw new Error('Gagal mengambil harga layanan');
-    }
-
-    return services
+    return serviceRows
       .map((service: any) => {
         const price = resolvePriceForService(prices ?? [], service.id, branchId, branch.region_id);
         if (!price) return null;
@@ -174,23 +232,22 @@ export class CatalogService {
 
   static async resolveServicePrice(serviceId: string, branchId: string, atDate: Date = new Date()) {
     // 1. Pastikan service aktif dan tidak di-soft delete
-    const { data: service } = await supabase
-      .from('services')
-      .select('is_active, deleted_at')
-      .eq('id', serviceId)
-      .single();
+    const [service] = await db
+      .select({ is_active: services.isActive, deleted_at: services.deletedAt })
+      .from(services)
+      .where(eq(services.id, serviceId))
+      .limit(1);
 
     if (!service || !service.is_active || service.deleted_at !== null) {
       throw new Error('Layanan tidak ditemukan atau tidak aktif');
     }
 
     // 2. Dapatkan region_id dari branch
-    const { data: branch } = await supabase
-      .from('branches')
-      .select('region_id')
-      .eq('id', branchId)
-      .is('deleted_at', null)
-      .single();
+    const [branch] = await db
+      .select({ region_id: branches.regionId })
+      .from(branches)
+      .where(and(eq(branches.id, branchId), isNull(branches.deletedAt)))
+      .limit(1);
 
     if (!branch) {
       throw new Error('Cabang tidak ditemukan');
@@ -200,13 +257,14 @@ export class CatalogService {
     const dateIso = atDate.toISOString();
 
     // 3. Ambil semua harga yang sudah efektif (effective_from <= atDate)
-    const { data: prices, error } = await supabase
-      .from('service_prices')
-      .select('*')
-      .eq('service_id', serviceId)
-      .lte('effective_from', dateIso);
+    const prices = snakeKeys(
+      await db
+        .select()
+        .from(servicePrices)
+        .where(and(eq(servicePrices.serviceId, serviceId), lte(servicePrices.effectiveFrom, dateIso)))
+    );
 
-    if (error || !prices || prices.length === 0) {
+    if (!prices || prices.length === 0) {
       throw new Error('Harga layanan tidak tersedia');
     }
 

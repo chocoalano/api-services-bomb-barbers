@@ -54,9 +54,9 @@ export class AdminController {
     }
   }
 
-  static async assignRole({ params, body, set }: any) {
+  static async assignRole({ params, body, staffId, set }: any) {
     try {
-      const assignment = await AdminService.assignRole(params.id, body.role_id, body.branch_id);
+      const assignment = await AdminService.assignRole(params.id, body.role_id, body.branch_id, staffId);
       await invalidateRbacCache(params.id); // hapus cache RBAC staff terkait
       set.status = 201;
       return createSuccessResponse('Role berhasil dipasangkan ke staff', assignment);

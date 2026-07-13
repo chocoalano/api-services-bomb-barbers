@@ -1,4 +1,9 @@
-import { supabase } from '../../lib/supabase';
+import { randomUUID } from 'crypto';
+import { db } from '../../lib/db';
+import { snakeKeys, toDbDate } from '../../db/helpers';
+import { isDuplicateKeyError } from '../../db/procedures';
+import { trackingSessions, appointments, barbers, branches } from '../../db/schema';
+import { and, eq, lte, gt, desc, isNull } from 'drizzle-orm';
 import {
   getCustomerLocationKey,
   getLegacyAppointmentEtaKey,
@@ -198,17 +203,16 @@ const calculateRouteSnapshot = async (
 
 export class RealtimeTrackingService {
   private static async touchSession(appointmentId: string) {
-    const { error } = await supabase
-      .from('tracking_sessions')
-      .update({
-        last_activity_at: new Date().toISOString(),
-        updated_at: new Date().toISOString()
-      } as any)
-      .eq('appointment_id', appointmentId)
-      .eq('status', 'active');
-
-    if (error && !error.message.includes('last_activity_at')) {
-      throw new Error(`Gagal memperbarui tracking session: ${error.message}`);
+    const now = toDbDate(new Date());
+    try {
+      await db
+        .update(trackingSessions)
+        .set({ lastActivityAt: now, updatedAt: now } as any)
+        .where(and(eq(trackingSessions.appointmentId, appointmentId), eq(trackingSessions.status, 'active')));
+    } catch (error: any) {
+      if (!String(error?.message ?? '').includes('last_activity_at')) {
+        throw new Error(`Gagal memperbarui tracking session: ${error?.message}`);
+      }
     }
   }
 
@@ -216,26 +220,27 @@ export class RealtimeTrackingService {
     appointmentId: string,
     journeyStatus: 'not_started' | 'en_route' | 'arrived' | 'completed' | 'cancelled'
   ) {
-    const { error } = await supabase
-      .from('appointments')
-      .update({ journey_status: journeyStatus, updated_at: new Date().toISOString() } as any)
-      .eq('id', appointmentId);
-
-    // Kompatibilitas sementara sebelum migration hardening diaplikasikan.
-    if (error && !error.message.includes('journey_status')) {
-      throw new Error(`Gagal memperbarui journey status: ${error.message}`);
+    try {
+      await db
+        .update(appointments)
+        .set({ journeyStatus } as any)
+        .where(eq(appointments.id, appointmentId));
+    } catch (error: any) {
+      // Kompatibilitas sementara sebelum migration hardening diaplikasikan.
+      if (!String(error?.message ?? '').includes('journey_status')) {
+        throw new Error(`Gagal memperbarui journey status: ${error?.message}`);
+      }
     }
   }
 
   static async resolveBarberId(staffUserId: string) {
-    const { data: barber, error } = await supabase
-      .from('barbers')
-      .select('id')
-      .eq('staff_user_id', staffUserId)
-      .is('deleted_at', null)
-      .maybeSingle();
+    const [barber] = await db
+      .select({ id: barbers.id })
+      .from(barbers)
+      .where(and(eq(barbers.staffUserId, staffUserId), isNull(barbers.deletedAt)))
+      .limit(1);
 
-    if (error || !barber) {
+    if (!barber) {
       throw new Error('Profil barber tidak ditemukan');
     }
 
@@ -243,13 +248,11 @@ export class RealtimeTrackingService {
   }
 
   static async getAppointment(appointmentId: string): Promise<AppointmentParticipant> {
-    const { data, error } = await supabase
-      .from('appointments')
-      .select('*')
-      .eq('id', appointmentId)
-      .maybeSingle();
+    const [data] = snakeKeys(
+      await db.select().from(appointments).where(eq(appointments.id, appointmentId)).limit(1)
+    );
 
-    if (error || !data) {
+    if (!data) {
       throw new Error('Appointment tidak ditemukan');
     }
 
@@ -275,24 +278,30 @@ export class RealtimeTrackingService {
   }
 
   static async getActiveSession(appointmentId: string) {
-    const { data: session, error } = await supabase
-      .from('tracking_sessions')
-      .select('id, appointment_id, status, consent_given_at, expires_at, created_at, updated_at')
-      .eq('appointment_id', appointmentId)
-      .eq('status', 'active')
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
+    const [session] = await db
+      .select({
+        id: trackingSessions.id,
+        appointment_id: trackingSessions.appointmentId,
+        status: trackingSessions.status,
+        consent_given_at: trackingSessions.consentGivenAt,
+        expires_at: trackingSessions.expiresAt,
+        created_at: trackingSessions.createdAt,
+        updated_at: trackingSessions.updatedAt
+      })
+      .from(trackingSessions)
+      .where(and(eq(trackingSessions.appointmentId, appointmentId), eq(trackingSessions.status, 'active')))
+      .orderBy(desc(trackingSessions.createdAt))
+      .limit(1);
 
-    if (error || !session) {
+    if (!session) {
       throw new Error('Sesi tracking tidak aktif');
     }
 
     if (new Date(session.expires_at).getTime() <= Date.now()) {
-      await supabase
-        .from('tracking_sessions')
-        .update({ status: 'expired', updated_at: new Date().toISOString() })
-        .eq('id', session.id);
+      await db
+        .update(trackingSessions)
+        .set({ status: 'expired' })
+        .where(eq(trackingSessions.id, session.id));
       await this.cleanup(appointmentId);
       throw new Error('Sesi tracking telah kedaluwarsa');
     }
@@ -315,29 +324,31 @@ export class RealtimeTrackingService {
     }
 
     const now = new Date();
-    const { error: expireError } = await supabase
-      .from('tracking_sessions')
-      .update({
-        status: 'expired',
-        updated_at: now.toISOString()
-      })
-      .eq('appointment_id', appointmentId)
-      .eq('status', 'active')
-      .lte('expires_at', now.toISOString());
+    await db
+      .update(trackingSessions)
+      .set({ status: 'expired' })
+      .where(
+        and(
+          eq(trackingSessions.appointmentId, appointmentId),
+          eq(trackingSessions.status, 'active'),
+          lte(trackingSessions.expiresAt, now.toISOString())
+        )
+      );
 
-    if (expireError) {
-      throw new Error(`Gagal menutup tracking session kedaluwarsa: ${expireError.message}`);
-    }
-
-    const { data: existing } = await supabase
-      .from('tracking_sessions')
-      .select('*')
-      .eq('appointment_id', appointmentId)
-      .eq('status', 'active')
-      .gt('expires_at', now.toISOString())
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
+    const [existing] = snakeKeys(
+      await db
+        .select()
+        .from(trackingSessions)
+        .where(
+          and(
+            eq(trackingSessions.appointmentId, appointmentId),
+            eq(trackingSessions.status, 'active'),
+            gt(trackingSessions.expiresAt, now.toISOString())
+          )
+        )
+        .orderBy(desc(trackingSessions.createdAt))
+        .limit(1)
+    );
 
     if (existing) {
       await redis.setex(
@@ -349,24 +360,24 @@ export class RealtimeTrackingService {
     }
 
     const expiresAt = new Date(now.getTime() + SESSION_TTL_SECONDS * 1000).toISOString();
-    const { data: session, error } = await supabase
-      .from('tracking_sessions')
-      .insert({
-        appointment_id: appointmentId,
+    const sessionId = randomUUID();
+    try {
+      await db.insert(trackingSessions).values({
+        id: sessionId,
+        appointmentId,
         status: 'active',
-        consent_given_at: now.toISOString(),
-        expires_at: expiresAt,
-        updated_at: now.toISOString()
-      })
-      .select('*')
-      .single();
-
-    if (error || !session) {
-      if (error?.code === '23505') {
+        consentGivenAt: toDbDate(now),
+        expiresAt: toDbDate(expiresAt)
+      } as any);
+    } catch (error: any) {
+      if (isDuplicateKeyError(error)) {
         return this.getActiveSession(appointmentId);
       }
       throw new Error(`Gagal memulai tracking session: ${error?.message || 'unknown'}`);
     }
+    const [session] = snakeKeys(
+      await db.select().from(trackingSessions).where(eq(trackingSessions.id, sessionId)).limit(1)
+    );
 
     await redis.setex(
       getTrackingSessionKey(appointmentId),
@@ -457,14 +468,17 @@ export class RealtimeTrackingService {
     let customer = parseJson<StoredLocation>(customerRaw);
 
     if (!customer) {
-      const { data: destination, error } = await supabase
-        .from('appointments')
-        .select('customer_id, destination_latitude, destination_longitude')
-        .eq('id', appointmentId)
-        .maybeSingle();
+      const [destination] = await db
+        .select({
+          customer_id: appointments.customerId,
+          destination_latitude: appointments.destinationLatitude,
+          destination_longitude: appointments.destinationLongitude
+        })
+        .from(appointments)
+        .where(eq(appointments.id, appointmentId))
+        .limit(1);
 
       if (
-        !error &&
         destination &&
         destination.destination_latitude !== null &&
         destination.destination_longitude !== null
@@ -565,31 +579,31 @@ export class RealtimeTrackingService {
       userId: customerId
     });
 
-    const [barberRaw, customerRaw, routeRaw, sessionResult, branchResult, barberResult] =
+    const [barberRaw, customerRaw, routeRaw, sessionRows, branchRows, barberRows] =
       await Promise.all([
         redis.get(getTrackingBarberKey(appointmentId)),
         redis.get(getTrackingCustomerKey(appointmentId)),
         redis.get(getTrackingRouteKey(appointmentId)),
-        supabase
-          .from('tracking_sessions')
-          .select('id, status, consent_given_at, expires_at, created_at')
-          .eq('appointment_id', appointmentId)
-          .eq('status', 'active')
-          .order('created_at', { ascending: false })
-          .limit(1)
-          .maybeSingle(),
-        supabase
-          .from('branches')
-          .select('id, name, address, latitude, longitude')
-          .eq('id', appointment.branch_id)
-          .maybeSingle(),
+        db
+          .select({
+            id: trackingSessions.id,
+            status: trackingSessions.status,
+            consent_given_at: trackingSessions.consentGivenAt,
+            expires_at: trackingSessions.expiresAt,
+            created_at: trackingSessions.createdAt
+          })
+          .from(trackingSessions)
+          .where(and(eq(trackingSessions.appointmentId, appointmentId), eq(trackingSessions.status, 'active')))
+          .orderBy(desc(trackingSessions.createdAt))
+          .limit(1),
+        db
+          .select({ id: branches.id, name: branches.name, address: branches.address, latitude: branches.latitude, longitude: branches.longitude })
+          .from(branches)
+          .where(eq(branches.id, appointment.branch_id))
+          .limit(1),
         appointment.barber_id
-          ? supabase
-              .from('barbers')
-              .select('id, display_name')
-              .eq('id', appointment.barber_id)
-              .maybeSingle()
-          : Promise.resolve({ data: null, error: null } as any)
+          ? db.select({ id: barbers.id, display_name: barbers.displayName }).from(barbers).where(eq(barbers.id, appointment.barber_id)).limit(1)
+          : Promise.resolve([] as any[])
       ]);
 
     let barberLocation = parseJson<StoredLocation>(barberRaw);
@@ -601,17 +615,14 @@ export class RealtimeTrackingService {
     }
     const customerLocation = parseJson<StoredLocation>(customerRaw);
     const route = parseJson<any>(routeRaw);
-    const session = sessionResult.data;
+    const session = sessionRows[0] ?? null;
     const expired = Boolean(session?.expires_at && new Date(session.expires_at) <= new Date());
 
     if (expired && session?.id) {
-      await supabase
-        .from('tracking_sessions')
-        .update({ status: 'expired', updated_at: new Date().toISOString() })
-        .eq('id', session.id);
+      await db.update(trackingSessions).set({ status: 'expired' }).where(eq(trackingSessions.id, session.id));
     }
 
-    const branch = branchResult.data;
+    const branch = branchRows[0] ?? null;
     const branchLocation = branch && branch.latitude !== null && branch.longitude !== null
       ? { lat: Number(branch.latitude), lng: Number(branch.longitude) }
       : null;
@@ -644,10 +655,10 @@ export class RealtimeTrackingService {
         longitude: branchLocation?.lng ?? null,
         location: branchLocation
       } : null,
-      barber: barberResult.data ? {
-        id: barberResult.data.id,
-        full_name: barberResult.data.display_name,
-        display_name: barberResult.data.display_name,
+      barber: barberRows[0] ? {
+        id: barberRows[0].id,
+        full_name: barberRows[0].display_name,
+        display_name: barberRows[0].display_name,
         latitude: visibleBarberLocation?.lat ?? null,
         longitude: visibleBarberLocation?.lng ?? null,
         location: visibleBarberLocation
@@ -659,26 +670,22 @@ export class RealtimeTrackingService {
     appointmentId: string,
     status: 'completed' | 'expired' | 'revoked' = 'completed'
   ) {
-    const endedAt = new Date().toISOString();
-    const { error } = await supabase
-      .from('tracking_sessions')
-      .update({
-        status,
-        ended_at: endedAt,
-        ended_reason: status,
-        updated_at: endedAt
-      } as any)
-      .eq('appointment_id', appointmentId)
-      .eq('status', 'active');
-
-    if (error && (error.message.includes('ended_at') || error.message.includes('ended_reason'))) {
-      await supabase
-        .from('tracking_sessions')
-        .update({ status, updated_at: endedAt })
-        .eq('appointment_id', appointmentId)
-        .eq('status', 'active');
-    } else if (error) {
-      throw new Error(`Gagal menyelesaikan tracking session: ${error.message}`);
+    const endedAt = toDbDate(new Date());
+    try {
+      await db
+        .update(trackingSessions)
+        .set({ status, endedAt, endedReason: status } as any)
+        .where(and(eq(trackingSessions.appointmentId, appointmentId), eq(trackingSessions.status, 'active')));
+    } catch (error: any) {
+      const msg = String(error?.message ?? '');
+      if (msg.includes('ended_at') || msg.includes('ended_reason')) {
+        await db
+          .update(trackingSessions)
+          .set({ status } as any)
+          .where(and(eq(trackingSessions.appointmentId, appointmentId), eq(trackingSessions.status, 'active')));
+      } else {
+        throw new Error(`Gagal menyelesaikan tracking session: ${error?.message}`);
+      }
     }
 
     await this.cleanup(appointmentId);
@@ -702,11 +709,11 @@ export class RealtimeTrackingService {
     lat: number,
     lng: number
   ): Promise<number> {
-    const { data: branch } = await supabase
-      .from('branches')
-      .select('latitude, longitude')
-      .eq('id', branchId)
-      .maybeSingle();
+    const [branch] = await db
+      .select({ latitude: branches.latitude, longitude: branches.longitude })
+      .from(branches)
+      .where(eq(branches.id, branchId))
+      .limit(1);
 
     if (!branch || branch.latitude === null || branch.longitude === null) {
       return 0;
@@ -732,11 +739,11 @@ export class RealtimeTrackingService {
     lat: number,
     lng: number
   ): Promise<number> {
-    const { data: apt } = await supabase
-      .from('appointments')
-      .select('destination_latitude, destination_longitude')
-      .eq('id', appointmentId)
-      .maybeSingle();
+    const [apt] = await db
+      .select({ destination_latitude: appointments.destinationLatitude, destination_longitude: appointments.destinationLongitude })
+      .from(appointments)
+      .where(eq(appointments.id, appointmentId))
+      .limit(1);
 
     if (!apt || apt.destination_latitude === null || apt.destination_longitude === null) {
       return 0;
@@ -765,18 +772,22 @@ export class RealtimeTrackingService {
       barberId
     });
 
-    const [barberRaw, customerRaw, routeRaw, sessionResult] = await Promise.all([
+    const [barberRaw, customerRaw, routeRaw, sessionRows] = await Promise.all([
       redis.get(getTrackingBarberKey(appointmentId)),
       redis.get(getTrackingCustomerKey(appointmentId)),
       redis.get(getTrackingRouteKey(appointmentId)),
-      supabase
-        .from('tracking_sessions')
-        .select('id, status, consent_given_at, expires_at, created_at')
-        .eq('appointment_id', appointmentId)
-        .eq('status', 'active')
-        .order('created_at', { ascending: false })
+      db
+        .select({
+          id: trackingSessions.id,
+          status: trackingSessions.status,
+          consent_given_at: trackingSessions.consentGivenAt,
+          expires_at: trackingSessions.expiresAt,
+          created_at: trackingSessions.createdAt
+        })
+        .from(trackingSessions)
+        .where(and(eq(trackingSessions.appointmentId, appointmentId), eq(trackingSessions.status, 'active')))
+        .orderBy(desc(trackingSessions.createdAt))
         .limit(1)
-        .maybeSingle()
     ]);
 
     let barberLocation = parseJson<StoredLocation>(barberRaw);
@@ -787,7 +798,7 @@ export class RealtimeTrackingService {
     }
     const customerLocation = parseJson<StoredLocation>(customerRaw);
     const route = parseJson<any>(routeRaw);
-    const session = sessionResult.data;
+    const session = sessionRows[0] ?? null;
 
     return {
       appointment_id: appointmentId,

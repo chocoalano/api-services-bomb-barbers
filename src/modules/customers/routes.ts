@@ -1,5 +1,6 @@
 import { Elysia } from 'elysia';
 import { customerAuthRoutes } from './auth/routes';
+import { customerAddressRoutes } from './addresses/routes';
 import { availabilityRoutes } from './availability/routes';
 import { customerAppointmentRoutes } from './appointments/routes';
 import { catalogRoutes } from './catalog/routes';
@@ -9,9 +10,11 @@ import { customerMediaRoutes } from './media/routes';
 import { customerPaymentRoutes } from './payments/routes';
 import { reviewRoutes } from './reviews/routes';
 import { trackingRoutes } from './tracking/routes';
+import { customerWalletRoutes } from './wallet/routes';
 
 export const customerRoutes = new Elysia()
   .use(customerAuthRoutes)
+  .use(customerAddressRoutes)
   .use(availabilityRoutes)
   .use(customerAppointmentRoutes)
   .use(catalogRoutes)
@@ -20,4 +23,5 @@ export const customerRoutes = new Elysia()
   .use(customerMediaRoutes)
   .use(customerPaymentRoutes)
   .use(reviewRoutes)
-  .use(trackingRoutes);
+  .use(trackingRoutes)
+  .use(customerWalletRoutes);

@@ -11,8 +11,12 @@ const canonicalAppointmentRoutes = new Elysia({ prefix: '/api/v1/customers/appoi
   .get('/', CustomerAppointmentController.getMyAppointments, appointmentDocs.customerGetAppointments)
   .get('/:id', CustomerAppointmentController.getAppointmentDetail, appointmentDocs.customerGetAppointmentDetail)
   .post('/:id/cancel', CustomerAppointmentController.cancelAppointment, appointmentDocs.customerCancelAppointment)
-  .patch('/:id/status', CustomerAppointmentController.updateStatus, appointmentDocs.customerUpdateStatus)
-  .patch('/:id/destination', CustomerAppointmentController.updateDestination, appointmentDocs.customerUpdateDestination);
+  // [REVISI A8] Edit order sebelum bayar (pending & belum paid).
+  .patch('/:id', CustomerAppointmentController.updateOrder)
+  .patch('/:id/status', CustomerAppointmentController.updateStatus, appointmentDocs.customerUpdateStatus);
+  // A7: Customer "update titik jemput/destination" dinonaktifkan. Hanya admin
+  // (PATCH /api/v1/admin/appointments/:id/destination) yang boleh mengubah titik jemput.
+  // .patch('/:id/destination', CustomerAppointmentController.updateDestination, appointmentDocs.customerUpdateDestination);
 
 // ── Deprecated: /api/v1/customer/appointments → /api/v1/customers/appointments
 const deprecatedAppointmentRoutes = new Elysia({ prefix: '/api/v1/customer/appointments' })

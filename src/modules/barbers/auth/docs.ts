@@ -89,7 +89,7 @@ export const barberAuthDocs = {
         barberValidationError,
         {
           status: 401,
-          description: 'Refresh token tidak valid, kedaluwarsa, atau akun staff tidak aktif.',
+          description: 'Refresh token tidak valid, session sudah dicabut, atau akun staff tidak aktif.',
           message: 'Refresh token tidak valid'
         },
         {
