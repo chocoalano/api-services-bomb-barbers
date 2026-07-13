@@ -1,12 +1,13 @@
 import { logger } from '../lib/logger';
+import { toJakartaResponse } from './timezone';
 
 export const createSuccessResponse = <T>(message: string, data: T, meta?: any) => ({
   success: true,
   code: null,
   message,
-  data,
+  data: toJakartaResponse(data),
   errors: null,
-  meta
+  meta: toJakartaResponse(meta)
 });
 
 type ErrorResponseLogOptions = {
@@ -44,8 +45,8 @@ export const createErrorResponse = (
     success: false,
     code,
     message,
-    data,
-    errors,
+    data: toJakartaResponse(data),
+    errors: toJakartaResponse(errors),
     meta: null
   };
 };

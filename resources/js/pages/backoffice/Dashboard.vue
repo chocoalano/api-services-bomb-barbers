@@ -15,6 +15,7 @@ import {
   type BranchSummaryRow,
   type DashboardToday
 } from '../../lib/api';
+import { APP_TIMEZONE } from '../../lib/timezone';
 
 const staff = getStoredStaff();
 const isSuperAdmin = computed(
@@ -36,7 +37,12 @@ const formatRupiah = (value: number) => rupiah.format(Number.isFinite(value) ? v
 const formatDate = (iso: string) => {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return iso;
-  return new Intl.DateTimeFormat('id-ID', { day: '2-digit', month: 'short', year: 'numeric' }).format(date);
+  return new Intl.DateTimeFormat('id-ID', {
+    timeZone: APP_TIMEZONE,
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric'
+  }).format(date);
 };
 
 const unwrapName = (relation: BranchSummaryRow['branches']) => {

@@ -28,6 +28,7 @@ import {
   type StaffRoleAssignment,
   type StaffUserRow
 } from '../../lib/api';
+import { jakartaDateStamp } from '../../lib/timezone';
 
 const ALL = 'all';
 const GLOBAL = 'global';
@@ -204,7 +205,7 @@ const exportCsv = () => {
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;
-  link.download = `roles-${new Date().toISOString().slice(0, 10)}.csv`;
+  link.download = `roles-${jakartaDateStamp()}.csv`;
   document.body.appendChild(link);
   link.click();
   link.remove();

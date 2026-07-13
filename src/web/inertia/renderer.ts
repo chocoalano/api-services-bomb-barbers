@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { toJakartaResponse } from '../../shared/timezone';
 
 type InertiaProps = Record<string, unknown>;
 
@@ -111,7 +112,7 @@ const pageFor = (request: Request, component: string, props: InertiaProps = {}):
   component,
   props: {
     errors: {},
-    ...props
+    ...toJakartaResponse(props)
   },
   url: requestPath(request),
   version: inertiaAssetVersion()
