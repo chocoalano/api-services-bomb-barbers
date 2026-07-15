@@ -8,7 +8,7 @@
     "start:web": "NODE_ENV=production PROCESS_ROLE=web bun run src/web/server.ts",
     "dev:web": "WEB_ASSET_MODE=dev bun run --watch src/web/server.ts",
     "dev:web-assets": "vite --host 0.0.0.0",
-    "build:web": "vite build",
+    "build:web": "rm -rf public/build && vite build",
     "serve:fullstack": "bun run src/server-fullstack.ts",
     "tunnel": "bun run build:web && bun run src/server-fullstack.ts",
     "worker": "NODE_ENV=production PROCESS_ROLE=worker bun run src/worker.ts",
