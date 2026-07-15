@@ -5,7 +5,9 @@ import ui from '@nuxt/ui/vite';
 
 const vitePort = Number(process.env.VITE_PORT || 5173);
 
-export default defineConfig({
+export default defineConfig(({ command }) => ({
+  // Asset build di-serve di balik prefix /build (staticPlugin di src/web/server.ts).
+  base: command === 'build' ? '/build/' : '/',
   publicDir: false,
   plugins: [
     vue(),
@@ -41,4 +43,4 @@ export default defineConfig({
       '@': '/resources/js'
     }
   }
-});
+}));
