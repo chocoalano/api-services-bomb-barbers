@@ -51,14 +51,18 @@ export const availabilityDocs = {
         maximum: 120,
         description: 'Buffer perjalanan sebelum dan sesudah home_service. Diabaikan untuk in_store.',
         examples: [15]
-      }))
+      })),
+      exclude_appointment_id: t.Optional(customerUuidField(
+        'UUID appointment yang dikecualikan dari perhitungan (dipakai saat mengedit jadwal order agar order itu sendiri tidak menutup slotnya).',
+        CUSTOMER_EXAMPLES.appointmentId
+      ))
     }),
     detail: customerDetail({
       tag: CUSTOMER_TAGS.availability,
       summary: 'Lihat Slot Booking Tersedia',
       description: 'Menghitung slot booking berdasarkan jam operasional cabang, total durasi layanan, appointment aktif, exclusion window barber, barber aktif, dan cuti barber. Untuk home_service, travel buffer diterapkan sebelum dan sesudah layanan agar slot frontend konsisten dengan RPC booking atomik. Jika jam operasional belum tersedia, backend menggunakan fallback 09:00–21:00 WIB. Slot yang sudah lewat tidak dikembalikan.',
       required: ['path.id', 'query.date', 'query.service_ids (minimal satu UUID)'],
-      optional: ['query.barber_id', 'query.slot_interval_min', 'query.fulfillment_type', 'query.travel_buffer_min'],
+      optional: ['query.barber_id', 'query.slot_interval_min', 'query.fulfillment_type', 'query.travel_buffer_min', 'query.exclude_appointment_id'],
       successMessage: 'Slot jam tersedia berhasil diambil',
       successData: {
         branch_id: CUSTOMER_EXAMPLES.branchId,

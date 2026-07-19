@@ -7,7 +7,7 @@ import {
   appointments as appointmentsTable,
   barberTimeOff
 } from '../../../db/schema';
-import { and, eq, isNull, inArray, notInArray, gte, lt, gt } from 'drizzle-orm';
+import { and, eq, ne, isNull, inArray, notInArray, gte, lt, gt } from 'drizzle-orm';
 import { OpenOrderService } from '../../../core/appointments/open-order.service';
 import { sweepExpiredUnpaidPendingOrders } from '../../../core/appointments/service';
 import { BOOKING_CONFIG, jakartaParts, minutesToTime } from '../../../config/booking';
@@ -28,6 +28,9 @@ type AvailableSlotsQuery = {
   longitude?: number | string;
   lat?: number | string;
   lng?: number | string;
+  /** Appointment yang dikecualikan dari perhitungan (dipakai saat EDIT jadwal
+   * order: order itu sendiri tidak boleh menghitung dirinya sebagai "sibuk"). */
+  exclude_appointment_id?: string;
 };
 
 type AppointmentBlock = {
@@ -265,6 +268,14 @@ export class AvailabilityService {
     const dayStart = new Date(`${date}T00:00:00${DEFAULT_TIMEZONE_OFFSET}`);
     const dayEnd = addMinutes(dayStart, 24 * 60);
 
+    // Saat EDIT jadwal sebuah order, order tsb tidak boleh menghitung dirinya
+    // sebagai "sibuk" — kalau tidak, slot jam order itu sendiri (dan tetangganya
+    // dalam blok 2 jam) akan hilang dari daftar edit. Kecualikan dari blok
+    // bentrok DAN kuota harian sekaligus lewat WHERE ini.
+    const rawExcludeId =
+      typeof query.exclude_appointment_id === 'string' ? query.exclude_appointment_id.trim() : '';
+    const excludeAppointmentId = rawExcludeId.length > 0 ? rawExcludeId : null;
+
     // Ambil semua order non-cancelled hari itu: untuk hitung kuota harian (7)
     // sekaligus blok bentrok. Order completed di masa lalu tak akan overlap slot
     // mendatang, jadi aman ikut dihitung untuk blok.
@@ -284,7 +295,8 @@ export class AvailabilityService {
           eq(appointmentsTable.branchId, branchId),
           notInArray(appointmentsTable.status, ['cancelled', 'no_show']),
           gte(appointmentsTable.scheduledAt, dayStart.toISOString()),
-          lt(appointmentsTable.scheduledAt, dayEnd.toISOString())
+          lt(appointmentsTable.scheduledAt, dayEnd.toISOString()),
+          ...(excludeAppointmentId ? [ne(appointmentsTable.id, excludeAppointmentId)] : [])
         )
       );
 
