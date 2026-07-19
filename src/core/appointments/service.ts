@@ -1213,6 +1213,23 @@ export class AppointmentService {
     // Selalu broadcast ke branch room agar admin/manager juga menerima notifikasi
     io.to(`branch:${appointment.branch_id}`).emit('appointment:new_order', newOrderEvent);
 
+    // Beri tahu CUSTOMER (semua sesi/perangkatnya) bahwa ada order baru, agar
+    // badge "Pesanan" di bottom-nav, daftar antrean, dan beranda ikut ter-refresh
+    // realtime. Aplikasi customer mendengarkan `appointment:status_changed`.
+    // Emit khusus ke room personal customer agar tidak mengganggu alur
+    // barber/branch (mereka sudah menerima `appointment:new_order` di atas).
+    if (appointment.customer_id) {
+      io.to(`customer:${appointment.customer_id}`).emit('appointment:status_changed', {
+        appointment_id: appointment.id,
+        status: appointment.status,
+        raw_status: appointment.status,
+        barber_id: appointment.barber_id ?? null,
+        customer_id: appointment.customer_id,
+        branch_id: appointment.branch_id ?? null,
+        timestamp: new Date().toISOString(),
+      });
+    }
+
     // Sertakan id order lama yang di-auto-replace agar UI dapat memberi tahu customer.
     return { ...appointment, replaced_appointment_ids: replacedAppointmentIds };
   }

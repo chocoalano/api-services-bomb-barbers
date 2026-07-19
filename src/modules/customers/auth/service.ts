@@ -4,6 +4,7 @@ import { db } from '../../../lib/db';
 import { customers, customerWallets } from '../../../db/schema';
 import { and, eq, isNull, ne } from 'drizzle-orm';
 import { isDuplicateKeyError } from '../../../db/procedures';
+import { normalizePhone } from '../../../lib/phone';
 
 type RegisterCustomerInput = {
   full_name: string;
@@ -33,7 +34,9 @@ const validatePassword = (password: unknown) => {
 export class CustomerAuthService {
   static async register(data: RegisterCustomerInput) {
     const full_name = data.full_name.trim();
-    const phone = data.phone.trim();
+    // Simpan dalam bentuk kanonik (+62...) agar login via No HP selalu cocok
+    // apa pun format yang diketik pengguna.
+    const phone = normalizePhone(data.phone);
     const email = data.email?.trim().toLowerCase() || null;
     const password = validatePassword(data.password);
 
@@ -110,7 +113,8 @@ export class CustomerAuthService {
 
   static async login(data: LoginCustomerInput) {
     const email = data.email?.trim().toLowerCase() || null;
-    const phone = data.phone?.trim() || null;
+    // Normalisasi ke bentuk kanonik (+62...) agar cocok dengan data tersimpan.
+    const phone = normalizePhone(data.phone) || null;
     const password = validatePassword(data.password);
 
     if (!email && !phone) {

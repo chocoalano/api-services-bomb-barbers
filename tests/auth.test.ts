@@ -13,10 +13,13 @@ describe('Auth Module', () => {
   const testStaffEmail = 'teststaff@bombbarbershop.com';
   const testInactiveEmail = 'inactive@bombbarbershop.com';
   const password = 'Password123!';
+  // Bentuk kanonik dari testPhone setelah normalisasi (lihat src/lib/phone.ts).
+  const normalizedPhone = '+6281234567000';
 
   beforeAll(async () => {
-    // Cleanup first
+    // Cleanup first — hapus baik bentuk mentah maupun kanonik agar re-run bersih.
     await testDb.from('customers').delete().eq('phone', testPhone);
+    await testDb.from('customers').delete().eq('phone', normalizedPhone);
     await testDb.from('customers').delete().eq('email', testCustomerEmail);
     await testDb.from('staff_users').delete().in('email', [testStaffEmail, testInactiveEmail]);
 
@@ -58,11 +61,12 @@ describe('Auth Module', () => {
     console.log('Register response:', res.status, body);
     expect(res.status).toBe(201);
     expect(body.success).toBe(true);
-    expect(body.data.phone).toBe(testPhone);
+    // Nomor disimpan dalam bentuk kanonik (+62...) apa pun format saat daftar.
+    expect(body.data.phone).toBe(normalizedPhone);
     expect(body.data.email).toBe(testCustomerEmail);
   });
 
-  it('2. Login customer sukses dengan nomor telepon', async () => {
+  it('2. Login customer sukses dengan nomor telepon (format 08...)', async () => {
     const res = await app.handle(
       new Request(`http://localhost${API_PREFIX}/customer/auth/login`, {
         method: 'POST',
@@ -78,6 +82,24 @@ describe('Auth Module', () => {
     expect(body.success).toBe(true);
     expect(body.data.accessToken).toBeDefined();
     expect(body.data.refreshToken).toBeDefined();
+  });
+
+  it('2b. Login sukses walau format nomor berbeda (+62.../62...)', async () => {
+    // Nomor didaftarkan sebagai 08..., namun login memakai +62.../62... harus
+    // tetap berhasil berkat normalisasi kanonik.
+    for (const phoneVariant of [normalizedPhone, '6281234567000']) {
+      const res = await app.handle(
+        new Request(`http://localhost${API_PREFIX}/customer/auth/login`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ phone: phoneVariant, password })
+        })
+      );
+      const body = await res.json();
+      expect(res.status).toBe(200);
+      expect(body.success).toBe(true);
+      expect(body.data.accessToken).toBeDefined();
+    }
   });
 
   it('3. Login customer sukses dengan email', async () => {
