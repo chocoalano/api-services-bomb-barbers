@@ -607,20 +607,34 @@ const customerHasConflict = async (
 // 'pending' agar tidak memblokir booking baru (konflik slot customer, blok &
 // kuota barber). Order yang SUDAH dibayar (menunggu barber accept) maupun yang
 // sudah diterima/berjalan (confirmed/in_queue/in_service) TIDAK disentuh.
+// [REVISI] Order belum-dibayar yang JADWALNYA BELUM LEWAT juga TIDAK disentuh:
+// customer boleh punya beberapa order terjadwal ke depan (dibayar/diedit belakangan);
+// hanya order lampau (scheduled_at <= now) atau tanpa jadwal yang direplace.
 // Mengembalikan daftar id yang dibatalkan agar UI bisa memberi tahu customer.
 const cancelReplaceableUnpaidOrders = async (customerId: string): Promise<string[]> => {
   const data = await db
-    .select({ id: appointments.id, source: appointments.source, payStatus: payments.status })
+    .select({
+      id: appointments.id,
+      source: appointments.source,
+      scheduledAt: appointments.scheduledAt,
+      payStatus: payments.status
+    })
     .from(appointments)
     .leftJoin(payments, eq(payments.appointmentId, appointments.id))
     .where(and(eq(appointments.customerId, customerId), eq(appointments.status, 'pending')));
   if (!data.length) return [];
 
+  const now = Date.now();
   const cancelled: string[] = [];
   for (const apt of data as any[]) {
     if (apt.source !== 'online_booking') continue;
     const isPaid = apt.payStatus === 'paid';
     if (isPaid) continue;
+    // Pertahankan order yang jadwalnya masih di masa depan (belum lewat).
+    const scheduledAt = apt.scheduledAt ? new Date(apt.scheduledAt) : null;
+    if (scheduledAt && !Number.isNaN(scheduledAt.getTime()) && scheduledAt.getTime() > now) {
+      continue;
+    }
     try {
       await AppointmentLifecycleService.transition(apt.id, 'cancelled', {
         actor: { type: 'system', id: null, role: 'system' },
