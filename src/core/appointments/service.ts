@@ -438,6 +438,10 @@ const SLOT_INTERVAL_MINUTES = BOOKING_CONFIG.customerBookingIntervalMinutes; // 
 const BARBER_BLOCK_MINUTES = BOOKING_CONFIG.barberBlockMinutes; // blok 2 jam per order
 const IDLE_BARBER_STATUSES = BOOKING_CONFIG.idleBarberStatuses;
 const MAX_ORDERS_PER_BARBER_PER_DAY = BOOKING_CONFIG.maxDailyOrdersPerBarber;
+// Bila true (default), customer boleh punya >1 order aktif di jam yang sama;
+// kapasitasnya dibatasi jumlah barber idle+online (cek per-barber di bawah),
+// bukan oleh larangan double-booking milik customer sendiri.
+const ALLOW_CUSTOMER_CONCURRENT_ORDERS = BOOKING_CONFIG.allowCustomerConcurrentOrders;
 
 const makeError = (message: string, status = 400, code?: string) => {
   const error = new Error(message) as Error & { status?: number; code?: string };
@@ -1103,8 +1107,12 @@ export class AppointmentService {
 
       const { start: blockStart, end: blockEnd } = barberBlockRange(scheduledAt);
 
-      // Customer tidak boleh punya booking aktif yang bentrok di jam yang sama.
-      if (payload.customer_id
+      // Customer boleh punya >1 order aktif di jam yang sama SELAMA masih ada
+      // barber idle+online (dibatasi cek per-barber/pickBestAvailableBarber di
+      // bawah). Larangan double-booking hanya diberlakukan bila fitur multi-order
+      // dimatikan (ALLOW_CUSTOMER_CONCURRENT_ORDERS=false).
+      if (!ALLOW_CUSTOMER_CONCURRENT_ORDERS
+        && payload.customer_id
         && await customerHasConflict(payload.customer_id, blockStart, blockEnd)) {
         throw makeError(
           'Anda sudah memiliki booking aktif pada jam tersebut. Silakan pilih jam lain.',
@@ -1287,7 +1295,10 @@ export class AppointmentService {
 
       // Re-validasi bentrok pada blok 2 jam (kecualikan order ini sendiri).
       const { start: blockStart, end: blockEnd } = barberBlockRange(requestedScheduledAt);
-      if (await customerHasConflict(customerId, blockStart, blockEnd, appointmentId)) {
+      // Konsisten dengan create: larangan double-booking customer hanya berlaku
+      // bila fitur multi-order dimatikan. Kapasitas tetap dijaga cek per-barber.
+      if (!ALLOW_CUSTOMER_CONCURRENT_ORDERS
+        && await customerHasConflict(customerId, blockStart, blockEnd, appointmentId)) {
         throw makeError(
           'Anda sudah memiliki booking aktif pada jam tersebut. Silakan pilih jam lain.',
           409,

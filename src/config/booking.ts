@@ -49,7 +49,18 @@ export const BOOKING_CONFIG = {
    * Order pada tanggal itu dianggap open untuk seluruh jam operasional (backward
    * compatible), sedangkan barber yang punya record dibatasi ke periode tsb.
    */
-  requireOpenOrder: String(process.env.BOOKING_REQUIRE_OPEN_ORDER || '').toLowerCase() === 'true'
+  requireOpenOrder: String(process.env.BOOKING_REQUIRE_OPEN_ORDER || '').toLowerCase() === 'true',
+  /**
+   * Bila true (default), seorang customer BOLEH memiliki lebih dari satu order
+   * aktif pada tanggal & jam yang sama. Jumlah maksimalnya dibatasi oleh
+   * kapasitas barber idle+online (tiap order memakai barber berbeda; saat semua
+   * barber idle terpakai backend melempar NO_BARBER_AVAILABLE). Bila false,
+   * kembali ke perilaku lama: satu order per customer per blok 2 jam
+   * (CUSTOMER_DOUBLE_BOOKING). Override via env
+   * BOOKING_ALLOW_CUSTOMER_CONCURRENT_ORDERS=false.
+   */
+  allowCustomerConcurrentOrders:
+    String(process.env.BOOKING_ALLOW_CUSTOMER_CONCURRENT_ORDERS ?? 'true').toLowerCase() !== 'false'
 } as const;
 
 /**
