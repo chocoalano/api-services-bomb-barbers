@@ -21,6 +21,41 @@ const commissionExample = {
 };
 
 export const commissionDocs = {
+  getMissingCommissions: {
+    query: t.Object({
+      limit: t.Optional(t.Numeric({
+        minimum: 1,
+        maximum: 200,
+        description: 'Jumlah maksimum baris (default 50, maksimum 200).',
+        examples: [50]
+      }))
+    }),
+    detail: adminDetail({
+      tag: ADMIN_TAGS.commissions,
+      summary: 'Order Selesai Tanpa Komisi',
+      description:
+        'Daftar appointment berstatus completed yang belum memiliki baris commission_entries. '
+        + 'Komisi dicatat otomatis oleh job COMMISSION_CALCULATE saat order selesai & lunas; '
+        + 'endpoint ini menampilkan kasus yang gagal permanen (mis. tidak ada aturan komisi aktif '
+        + 'untuk barber/cabang tersebut) agar dapat ditindaklanjuti manual lewat '
+        + 'POST /admin/appointments/:id/calculate-commission. Daftar yang tidak kosong menandakan '
+        + 'ada pendapatan yang belum masuk pembukuan.',
+      required: ['Authorization: Bearer <access_token>', 'permission manage_commission'],
+      optional: ['query limit'],
+      successMessage: 'Order selesai yang belum memiliki komisi',
+      successData: [
+        {
+          appointment_id: ADMIN_EXAMPLES.appointmentId,
+          branch_id: ADMIN_EXAMPLES.branchId,
+          barber_id: ADMIN_EXAMPLES.barberId,
+          scheduled_at: '2026-06-20T10:30:00.000Z',
+          updated_at: '2026-06-20T11:20:00.000Z'
+        }
+      ],
+      errors: commonMutationErrors
+    })
+  },
+
   calculateCommission: {
     params: t.Object({
       id: uuidField('UUID appointment yang komisinya akan dihitung.', ADMIN_EXAMPLES.appointmentId)

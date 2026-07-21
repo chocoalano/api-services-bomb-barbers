@@ -3,6 +3,7 @@ import { staffUserRoles, roles, barbers, rolePermissions, permissions } from '..
 import { and, eq, isNull, inArray } from 'drizzle-orm';
 import { redis } from '../lib/redis';
 import { createErrorResponse } from '../shared/response';
+import { SessionErrorCode } from '../core/auth/session-errors';
 
 const RBAC_CACHE_TTL = 60; // detik
 const rbacCacheKey = (staffUserId: string) => `rbac:staff:${staffUserId}`;
@@ -219,7 +220,7 @@ export const requireBarber = async (ctx: any) => {
   }
 
   const [barber] = await db
-    .select({ id: barbers.id })
+    .select({ id: barbers.id, approvalStatus: barbers.approvalStatus })
     .from(barbers)
     .where(and(eq(barbers.staffUserId, staffId), isNull(barbers.deletedAt)))
     .limit(1);
@@ -230,5 +231,21 @@ export const requireBarber = async (ctx: any) => {
       context: 'rbac.requireBarber',
       status: 403
     });
+  }
+
+  // [G2] Persetujuan admin ikut dijaga di sini. Sebelumnya guard ini hanya
+  // melihat soft-delete, sehingga kepster yang baru DITOLAK admin masih bisa
+  // menerima order, chat, dan memanggil /withdraw dengan token lamanya.
+  if (barber.approvalStatus !== 'approved') {
+    set.status = 403;
+    return createErrorResponse(
+      barber.approvalStatus === 'pending'
+        ? 'Akun Anda masih menunggu konfirmasi admin'
+        : 'Akun Anda tidak lagi disetujui admin',
+      null,
+      SessionErrorCode.ACCOUNT_REJECTED,
+      null,
+      { context: 'rbac.requireBarber', status: 403 }
+    );
   }
 };

@@ -14,6 +14,9 @@ export const adminAppointmentRoutes = new Elysia({ prefix: '/api/v1/admin' })
   // sehingga tidak memakai guard requireBranchScope berbasis param.
   .get('/appointments', AdminAppointmentListController.list, appointmentDocs.adminList)
   .get('/appointments/stats', AdminAppointmentListController.stats, appointmentDocs.adminStats)
+  // [B1] Order berbayar yang belum diterima barber — jaring pengaman bila
+  // pengalihan otomatis tidak menemukan barber pengganti.
+  .get('/appointments/stuck-paid', AdminAppointmentController.listStuckPaid, appointmentDocs.adminListStuckPaid)
   .group('/branches/:branchId', (app) => app
     .onBeforeHandle(requireBranchScope((context: any) => context.params.branchId))
     .post('/walk-ins', AdminAppointmentController.createWalkIn, appointmentDocs.adminCreateWalkIn)
@@ -22,6 +25,9 @@ export const adminAppointmentRoutes = new Elysia({ prefix: '/api/v1/admin' })
   .group('/appointments/:id', (app) => app
     .onBeforeHandle(requireBranchScopeResolved(appointmentBranchResolver))
     .patch('/status', AdminAppointmentController.updateStatus, appointmentDocs.adminUpdateStatus)
+    // Satu-satunya jalur pembatalan untuk order yang sudah dibayar — customer
+    // tidak lagi dapat membatalkan sendiri.
+    .post('/cancel-with-refund', AdminAppointmentController.cancelWithRefund, appointmentDocs.adminCancelWithRefund)
     .patch('/barber', AdminAppointmentController.reassignBarber, appointmentDocs.adminReassignBarber)
     .patch('/destination', AdminAppointmentController.updateDestination, appointmentDocs.adminUpdateDestination)
   );

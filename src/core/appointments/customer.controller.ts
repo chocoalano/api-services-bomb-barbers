@@ -2,8 +2,8 @@ import { createSuccessResponse } from '../../shared/response';
 import { handleControllerError } from '../../shared/controller-error';
 import { AppointmentService } from './service';
 import { db } from '../../lib/db';
-import { appointments } from '../../db/schema';
-import { eq } from 'drizzle-orm';
+import { appointments, payments } from '../../db/schema';
+import { and, eq } from 'drizzle-orm';
 
 async function findAppointmentOwnership(id: string) {
   const [row] = await db
@@ -12,6 +12,16 @@ async function findAppointmentOwnership(id: string) {
     .where(eq(appointments.id, id))
     .limit(1);
   return row ?? null;
+}
+
+/** true bila order punya minimal satu baris pembayaran berstatus `paid`. */
+async function hasPaidPayment(appointmentId: string) {
+  const [row] = await db
+    .select({ id: payments.id })
+    .from(payments)
+    .where(and(eq(payments.appointmentId, appointmentId), eq(payments.status, 'paid')))
+    .limit(1);
+  return Boolean(row);
 }
 
 export class CustomerAppointmentController {
@@ -61,6 +71,19 @@ export class CustomerAppointmentController {
         throw new Error(`Tidak dapat membatalkan pemesanan dengan status ${data.status}`);
       }
 
+      // [KEBIJAKAN] Pesanan yang SUDAH DIBAYAR tidak dapat dibatalkan sendiri oleh
+      // customer — tidak ada pengembalian dana untuk pembatalan atas kemauan
+      // sendiri, sehingga membolehkannya hanya akan membuat uang hangus diam-diam.
+      // Perubahan pada pesanan berbayar ditangani admin.
+      if (await hasPaidPayment(params.id)) {
+        const err = new Error(
+          'Pesanan yang sudah dibayar tidak dapat dibatalkan. Silakan hubungi admin untuk bantuan.'
+        ) as Error & { status?: number; code?: string };
+        err.status = 400;
+        err.code = 'PAID_ORDER_NOT_CANCELLABLE';
+        throw err;
+      }
+
       const res = await AppointmentService.updateAppointmentStatus(params.id, 'cancelled', {
         actor: { type: 'customer', id: customerId, role: 'customer' },
         reason: body.reason
@@ -85,21 +108,11 @@ export class CustomerAppointmentController {
     }
   }
 
-  // [REVISI A8] Ubah order sebelum bayar — hanya tanggal/jam, lokasi, catatan.
-  static async updateOrder({ params, body, customerId, set }: any) {
-    try {
-      const apt = await AppointmentService.updateBeforePayment(customerId, params.id, {
-        scheduled_at: body?.scheduled_at,
-        service_address: body?.service_address,
-        destination_latitude: body?.destination_latitude,
-        destination_longitude: body?.destination_longitude,
-        location_notes: body?.location_notes
-      });
-      return createSuccessResponse('Order berhasil diperbarui', apt);
-    } catch (err: any) {
-      return handleControllerError(err, set, 'customer.updateOrder');
-    }
-  }
+  // [KEBIJAKAN] Perubahan order oleh customer DIHAPUS seluruhnya — termasuk untuk
+  // order yang belum dibayar. Salah pilih sebelum bayar → batalkan lalu pesan
+  // ulang; sudah dibayar → hubungi admin. Aturannya sengaja hanya satu kalimat
+  // agar tidak ada jalur setengah jadi yang bisa gagal (mis. reschedule yang
+  // tertolak aturan jeda minimal pemesanan).
 
   static async updateStatus({ params, body, customerId, set }: any) {
     try {

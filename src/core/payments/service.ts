@@ -6,6 +6,7 @@ import { and, eq, ne } from 'drizzle-orm';
 import { AuditService } from '../../modules/admin/audit/service';
 import { GatewayFactory } from './gateways/factory';
 import { createHash, randomUUID } from 'node:crypto';
+import { logger } from '../../lib/logger';
 import {
   BranchServiceAreaService,
   normalizeLocation
@@ -94,6 +95,19 @@ function generateOrderId(appointmentId: string): string {
 // Biaya layanan platform. HARUS ditentukan server, tidak boleh dipercaya dari body.
 const DEFAULT_SERVICE_FEE = 5000;
 
+/**
+ * [A6] Metode pembayaran yang boleh dipilih customer sendiri — semuanya kanal
+ * online yang dananya benar-benar masuk ke sistem. `cash` sengaja TIDAK ada di
+ * sini: pembayaran tunai hanya sah untuk order walk-in yang dicatat admin di
+ * lokasi. Aplikasi customer memang tidak pernah mengirim `cash`.
+ */
+export const CUSTOMER_ALLOWED_PAYMENT_METHODS = [
+  'qris',
+  'card',
+  'bank_transfer',
+  'ewallet'
+] as const;
+
 export class PaymentService {
   /**
    * Fetch customer details dari appointment untuk dikirim ke payment gateway.
@@ -155,6 +169,23 @@ export class PaymentService {
   }
 
   static async createPayment(payload: CreatePaymentPayload, actorId: string, actorType: 'admin' | 'customer') {
+    // [A6] Customer HANYA boleh membayar lewat kanal online. Sebelumnya `method`
+    // adalah string bebas dari body, sehingga `method: 'cash'` membuat order
+    // online lolos gerbang kelunasan (tampil di antrean barber dan dijawab
+    // "tunai, tidak perlu verifikasi") tanpa satu rupiah pun masuk.
+    //
+    // Penjagaan diletakkan di service, bukan hanya di skema rute: service ini
+    // dipakai bersama oleh jalur customer dan admin. `cash` tetap sah untuk
+    // admin (walk-in yang membayar di lokasi).
+    if (actorType === 'customer' && !CUSTOMER_ALLOWED_PAYMENT_METHODS.includes(payload.method as any)) {
+      const err = new Error(
+        'Metode pembayaran tidak tersedia. Silakan gunakan pembayaran online.'
+      ) as Error & { status?: number; code?: string };
+      err.status = 400;
+      err.code = 'PAYMENT_METHOD_NOT_ALLOWED';
+      throw err;
+    }
+
     const [aptRow] = await db
       .select({
         branch_id: appointments.branchId,
@@ -362,6 +393,77 @@ export class PaymentService {
       redirect_url: redirectUrl,
       token
     };
+  }
+
+  /**
+   * [A4] Rekonsiliasi terakhir sebelum sebuah order dibatalkan karena "belum
+   * dibayar": tanyakan langsung ke gateway apakah transaksinya sebenarnya sudah
+   * lunas tetapi webhook-nya belum sampai.
+   *
+   * Balapan ini nyata dan makin sering sejak batas bayar dipersingkat menjadi
+   * 1 jam: customer membayar di menit ke-59, pembatalan otomatis berjalan di
+   * menit ke-60, webhook tiba di menit ke-62 — uang tertagih untuk order yang
+   * sudah mati.
+   *
+   * Hanya menyentuh order yang benar-benar sudah memulai transaksi (punya
+   * `gateway_reference`), sehingga bebannya kecil.
+   *
+   * @returns true bila pembayaran ternyata sudah lunas → JANGAN batalkan.
+   */
+  static async reconcilePendingPaymentFromGateway(appointmentId: string): Promise<boolean> {
+    try {
+      const [payment] = await db
+        .select({
+          id: payments.id,
+          status: payments.status,
+          method: payments.method,
+          gateway_reference: payments.gatewayReference,
+          total_amount: payments.totalAmount
+        })
+        .from(payments)
+        .where(eq(payments.appointmentId, appointmentId))
+        .limit(1);
+
+      if (!payment || payment.status === 'paid') return payment?.status === 'paid';
+      if (payment.status !== 'pending' || !payment.gateway_reference) return false;
+
+      const gateway = GatewayFactory.getGateway('midtrans');
+      if (!gateway.checkTransactionStatus) return false;
+
+      const statusData = await gateway.checkTransactionStatus(payment.gateway_reference);
+      if (!['settlement', 'capture'].includes(statusData.transaction_status)) return false;
+
+      // Nominal wajib cocok — jangan menandai lunas atas jumlah yang berbeda.
+      if (statusData.gross_amount != null) {
+        const gross = Math.round(Number(statusData.gross_amount));
+        const expected = Math.round(Number(payment.total_amount));
+        if (!Number.isFinite(gross) || gross !== expected) {
+          logger.error(
+            { appointmentId, gross, expected },
+            '[Reconcile] Nominal gateway tidak cocok, pembayaran tidak ditandai lunas'
+          );
+          return false;
+        }
+      }
+
+      await PaymentService.updatePaymentStatus(
+        payment.id,
+        'paid',
+        '00000000-0000-0000-0000-000000000000',
+        'system'
+      );
+      logger.info(
+        { appointmentId, paymentId: payment.id },
+        '[Reconcile] Pembayaran ternyata sudah lunas di gateway — pembatalan dibatalkan'
+      );
+      return true;
+    } catch (err: any) {
+      // Gateway tidak dapat dihubungi → tidak bisa memastikan. Kembalikan false
+      // agar perilakunya sama seperti sebelumnya (order tetap dibatalkan);
+      // jaring pengaman berikutnya adalah revival saat webhook akhirnya tiba.
+      logger.error({ err, appointmentId }, '[Reconcile] Gagal memeriksa status ke gateway');
+      return false;
+    }
   }
 
   static async updatePaymentStatus(id: string, newStatus: string, actorId: string, actorType: 'admin' | 'customer' | 'system' | 'barber' | 'staff') {

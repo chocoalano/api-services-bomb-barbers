@@ -7,6 +7,8 @@ import { snakeKeys, toDbDate } from '../../db/helpers';
 import { barbers, appointments, customers, appointmentEvents } from '../../db/schema';
 import { and, eq, inArray, isNull, asc } from 'drizzle-orm';
 import { AuditService } from '../../modules/admin/audit/service';
+import { settleProviderFaultRefund } from '../../lib/queue';
+import { listStuckPaidOrders } from './paid-order-escalation.service';
 import { emitNewOrder } from '../../lib/socket';
 
 export class AdminAppointmentController {
@@ -79,6 +81,59 @@ export class AdminAppointmentController {
       return createSuccessResponse('Status berhasil diperbarui', apt);
     } catch (err: any) {
       return handleControllerError(err, set, 'admin.updateStatus', { detail: false });
+    }
+  }
+
+  /**
+   * [KEBIJAKAN] Batalkan order sekaligus kembalikan dananya ke dompet customer.
+   *
+   * Sejak customer tidak lagi dapat membatalkan pesanan berbayar maupun
+   * mengubahnya, endpoint ini adalah SATU-SATUNYA jalan keluar untuk order lunas
+   * yang bermasalah. Karena itu ia wajib ada, bukan opsional.
+   */
+  static async cancelWithRefund({ params, body, staffId, set }: any) {
+    try {
+      const reason = (body?.reason ?? '').trim();
+      if (!reason) {
+        set.status = 400;
+        return createErrorResponse('Alasan pembatalan wajib diisi');
+      }
+
+      const apt = await AppointmentService.updateAppointmentStatus(params.id, 'cancelled', {
+        actor: { type: 'staff', id: staffId, role: 'admin' },
+        reason: `Dibatalkan admin: ${reason}`
+      });
+
+      const refund = await settleProviderFaultRefund(params.id, {
+        reason: `Refund pembatalan oleh admin - ${reason}`,
+        processedBy: staffId
+      });
+
+      return createSuccessResponse('Pesanan dibatalkan', {
+        ...apt,
+        refund_amount: refund.amount,
+        wallet_credited: refund.credited
+      });
+    } catch (err: any) {
+      return handleControllerError(err, set, 'admin.cancelWithRefund', { detail: false });
+    }
+  }
+
+  /**
+   * [B1] Order LUNAS yang masih `pending` — barber belum menerimanya.
+   *
+   * Sistem sudah berusaha mengalihkannya ke barber lain dan akan membatalkan +
+   * merefund sebagai jaring terakhir, tetapi admin tetap perlu melihatnya untuk
+   * bertindak lebih cepat. Tanpa endpoint ini, kegagalan pengalihan hanya
+   * terlihat di log.
+   */
+  static async listStuckPaid({ query, set }: any) {
+    try {
+      const limit = Math.min(Number(query?.limit) || 50, 200);
+      const rows = await listStuckPaidOrders(limit);
+      return createSuccessResponse('Order lunas yang belum diterima barber', snakeKeys(rows));
+    } catch (err: any) {
+      return handleControllerError(err, set, 'admin.listStuckPaid', { detail: false });
     }
   }
 

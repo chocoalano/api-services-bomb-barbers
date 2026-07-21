@@ -41,8 +41,10 @@ export const BOOKING_CONFIG = {
   /**
    * live_status barber yang dianggap "idle"/siap menerima order (Open Order aktif
    * = barber hadir/online). Hanya barber idle yang ditawarkan ke customer.
+   * Nilai di sini SUDAH kanonik — bandingkan lewat `isIdleLiveStatus()` agar
+   * baris lama bernilai 'online' ikut dinormalkan (lihat BARBER_LIVE_STATUSES).
    */
-  idleBarberStatuses: ['online', 'available'] as string[],
+  idleBarberStatuses: ['available'] as string[],
   /**
    * Bila true, barber HANYA tersedia pada periode yang sudah ia buka Open Order-nya
    * (spec §11.3, strict). Bila false (default), barber tanpa satupun record Open
@@ -60,8 +62,57 @@ export const BOOKING_CONFIG = {
    * BOOKING_ALLOW_CUSTOMER_CONCURRENT_ORDERS=false.
    */
   allowCustomerConcurrentOrders:
-    String(process.env.BOOKING_ALLOW_CUSTOMER_CONCURRENT_ORDERS ?? 'true').toLowerCase() !== 'false'
+    String(process.env.BOOKING_ALLOW_CUSTOMER_CONCURRENT_ORDERS ?? 'true').toLowerCase() !== 'false',
+  /**
+   * Jeda minimal (menit) antara waktu SEKARANG dan jam booking yang dipilih
+   * customer. Customer yang membuka aplikasi pukul 08:00 hanya boleh memilih
+   * 14:00 ke atas. Batas bersifat inklusif: slot tepat pada now+6 jam boleh.
+   * Hanya berlaku untuk booking online berjadwal — order on-demand/ASAP dan
+   * order walk-in yang dibuat admin di lokasi tidak dibatasi.
+   * Override via env BOOKING_MIN_LEAD_MINUTES.
+   */
+  minCustomerLeadMinutes: parsePositiveInt(process.env.BOOKING_MIN_LEAD_MINUTES, 6 * 60)
 } as const;
+
+// ============================================================================
+// [E8] KAMUS STATUS KEHADIRAN BARBER — SATU-SATUNYA YANG SAH
+// ----------------------------------------------------------------------------
+// Sebelumnya ada tiga kamus yang tidak beririsan: app barber
+// (online|offline|unavailable), app admin (available|serving|on_break|offline),
+// dan lifecycle otomatis yang menulis serving/available HANYA ke Redis.
+// Akibatnya barber yang di-on_break admin tetap melihat switch-nya ON, dan
+// barber yang sedang melayani tetap dianggap idle oleh booking.
+//
+// Keputusan klien 2026-07-21: DB `barbers.live_status` adalah sumber kebenaran,
+// Redis murni cache. Kamus kanonik = kamus admin; nilai app barber dipetakan.
+// ============================================================================
+
+export const BARBER_LIVE_STATUSES = ['available', 'serving', 'on_break', 'offline'] as const;
+export type BarberLiveStatus = (typeof BARBER_LIVE_STATUSES)[number];
+
+/** Alias historis → kamus kanonik. `online ≡ available`, `unavailable ≡ on_break`. */
+const LIVE_STATUS_ALIASES: Record<string, BarberLiveStatus> = {
+  online: 'available',
+  available: 'available',
+  serving: 'serving',
+  busy: 'serving',
+  unavailable: 'on_break',
+  on_break: 'on_break',
+  break: 'on_break',
+  offline: 'offline'
+};
+
+/**
+ * Normalkan nilai `live_status` dari sumber mana pun ke kamus kanonik.
+ * Nilai tak dikenal → 'offline' (fail-closed: jangan menawarkan barber yang
+ * statusnya tidak bisa dipastikan).
+ */
+export const normalizeLiveStatus = (raw: string | null | undefined): BarberLiveStatus =>
+  LIVE_STATUS_ALIASES[String(raw ?? '').trim().toLowerCase()] ?? 'offline';
+
+/** true bila barber siap menerima order baru (setelah normalisasi). */
+export const isIdleLiveStatus = (raw: string | null | undefined): boolean =>
+  BOOKING_CONFIG.idleBarberStatuses.includes(normalizeLiveStatus(raw));
 
 /**
  * Status appointment yang dianggap AKTIF untuk pengecekan bentrok jadwal
@@ -190,6 +241,22 @@ export const combineDateTime = (date: string, time: string): Date => {
 
 export const addMinutes = (date: Date, minutes: number): Date =>
   new Date(date.getTime() + minutes * 60_000);
+
+/**
+ * Instant paling awal yang boleh dipilih customer = now + jeda minimal.
+ * Dipakai oleh generator slot (memfilter jam yang terlalu dekat) dan oleh
+ * validator saat order dibuat/diubah.
+ */
+export const earliestBookableAt = (now: Date = new Date()): Date =>
+  addMinutes(now, BOOKING_CONFIG.minCustomerLeadMinutes);
+
+/**
+ * true bila `slotStart` memenuhi jeda minimal terhadap `now` (inklusif).
+ * Perbandingan bersifat ketat terhadap menit: pada pukul 08:07 slot 14:00 sudah
+ * lewat batas (08:07+6j = 14:07), sehingga slot valid pertama adalah 15:00.
+ */
+export const satisfiesMinLead = (slotStart: Date, now: Date = new Date()): boolean =>
+  slotStart.getTime() >= earliestBookableAt(now).getTime();
 
 /** true bila rentang [startA,endA) dan [startB,endB) saling bertumpuk. */
 export const overlaps = (startA: Date, endA: Date, startB: Date, endB: Date): boolean =>

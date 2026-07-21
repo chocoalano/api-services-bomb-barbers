@@ -110,6 +110,11 @@ export const authSessions = mysqlTable('auth_sessions', {
   userType: varchar('user_type', { length: 20 }).notNull(),
   userId: char('user_id', { length: 36 }).notNull(),
   refreshJtiHash: varchar('refresh_jti_hash', { length: 64 }).notNull(),
+  // Jti sebelumnya + batas waktunya: toleransi rotasi agar retry refresh yang
+  // responsnya hilang di jaringan tidak dibaca sebagai pencurian token (yang
+  // berujung sesi dicabut = logout tanpa sebab).
+  prevRefreshJtiHash: varchar('prev_refresh_jti_hash', { length: 64 }),
+  prevJtiExpiresAt: datetime('prev_jti_expires_at', { mode: 'string', fsp: 6 }),
   userAgent: text('user_agent'),
   ipHash: varchar('ip_hash', { length: 64 }),
   expiresAt: datetime('expires_at', { mode: 'string', fsp: 6 }).notNull(),
@@ -120,6 +125,8 @@ export const authSessions = mysqlTable('auth_sessions', {
   updatedAt: datetime('updated_at', { mode: 'string', fsp: 6 }).notNull().default(sql`CURRENT_TIMESTAMP(6)`).$onUpdateFn(() => sql`CURRENT_TIMESTAMP(6)`),
 }, (table) => ({
     authSessionsUserActiveIdx: index('auth_sessions_user_active_idx').on(table.userType, table.userId, table.expiresAt),
+    // Pencabutan massal per akun mencari sesi aktif milik satu user.
+    authSessionsUserRevokedIdx: index('auth_sessions_user_revoked_idx').on(table.userType, table.userId, table.revokedAt),
 }));
 
 export const barberDailyStats = mysqlTable('barber_daily_stats', {

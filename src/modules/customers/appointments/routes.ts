@@ -11,8 +11,8 @@ const canonicalAppointmentRoutes = new Elysia({ prefix: '/api/v1/customers/appoi
   .get('/', CustomerAppointmentController.getMyAppointments, appointmentDocs.customerGetAppointments)
   .get('/:id', CustomerAppointmentController.getAppointmentDetail, appointmentDocs.customerGetAppointmentDetail)
   .post('/:id/cancel', CustomerAppointmentController.cancelAppointment, appointmentDocs.customerCancelAppointment)
-  // [REVISI A8] Edit order sebelum bayar (pending & belum paid).
-  .patch('/:id', CustomerAppointmentController.updateOrder)
+  // [KEBIJAKAN] PATCH /:id (edit order sebelum bayar) DIHAPUS. Customer tidak
+  // dapat mengubah pesanan sama sekali; lihat CustomerAppointmentController.
   .patch('/:id/status', CustomerAppointmentController.updateStatus, appointmentDocs.customerUpdateStatus);
   // A7: Customer "update titik jemput/destination" dinonaktifkan. Hanya admin
   // (PATCH /api/v1/admin/appointments/:id/destination) yang boleh mengubah titik jemput.

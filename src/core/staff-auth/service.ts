@@ -13,6 +13,7 @@ import {
   permissions
 } from '../../db/schema';
 import { and, eq, isNull, inArray, sql } from 'drizzle-orm';
+import { SessionError } from '../auth/session-errors';
 
 const DEFAULT_BARBER_RADIUS_KM = 5;
 
@@ -150,7 +151,7 @@ export class StaffAuthService {
 
   static async verifyRefresh(payload: any) {
     if (!payload || payload.role !== 'staff') {
-      throw new Error('Refresh token tidak valid');
+      throw SessionError.refreshInvalid();
     }
 
     const [staff] = await db
@@ -166,7 +167,31 @@ export class StaffAuthService {
       .limit(1);
 
     if (!staff || !staff.is_active || staff.deleted_at) {
-      throw new Error('Staff tidak aktif atau tidak ditemukan');
+      throw SessionError.suspended('Akun staff tidak aktif');
+    }
+
+    // [G2] Pintu belakang yang dulu terbuka: `login` memblokir kepster
+    // pending/rejected, tetapi refresh TIDAK — sehingga kepster yang baru
+    // ditolak admin bisa memperpanjang sesinya selamanya. Sekarang ditutup.
+    const [barber] = await db
+      .select({
+        approval_status: barbers.approvalStatus,
+        deleted_at: barbers.deletedAt
+      })
+      .from(barbers)
+      .where(eq(barbers.staffUserId, staff.id))
+      .limit(1);
+
+    if (barber) {
+      if (barber.deleted_at) {
+        throw SessionError.rejected('Akun kepster Anda sudah dihapus admin');
+      }
+      if (barber.approval_status === 'pending') {
+        throw SessionError.rejected('Akun Anda masih menunggu konfirmasi admin');
+      }
+      if (barber.approval_status === 'rejected') {
+        throw SessionError.rejected('Pendaftaran Anda ditolak admin');
+      }
     }
 
     const rbac = await loadStaffRbac(staff.id);

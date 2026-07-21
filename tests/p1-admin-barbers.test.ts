@@ -159,11 +159,32 @@ describe('GET /admin/branches/:branchId/barbers', () => {
     expect(typeof budi.active_appointment_count).toBe('number');
   });
 
-  it('live_status diambil dari Redis jika tersedia', async () => {
-    await redis.set(getBarberStatusKey(ANDI_BARBER), 'on_break');
+  // [E8] Dibalik dari perilaku lama: dulu nilai Redis MENIMPA DB di sini,
+  // sehingga admin dan mesin booking (yang membaca DB) bisa melihat status
+  // berbeda untuk barber yang sama. Keputusan klien 2026-07-21: DB adalah
+  // sumber kebenaran, Redis hanya cache.
+  it('live_status diambil dari DB, bukan dari cache Redis yang basi', async () => {
+    await testDb.from('barbers').update({ live_status: 'available' }).eq('id', ANDI_BARBER);
+    await redis.set(getBarberStatusKey(ANDI_BARBER), 'on_break'); // cache basi
+
+    const { body } = await req('GET', `${API}/admin/branches/${ANCOL_BRANCH}/barbers`, hqToken);
+    const andi = body.data.find((b: any) => b.id === ANDI_BARBER);
+    expect(andi.live_status).toBe('available');
+
+    await redis.del(getBarberStatusKey(ANDI_BARBER));
+  });
+
+  it('mengubah status lewat admin ikut memperbarui cache Redis', async () => {
+    await req('PATCH', `${API}/admin/branches/${ANCOL_BRANCH}/barbers/${ANDI_BARBER}/status`, hqToken, {
+      status: 'on_break'
+    });
+
     const { body } = await req('GET', `${API}/admin/branches/${ANCOL_BRANCH}/barbers`, hqToken);
     const andi = body.data.find((b: any) => b.id === ANDI_BARBER);
     expect(andi.live_status).toBe('on_break');
+    expect(await redis.get(getBarberStatusKey(ANDI_BARBER))).toBe('on_break');
+
+    await testDb.from('barbers').update({ live_status: 'available' }).eq('id', ANDI_BARBER);
     await redis.del(getBarberStatusKey(ANDI_BARBER));
   });
 

@@ -452,7 +452,12 @@ export async function refundPaymentToWallet(params: {
   customerId: string;
   amount: number;
   reason: string;
-  processedBy: string;
+  /**
+   * UUID staff yang memproses, atau null bila refund dilakukan SISTEM.
+   * `refunds.processed_by` adalah foreign key ke `staff_users`, sehingga
+   * penanda non-UUID seperti 'system' akan melanggar constraint.
+   */
+  processedBy: string | null;
 }) {
   return db.transaction(async (tx) => {
     const payment = await one(
@@ -524,6 +529,12 @@ export async function recordCommissionAtomic(params: {
     }
 
     if (params.barberShare > 0) {
+      // Dompet dibuat di sini bila belum ada. Sebelumnya satu-satunya pembuat
+      // dompet adalah layar dompet barber; sejak layar itu ditutup (barber tidak
+      // diizinkan mengetahui pendapatannya), tidak ada lagi yang membuatnya dan
+      // SETIAP pencatatan komisi otomatis akan gagal 'Wallet not found'.
+      // ON DUPLICATE KEY membuatnya aman dipanggil berulang.
+      await ensureBarberWallet(tx, params.barberId);
       const wallet = await one(
         tx,
         sql`SELECT id FROM barber_wallets WHERE barber_id = ${params.barberId} FOR UPDATE`

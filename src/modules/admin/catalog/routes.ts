@@ -43,9 +43,16 @@ export const adminCatalogRoutes = new Elysia({ prefix: '/api/v1/hq' })
     // [REVISI C1] Onboarding kepster: daftar pending & konfirmasi (approve/reject).
     .get('/pending', AdminCatalogController.listPendingBarbers, adminCatalogDocs.listPendingBarbers)
     .patch('/:id/approval', AdminCatalogController.updateBarberApproval, adminCatalogDocs.updateBarberApproval)
+    // [G2] Suspend/aktifkan akun — mencabut sesi, bukan sekadar mengubah kolom.
+    .patch('/:id/active', AdminCatalogController.setBarberActive, adminCatalogDocs.setBarberActive)
     .put('/:id', AdminCatalogController.updateBarber, adminCatalogDocs.updateBarber)
     .delete('/:id', AdminCatalogController.deleteBarber, adminCatalogDocs.deleteBarber)
   )
+  // [G2] Suspend/aktifkan akun pelanggan.
+  .patch('/customers/:id/active', AdminCatalogController.setCustomerActive, {
+    ...adminCatalogDocs.setCustomerActive,
+    beforeHandle: requirePermission('manage_barber')
+  })
   // Services
   .get('/services', AdminCatalogController.listServices, {
     ...adminCatalogDocs.listServices,

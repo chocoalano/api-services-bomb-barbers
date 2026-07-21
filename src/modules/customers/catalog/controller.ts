@@ -1,6 +1,6 @@
 import { createSuccessResponse, createErrorResponse } from '../../../shared/response';
 import { CatalogService } from './service';
-import { redis, getBarberStatusKey } from '../../../lib/redis';
+import { normalizeLiveStatus } from '../../../config/booking';
 
 export class CatalogController {
   static async getBranches({ query, headers, set }: any) {
@@ -31,12 +31,12 @@ export class CatalogController {
         requestId: headers?.['x-request-id'] ?? null
       });
       
-      const enrichedBarbers = await Promise.all(barbers.map(async (b: any) => {
-        const status = await redis.get(getBarberStatusKey(b.id));
-        return {
-          ...b,
-          live_status: status || 'available'
-        };
+      // [E8] Dulu status dibaca dari Redis dengan fallback literal 'available',
+      // sehingga barber tanpa entri cache SELALU tampak online di katalog —
+      // termasuk yang offline atau sedang cuti. DB adalah sumber kebenaran.
+      const enrichedBarbers = barbers.map((b: any) => ({
+        ...b,
+        live_status: normalizeLiveStatus(b.live_status)
       }));
 
       return createSuccessResponse('Daftar barber berhasil diambil', enrichedBarbers);

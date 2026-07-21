@@ -5,6 +5,7 @@ import { db } from '../lib/db';
 import { customers, staffUsers } from '../db/schema';
 import { and, eq, isNull } from 'drizzle-orm';
 import { AuthSessionService } from '../core/auth/session.service';
+import { SessionError, SessionErrorCode } from '../core/auth/session-errors';
 import { createErrorResponse } from '../shared/response';
 
 // Fail-fast: jangan pernah boot dengan secret default yang bisa ditebak.
@@ -18,16 +19,57 @@ if (!JWT_ACCESS_SECRET || !JWT_REFRESH_SECRET) {
 }
 
 const ACCESS_TOKEN_SECRET = new TextEncoder().encode(JWT_ACCESS_SECRET);
+
+/**
+ * Verifikasi yang mengabaikan waktu sepenuhnya.
+ *
+ * Dipakai HANYA untuk refresh token: masa berlakunya diatur di baris
+ * `auth_sessions` (bisa dicabut & diperpanjang server tanpa menyentuh
+ * perangkat), bukan di klaim `exp` yang terlanjur beredar di ribuan HP.
+ */
 export const NON_EXPIRING_JWT_VERIFY_OPTIONS = {
   clockTolerance: Number.MAX_SAFE_INTEGER
 } satisfies JWTVerifyOptions;
 
+/**
+ * Masa berlaku access token (menit). **0 = tanpa `exp`** — perilaku lama, dan
+ * juga saklar darurat: kembalikan ke 0 tanpa deploy ulang bila penyalaan masa
+ * berlaku menimbulkan masalah di lapangan.
+ */
+const ACCESS_TTL_MINUTES = Number(process.env.AUTH_ACCESS_TTL_MINUTES || 0);
+
+/**
+ * Toleransi selisih jam perangkat (detik). Jam HP yang meleset satu menit tidak
+ * boleh berubah menjadi 401 beruntun.
+ */
+const ACCESS_CLOCK_TOLERANCE_SECONDS = Number(
+  process.env.AUTH_ACCESS_CLOCK_TOLERANCE_SECONDS || 60
+);
+
+/** Klaim `exp` untuk token baru; null = jangan pasang exp sama sekali. */
+export const accessTokenExpiryClaim = () =>
+  ACCESS_TTL_MINUTES > 0
+    ? Math.floor(Date.now() / 1000) + ACCESS_TTL_MINUTES * 60
+    : null;
+
+/**
+ * Tambahkan klaim `exp` ke payload access token bila fitur ini aktif.
+ * Dipakai semua penerbit token agar aturannya cuma ada di satu tempat.
+ */
+export const withAccessTokenExpiry = <T extends Record<string, unknown>>(payload: T) => {
+  const exp = accessTokenExpiryClaim();
+  return exp ? { ...payload, exp } : payload;
+};
+
 export const verifyAccessToken = async (token: string) => {
   const rawToken = token.startsWith('Bearer ') ? token.slice(7) : token;
   try {
+    // Token TANPA `exp` (semua yang terbit sebelum fitur ini menyala) tetap
+    // diterima — `jose` hanya menilai klaim yang ada. Itulah yang membuat rilis
+    // ini tidak memutus satu pun sesi yang sedang berjalan.
     const { payload } = await jwtVerify(rawToken, ACCESS_TOKEN_SECRET, {
       algorithms: ['HS256'],
-      ...NON_EXPIRING_JWT_VERIFY_OPTIONS
+      clockTolerance: ACCESS_CLOCK_TOLERANCE_SECONDS
     });
     if (!payload || typeof payload.sub !== 'string' || typeof payload.role !== 'string') {
       throw new Error('Invalid token payload');
@@ -52,8 +94,15 @@ export const verifyAccessToken = async (token: string) => {
       typedPayload.sub
     );
     return typedPayload;
-  } catch (error) {
-    throw new Error('Invalid token');
+  } catch (error: any) {
+    // Sebab kegagalan DIPERTAHANKAN, tidak lagi diratakan jadi "Invalid token":
+    // aplikasi memutuskan logout/tidak berdasarkan kodenya.
+    if (error instanceof SessionError) throw error;
+    if (error?.code === 'ERR_JWT_EXPIRED') {
+      // Bukan kode terminal — klien wajib menyegarkan token, bukan melogout.
+      throw SessionError.tokenExpired();
+    }
+    throw new Error('Token tidak valid');
   }
 };
 
@@ -79,13 +128,14 @@ export const customerAuthMiddleware = (app: Elysia) =>
     .derive(async ({ jwtAccess, headers: { authorization } }) => {
       let customerId = null;
       let authError = 'Missing or invalid token';
+      let authCode: string | null = null;
 
       if (authorization?.startsWith('Bearer ')) {
         try {
           const payload = await verifyAccessToken(authorization);
           if (payload.role !== 'customer') {
             authError = 'Unauthorized access';
-            return { customerId, authError };
+            return { customerId, authError, authCode };
           }
           const [customer] = await db
             .select({ isActive: customers.isActive, deletedAt: customers.deletedAt })
@@ -96,18 +146,20 @@ export const customerAuthMiddleware = (app: Elysia) =>
             customerId = payload.sub as string;
             authError = '';
           } else {
-            authError = 'User is inactive or not found';
+            authError = 'Akun Anda dinonaktifkan. Hubungi admin.';
+            authCode = SessionErrorCode.ACCOUNT_SUSPENDED;
           }
-        } catch {
-          authError = 'Missing or invalid token';
+        } catch (error: any) {
+          authError = error?.message || 'Missing or invalid token';
+          authCode = error instanceof SessionError ? error.code : null;
         }
       }
-      return { customerId, authError };
+      return { customerId, authError, authCode };
     })
-    .onBeforeHandle(({ customerId, authError, set }) => {
+    .onBeforeHandle(({ customerId, authError, authCode, set }) => {
       if (authError || !customerId) {
         set.status = 401;
-        return createErrorResponse(authError || 'Unauthorized', null, null, null, {
+        return createErrorResponse(authError || 'Unauthorized', null, authCode ?? null, null, {
           context: 'customerAuthMiddleware',
           status: 401
         });
@@ -121,6 +173,7 @@ export const staffAuthMiddleware = (app: Elysia) =>
     .derive(async ({ jwtAccess, headers, query }: any) => {
       let staffId = null;
       let authError = 'Missing or invalid token';
+      let authCode: string | null = null;
 
       const authorization = headers?.authorization;
       // Token via ?token= HANYA diterima untuk request SSE (EventSource browser
@@ -138,7 +191,7 @@ export const staffAuthMiddleware = (app: Elysia) =>
           const payload = await verifyAccessToken(rawToken);
           if (payload.role !== 'staff') {
             authError = 'Unauthorized access';
-            return { staffId, authError };
+            return { staffId, authError, authCode };
           }
           const [staff] = await db
             .select({ isActive: staffUsers.isActive, deletedAt: staffUsers.deletedAt })
@@ -149,18 +202,20 @@ export const staffAuthMiddleware = (app: Elysia) =>
             staffId = payload.sub as string;
             authError = '';
           } else {
-            authError = 'User is inactive or not found';
+            authError = 'Akun Anda dinonaktifkan. Hubungi admin.';
+            authCode = SessionErrorCode.ACCOUNT_SUSPENDED;
           }
-        } catch {
-          authError = 'Missing or invalid token';
+        } catch (error: any) {
+          authError = error?.message || 'Missing or invalid token';
+          authCode = error instanceof SessionError ? error.code : null;
         }
       }
-      return { staffId, authError };
+      return { staffId, authError, authCode };
     })
-    .onBeforeHandle(({ staffId, authError, set }) => {
+    .onBeforeHandle(({ staffId, authError, authCode, set }) => {
       if (authError || !staffId) {
         set.status = 401;
-        return createErrorResponse(authError || 'Unauthorized', null, null, null, {
+        return createErrorResponse(authError || 'Unauthorized', null, authCode ?? null, null, {
           context: 'staffAuthMiddleware',
           status: 401
         });

@@ -2,8 +2,10 @@ import * as argon2 from 'argon2';
 import { randomUUID } from 'crypto';
 import { db } from '../../../lib/db';
 import { snakeKeys, camelKeys, toDbDate } from '../../../db/helpers';
-import { branches, barbers, staffUsers, services, servicePrices } from '../../../db/schema';
+import { branches, barbers, staffUsers, customers, services, servicePrices, branchOperatingHours } from '../../../db/schema';
 import { and, eq, isNull, inArray, asc, desc } from 'drizzle-orm';
+import { revokeAccountSessions } from '../../../core/auth/session-revocation';
+import { BOOKING_CONFIG, minutesToTime } from '../../../config/booking';
 
 async function selectOneSnake(table: any, id: string) {
   const [row] = await db.select().from(table).where(eq(table.id, id)).limit(1);
@@ -15,6 +17,22 @@ export class AdminCatalogService {
   static async createBranch(data: any) {
     const id = data.id ?? randomUUID();
     await db.insert(branches).values({ ...camelKeys(data), id } as any);
+
+    // [E4] Cabang tanpa baris `branch_operating_hours` TIDAK BISA menerima
+    // booking sama sekali (prosedur atomik menolak, dan sejak revisi ini
+    // generator slot pun berhenti menawarkan slot palsu). Karena itu cabang
+    // baru langsung diberi jam kerja default 08:00–22:00 untuk tujuh hari;
+    // admin tinggal menyesuaikannya bila cabang buka/tutup di jam lain.
+    await db.insert(branchOperatingHours).values(
+      Array.from({ length: 7 }, (_, dayOfWeek) => ({
+        id: randomUUID(),
+        branchId: id,
+        dayOfWeek,
+        openTime: `${minutesToTime(BOOKING_CONFIG.operationalStartMinutes)}:00`,
+        closeTime: `${minutesToTime(BOOKING_CONFIG.operationalLastBookingMinutes)}:00`
+      })) as any
+    );
+
     return selectOneSnake(branches, id);
   }
   static async updateBranch(id: string, data: any) {
@@ -130,6 +148,17 @@ export class AdminCatalogService {
       notFound.status = 404;
       throw notFound;
     }
+
+    // [G2] Menolak kepster harus benar-benar memutus aksesnya. Sebelum ini,
+    // kolom `approval_status` berubah tetapi sesinya jalan terus — kepster yang
+    // baru ditolak masih bisa menerima order, chat, dan memanggil /withdraw.
+    if (nextStatus === 'rejected' && barber.staff_user_id) {
+      await revokeAccountSessions({
+        userType: 'staff',
+        userId: barber.staff_user_id,
+        reason: 'account_rejected'
+      });
+    }
     return barber;
   }
 
@@ -214,8 +243,97 @@ export class AdminCatalogService {
     return selectOneSnake(barbers, id);
   }
   static async deleteBarber(id: string) {
+    const [barber] = await db
+      .select({ staffUserId: barbers.staffUserId })
+      .from(barbers)
+      .where(eq(barbers.id, id))
+      .limit(1);
+
     await db.update(barbers).set({ deletedAt: toDbDate(new Date()) }).where(eq(barbers.id, id));
+
+    // [G2] Soft-delete profil barber tidak menyentuh `staff_users`, sehingga
+    // tanpa pencabutan ini token lamanya tetap lolos middleware staff.
+    if (barber?.staffUserId) {
+      await revokeAccountSessions({
+        userType: 'staff',
+        userId: barber.staffUserId,
+        reason: 'account_deleted'
+      });
+    }
     return true;
+  }
+
+  /** Ambil staff_user_id & cabang milik satu barber (untuk aksi suspend). */
+  static async getBarberStaffUser(barberId: string) {
+    const [barber] = await db
+      .select({ staff_user_id: barbers.staffUserId, branch_id: barbers.branchId })
+      .from(barbers)
+      .where(and(eq(barbers.id, barberId), isNull(barbers.deletedAt)))
+      .limit(1);
+    return barber ?? null;
+  }
+
+  /**
+   * Aktifkan/nonaktifkan akun staff (termasuk kepster). [G2]
+   *
+   * Sebelum ini tidak ada satu pun jalur tulis untuk `staff_users.is_active` —
+   * "suspend" hanya bisa lewat DB manual, dan karena itu tidak pernah mencabut
+   * sesi. Menonaktifkan akun kini langsung memutus seluruh sesinya.
+   */
+  static async setStaffActive(staffUserId: string, isActive: boolean) {
+    const [staff] = await db
+      .select({ id: staffUsers.id })
+      .from(staffUsers)
+      .where(and(eq(staffUsers.id, staffUserId), isNull(staffUsers.deletedAt)))
+      .limit(1);
+
+    if (!staff) {
+      const notFound = new Error('Staff tidak ditemukan') as Error & { status?: number };
+      notFound.status = 404;
+      throw notFound;
+    }
+
+    await db
+      .update(staffUsers)
+      .set({ isActive })
+      .where(eq(staffUsers.id, staffUserId));
+
+    if (!isActive) {
+      await revokeAccountSessions({
+        userType: 'staff',
+        userId: staffUserId,
+        reason: 'account_suspended'
+      });
+    }
+
+    return { id: staffUserId, is_active: isActive };
+  }
+
+  /** Aktifkan/nonaktifkan akun customer. [G2] */
+  static async setCustomerActive(customerId: string, isActive: boolean) {
+    const [customer] = await db
+      .select({ id: customers.id })
+      .from(customers)
+      .where(and(eq(customers.id, customerId), isNull(customers.deletedAt)))
+      .limit(1);
+
+    if (!customer) {
+      const notFound = new Error('Pelanggan tidak ditemukan') as Error & { status?: number };
+      notFound.status = 404;
+      throw notFound;
+    }
+
+    await db.update(customers).set({ isActive }).where(eq(customers.id, customerId));
+
+    if (!isActive) {
+      await revokeAccountSessions({
+        userType: 'customer',
+        userId: customerId,
+        reason: 'account_suspended'
+      });
+    }
+
+    return { id: customerId, is_active: isActive };
   }
 
   // Services

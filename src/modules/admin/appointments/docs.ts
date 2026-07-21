@@ -175,6 +175,77 @@ export const appointmentDocs = {
     })
   },
 
+  adminListStuckPaid: {
+    query: t.Object({
+      limit: t.Optional(t.Numeric({
+        minimum: 1,
+        maximum: 200,
+        description: 'Jumlah maksimum baris (default 50, maksimum 200).',
+        examples: [50]
+      }))
+    }),
+    detail: adminDetail({
+      tag: ADMIN_TAGS.appointments,
+      summary: 'Order Lunas yang Belum Diterima Barber',
+      description:
+        'Daftar appointment online berstatus `pending` yang pembayarannya sudah lunas — '
+        + 'barber belum menekan "Terima". Sistem otomatis mengalihkannya ke barber lain '
+        + '(maksimal 2 kali, dijadwalkan sebelum jam janji) dan sebagai jaring terakhir '
+        + 'membatalkannya sambil mengembalikan dana. Daftar ini untuk tindakan manual yang '
+        + 'lebih cepat; isinya yang panjang menandakan kapasitas barber tidak mencukupi.',
+      required: ['Authorization: Bearer <access_token>', 'permission manage_appointment'],
+      optional: ['query limit'],
+      successMessage: 'Order lunas yang belum diterima barber',
+      successData: [
+        {
+          appointment_id: ADMIN_EXAMPLES.appointmentId,
+          branch_id: ADMIN_EXAMPLES.branchId,
+          barber_id: ADMIN_EXAMPLES.barberId,
+          customer_id: ADMIN_EXAMPLES.customerId,
+          scheduled_at: '2026-06-20T10:30:00.000Z',
+          payment_status: 'paid'
+        }
+      ],
+      errors: commonAuthErrors
+    })
+  },
+
+  adminCancelWithRefund: {
+    params: t.Object({
+      id: uuidField('UUID appointment yang akan dibatalkan.', ADMIN_EXAMPLES.appointmentId)
+    }),
+    body: t.Object({
+      reason: t.String({
+        minLength: 1,
+        maxLength: 1000,
+        description: 'Alasan pembatalan. Wajib — dicatat ke appointment_events dan ke keterangan refund.',
+        examples: ['Barber berhalangan, customer setuju dibatalkan.']
+      })
+    }, { examples: [{ reason: 'Barber berhalangan, customer setuju dibatalkan.' }] }),
+    detail: adminDetail({
+      tag: ADMIN_TAGS.appointments,
+      summary: 'Batalkan Appointment + Kembalikan Dana',
+      description:
+        'Membatalkan appointment sekaligus mengembalikan dananya ke dompet customer. '
+        + 'Customer TIDAK dapat membatalkan pesanan yang sudah dibayar (PAID_ORDER_NOT_CANCELLABLE) dan '
+        + 'tidak dapat mengubah pesanan sama sekali, sehingga endpoint ini adalah satu-satunya jalan keluar '
+        + 'untuk pesanan berbayar yang bermasalah. Hanya pembayaran online yang dikembalikan — order tunai '
+        + 'tidak pernah menerima dana lewat aplikasi. Bila proses refund gagal, pembatalan tetap berhasil dan '
+        + 'refund dijadwalkan ulang lewat antrean (wallet_credited=false).',
+      required: ['path id', 'reason', 'Authorization: Bearer <access_token>', 'permission manage_appointment', 'scope cabang appointment'],
+      optional: [],
+      successMessage: 'Pesanan dibatalkan',
+      successData: {
+        ...appointmentExample,
+        status: 'cancelled',
+        cancellation_reason: 'Dibatalkan admin: Barber berhalangan, customer setuju dibatalkan.',
+        refund_amount: 105000,
+        wallet_credited: true
+      },
+      errors: commonMutationErrors
+    })
+  },
+
   adminReassignBarber: {
     params: t.Object({ id: uuidField('UUID appointment yang akan di-reassign.', ADMIN_EXAMPLES.appointmentId) }),
     body: t.Object({

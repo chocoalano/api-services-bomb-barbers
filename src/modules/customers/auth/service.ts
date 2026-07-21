@@ -5,6 +5,7 @@ import { customers, customerWallets } from '../../../db/schema';
 import { and, eq, isNull, ne } from 'drizzle-orm';
 import { isDuplicateKeyError } from '../../../db/procedures';
 import { normalizePhone } from '../../../lib/phone';
+import { SessionError } from '../../../core/auth/session-errors';
 
 type RegisterCustomerInput = {
   full_name: string;
@@ -149,7 +150,7 @@ export class CustomerAuthService {
 
   static async verifyRefresh(payload: any) {
     if (!payload || payload.role !== 'customer') {
-      throw new Error('Refresh token tidak valid');
+      throw SessionError.refreshInvalid();
     }
 
     const [customer] = await db
@@ -159,7 +160,7 @@ export class CustomerAuthService {
       .limit(1);
 
     if (!customer || !customer.is_active) {
-      throw new Error('Pelanggan tidak aktif atau tidak ditemukan');
+      throw SessionError.suspended('Akun Anda dinonaktifkan. Hubungi admin.');
     }
 
     return customer;

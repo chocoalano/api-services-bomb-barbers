@@ -235,7 +235,12 @@ describe('Tahap 1 - auth session security', () => {
     expect(response.status).toBe(200);
   });
 
-  it('merotasi refresh token dan menolak pemakaian ulang token lama', async () => {
+  // [G1] Pemakaian ulang jti lama di DALAM jendela toleransi (default 60 dtk)
+  // SENGAJA diterima: penyebab tersering bukan pencurian melainkan respons
+  // rotasi yang hilang di jaringan lalu di-retry klien. Menolaknya berarti
+  // mencabut sesi orang yang tidak bersalah. Penolakan reuse di luar jendela
+  // diuji di tests/auth-session.test.ts.
+  it('merotasi refresh token dan tetap menerima jti lama dalam jendela toleransi', async () => {
     const refreshResponse = await app.handle(new Request(
       `http://localhost${API_PREFIX}/customer/auth/refresh`,
       {
@@ -261,15 +266,17 @@ describe('Tahap 1 - auth session security', () => {
         body: JSON.stringify({ refreshToken: rotateRefreshToken })
       }
     ));
-    expect(reuseResponse.status).toBe(401);
+    expect(reuseResponse.status).toBe(200);
 
+    // Sesi TIDAK dicabut oleh retry dalam jendela toleransi, jadi access token
+    // yang sedang dipakai tetap berlaku — pengguna tidak terlempar ke login.
     const accessAfterReuse = await app.handle(new Request(
       `http://localhost${API_PREFIX}/customer/me`,
       {
         headers: { Authorization: `Bearer ${rotatedAccessToken}` }
       }
     ));
-    expect(accessAfterReuse.status).toBe(401);
+    expect(accessAfterReuse.status).toBe(200);
   });
 
   it('logout mencabut access token dalam session yang sama', async () => {

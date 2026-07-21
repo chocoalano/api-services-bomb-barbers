@@ -2,7 +2,7 @@ import * as argon2 from 'argon2';
 import { db } from '../../../lib/db';
 import { staffUsers } from '../../../db/schema';
 import { and, eq, isNull } from 'drizzle-orm';
-import { AuthSessionService } from '../../../core/auth/session.service';
+import { revokeAccountSessions } from '../../../core/auth/session-revocation';
 
 export class PasswordService {
   /**
@@ -38,6 +38,13 @@ export class PasswordService {
    * Dipanggil setelah password berhasil diubah.
    */
   static async invalidateOtherSessions(staffId: string, exceptSessionId?: string): Promise<void> {
-    await AuthSessionService.revokeAllByUser('staff', staffId, exceptSessionId);
+    // Lewat helper terpusat agar alasannya tercatat benar dan socket perangkat
+    // lain ikut ditendang — sesi saat ini (exceptSessionId) TIDAK disentuh.
+    await revokeAccountSessions({
+      userType: 'staff',
+      userId: staffId,
+      reason: 'password_changed',
+      exceptSessionId
+    });
   }
 }

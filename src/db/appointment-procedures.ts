@@ -20,6 +20,22 @@ import {
   parseDbTime,
   ACTIVE_STATUSES
 } from './procedures';
+// [E1–E11] Predikat & konstanta yang sama dengan generator slot dan pre-flight.
+// Prosedur ini tetap wasit terakhir (dijalankan di dalam GET_LOCK), tapi kini
+// menjaga ATURAN YANG SAMA, bukan versi yang lebih longgar.
+import { BOOKING_CONFIG, jakartaParts } from '../config/booking';
+import {
+  computeScheduleBlock,
+  fitsOperatingWindow,
+  resolveOperatingWindow
+} from '../core/booking/rules';
+
+/** Rentang hari kalender Jakarta yang memuat `instant`, sebagai instant UTC. */
+const jakartaDayRangeUtc = (instant: Date) => {
+  const { date } = jakartaParts(instant);
+  const dayStart = new Date(`${date}T00:00:00+07:00`);
+  return { dayStart, dayEnd: new Date(dayStart.getTime() + 24 * 3_600_000) };
+};
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -193,9 +209,13 @@ export async function createAppointmentAtomic(params: CreateAppointmentParams) {
           ? Math.max(0, Math.min(params.travelBufferMin ?? 15, 120))
           : 0;
 
-      // Jam operasional (waktu lokal Jakarta)
+      // [E1/E4] Jam operasional dievaluasi dengan predikat yang SAMA dengan
+      // generator slot & pre-flight (`core/booking/rules`). Aturannya tidak
+      // berubah — layanan tetap wajib selesai sebelum `close_time`, dan cabang
+      // tanpa baris jam operasional tetap ditolak — yang berubah hanya: kini
+      // generator memakai rumus yang sama sehingga tidak lagi menawarkan slot
+      // yang pasti gagal di sini.
       const localStart = toJakartaLocal(scheduledAt);
-      const localEnd = toJakartaLocal(scheduledEndAt);
       const dow = localStart.getUTCDay(); // 0=Minggu .. 6=Sabtu (sama dgn extract(dow))
       const oh = await one(
         tx,
@@ -203,17 +223,11 @@ export async function createAppointmentAtomic(params: CreateAppointmentParams) {
             WHERE branch_id = ${params.branchId} AND day_of_week = ${dow}
             ORDER BY created_at DESC LIMIT 1`
       );
-      const sameDay =
-        localStart.getUTCFullYear() === localEnd.getUTCFullYear() &&
-        localStart.getUTCMonth() === localEnd.getUTCMonth() &&
-        localStart.getUTCDate() === localEnd.getUTCDate();
-      const startMin = localStart.getUTCHours() * 60 + localStart.getUTCMinutes();
-      const endMin = localEnd.getUTCHours() * 60 + localEnd.getUTCMinutes();
-      if (
-        !oh || !sameDay ||
-        startMin < timeToMinutes(String(oh.open_time)) ||
-        endMin > timeToMinutes(String(oh.close_time))
-      )
+      const window = resolveOperatingWindow(
+        oh ? { open_time: String(oh.open_time), close_time: String(oh.close_time) } : null
+      );
+      const hours = fitsOperatingWindow(scheduledAt, totalDuration, window);
+      if (!hours.ok)
         throw new ProcedureError('Jadwal berada di luar jam operasional cabang', '22023');
 
       // Cuti barber (overlap dgn buffer)
@@ -233,19 +247,50 @@ export async function createAppointmentAtomic(params: CreateAppointmentParams) {
       const queueLock = `appointment-queue:${params.branchId}:${params.barberId ?? 'unassigned'}`;
       await getLock(tx, queueLock);
       try {
-        const scheduleBlockStart = new Date(scheduledAt.getTime() - bufferMin * 60_000);
-        const scheduleBlockEnd = new Date(scheduledEndAt.getTime() + bufferMin * 60_000);
+        // [E5/E11] Blok okupansi dari definisi tunggal: minimal 2 jam, mengikuti
+        // durasi bila lebih panjang. Dulu prosedur menyimpan & membandingkan
+        // durasi layanan saja, sehingga dua order 30 menit berjarak 45 menit
+        // lolos di sini walau pre-check menolaknya.
+        const { start: scheduleBlockStart, end: scheduleBlockEnd } = computeScheduleBlock({
+          startAt: scheduledAt,
+          durationMin: totalDuration,
+          travelBufferMin: bufferMin
+        });
 
         if (params.barberId) {
+          // [E5] Kuota harian DI DALAM LOCK. Sebelumnya kuota hanya dicek
+          // pre-flight di luar transaksi, jadi dua request paralel bisa
+          // sama-sama lolos dan melewati batas 7 order/hari.
+          const { dayStart, dayEnd } = jakartaDayRangeUtc(scheduledAt);
+          const quota = await one<{ c: number }>(
+            tx,
+            sql`SELECT COUNT(*) AS c FROM appointments
+                WHERE barber_id = ${params.barberId}
+                  AND status NOT IN ('cancelled','no_show')
+                  AND scheduled_at >= ${toSqlUtc(dayStart)} AND scheduled_at < ${toSqlUtc(dayEnd)}`
+          );
+          if (Number(quota?.c ?? 0) >= BOOKING_CONFIG.maxDailyOrdersPerBarber)
+            throw new ProcedureError(
+              `Kuota harian penuh (maks ${BOOKING_CONFIG.maxDailyOrdersPerBarber} order/hari).`,
+              'P0001'
+            );
+
           // Pengganti EXCLUDE gist: tak boleh overlap dgn appointment aktif barber sama.
+          // [E10] Baris lama yang kolom `schedule_block_*`-nya NULL dulu TIDAK
+          // TERLIHAT oleh cek ini (booking ganda diterima secara senyap). Kini
+          // dipulihkan ke [scheduled_at, +2 jam) lewat COALESCE/GREATEST —
+          // sama dengan `blockOf()` di sisi TS.
+          const blockMin = BOOKING_CONFIG.barberBlockMinutes;
           const overlap = await one(
             tx,
             sql`SELECT 1 FROM appointments
                 WHERE barber_id = ${params.barberId} AND status IN ('pending','confirmed','in_queue','in_service')
-                  AND scheduled_at IS NOT NULL AND scheduled_end_at IS NOT NULL
-                  AND schedule_block_start_at IS NOT NULL AND schedule_block_end_at IS NOT NULL
-                  AND schedule_block_start_at < ${toSqlUtc(scheduleBlockEnd)}
-                  AND schedule_block_end_at > ${toSqlUtc(scheduleBlockStart)} LIMIT 1`
+                  AND scheduled_at IS NOT NULL
+                  AND COALESCE(schedule_block_start_at, scheduled_at) < ${toSqlUtc(scheduleBlockEnd)}
+                  AND GREATEST(
+                        COALESCE(schedule_block_end_at, scheduled_end_at, scheduled_at),
+                        DATE_ADD(COALESCE(schedule_block_start_at, scheduled_at), INTERVAL ${sql.raw(String(blockMin))} MINUTE)
+                      ) > ${toSqlUtc(scheduleBlockStart)} LIMIT 1`
           );
           if (overlap)
             throw new ProcedureError('Barber sudah memiliki appointment yang overlap pada jadwal tersebut', '23P01');
@@ -397,7 +442,17 @@ export async function transitionAppointmentStatusAtomic(params: TransitionParams
       throw new ProcedureError('Status appointment berubah oleh proses lain, muat ulang data terbaru', '40001');
     if (current.status === target) return current;
 
-    const allowed = (TRANSITIONS[current.status] ?? []).includes(target);
+    // [A4] Satu-satunya pintu keluar dari status terminal `cancelled`:
+    // menghidupkan kembali order yang dibatalkan sistem karena batas bayar,
+    // ketika pembayarannya ternyata masuk terlambat. Sengaja dibuat sesempit
+    // mungkin — hanya aktor sistem, hanya event ini, hanya cancelled→pending.
+    const isLateRevival =
+      params.actorType === 'system'
+      && eventType === 'PAYMENT_LATE_REVIVAL'
+      && current.status === 'cancelled'
+      && target === 'pending';
+
+    const allowed = isLateRevival || (TRANSITIONS[current.status] ?? []).includes(target);
     if (!allowed)
       throw new ProcedureError(`Transisi status ${current.status} ke ${target} tidak diizinkan`, '22023');
 
@@ -416,6 +471,8 @@ export async function transitionAppointmentStatusAtomic(params: TransitionParams
         !(['confirmed', 'in_queue'].includes(current.status) && target === 'no_show')
       )
         throw new ProcedureError('APPOINTMENT_NO_SHOW_TIMEOUT hanya berlaku untuk appointment confirmed/in_queue', '22023');
+      if (eventType === 'PAYMENT_LATE_REVIVAL' && !isLateRevival)
+        throw new ProcedureError('PAYMENT_LATE_REVIVAL hanya berlaku untuk cancelled → pending', '22023');
     }
 
     const now = toSqlUtc(new Date());
@@ -429,10 +486,18 @@ export async function transitionAppointmentStatusAtomic(params: TransitionParams
         updated_at = ${now},
         started_at = ${target === 'in_service' ? sql`COALESCE(started_at, ${now})` : sql`started_at`},
         completed_at = ${target === 'completed' ? sql`COALESCE(completed_at, ${now})` : sql`completed_at`},
-        cancellation_reason = ${isCancel ? reason : sql`cancellation_reason`},
+        cancellation_reason = ${
+          isCancel ? reason : isLateRevival ? sql`NULL` : sql`cancellation_reason`
+        },
         queue_position = ${isCancel ? sql`NULL` : sql`queue_position`},
         journey_status = ${
-          target === 'completed' ? 'completed' : isCancel ? 'cancelled' : sql`journey_status`
+          target === 'completed'
+            ? 'completed'
+            : isCancel
+              ? 'cancelled'
+              : isLateRevival
+                ? 'not_started'
+                : sql`journey_status`
         },
         customer_media_urls = ${mediaProvided ? JSON.stringify(params.customerMediaUrls) : sql`customer_media_urls`}
       WHERE id = ${params.appointmentId} AND version = ${params.expectedVersion}

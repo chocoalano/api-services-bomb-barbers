@@ -2,9 +2,10 @@ import { db } from '../../../lib/db';
 import { snakeKeys } from '../../../db/helpers';
 import { barbers, staffUsers, appointments, customers, appointmentServices, services } from '../../../db/schema';
 import { and, eq, isNull, inArray, gte, lte, notInArray, asc } from 'drizzle-orm';
-import { redis, getBarberStatusKey } from '../../../lib/redis';
+import { setBarberLiveStatus } from '../../../core/booking/presence.service';
+import { normalizeLiveStatus, BARBER_LIVE_STATUSES } from '../../../config/booking';
 
-const VALID_STATUSES = ['available', 'serving', 'on_break', 'offline'] as const;
+const VALID_STATUSES = BARBER_LIVE_STATUSES;
 type BarberStatus = typeof VALID_STATUSES[number];
 const ACTIVE_STATUSES = ['pending', 'confirmed', 'in_queue', 'in_service'];
 
@@ -49,18 +50,14 @@ export class AdminBarbersService {
       if (a.barber_id) countMap[a.barber_id] = (countMap[a.barber_id] ?? 0) + 1;
     });
 
-    return Promise.all(
-      barberList.map(async (b) => {
-        let liveStatus = b.live_status ?? 'offline';
-        try {
-          const redisStatus = await redis.get(getBarberStatusKey(b.id));
-          if (redisStatus) liveStatus = redisStatus;
-        } catch {
-          /* fallback ke DB */
-        }
-        return { ...b, live_status: liveStatus, active_appointment_count: countMap[b.id] ?? 0 };
-      })
-    );
+    // [E8] DB adalah sumber kebenaran; Redis hanya cache yang bisa basi. Dulu
+    // nilai Redis menimpa DB di sini, sehingga admin dan mesin booking bisa
+    // melihat status yang berbeda untuk barber yang sama.
+    return barberList.map((b) => ({
+      ...b,
+      live_status: normalizeLiveStatus(b.live_status),
+      active_appointment_count: countMap[b.id] ?? 0
+    }));
   }
 
   static async getBarberSchedule(barberId: string, branchId: string, date: string) {
@@ -140,13 +137,8 @@ export class AdminBarbersService {
       appointment_services: svcByAppt[a.id] ?? []
     }));
 
-    let liveStatus = barber.live_status ?? 'offline';
-    try {
-      const redisStatus = await redis.get(getBarberStatusKey(barberId));
-      if (redisStatus) liveStatus = redisStatus;
-    } catch {
-      /* fallback */
-    }
+    // [E8] Baca DB (otoritas), bukan Redis.
+    const liveStatus = normalizeLiveStatus(barber.live_status);
 
     return { barber: { ...barber, live_status: liveStatus }, date, appointments: appointmentsOut };
   }
@@ -170,10 +162,9 @@ export class AdminBarbersService {
       throw err;
     }
 
-    await db.update(barbers).set({ liveStatus: status }).where(eq(barbers.id, barberId));
+    // [E8] Satu pintu tulis (DB otoritas + Redis cache).
+    const canonical = await setBarberLiveStatus(barberId, status);
 
-    await redis.set(getBarberStatusKey(barberId), status);
-
-    return { barber_id: barberId, status };
+    return { barber_id: barberId, status: canonical };
   }
 }

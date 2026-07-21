@@ -177,6 +177,58 @@ export class AdminCatalogController {
       return createSuccessResponse('Barber diupdate', b);
     } catch(e: any) { set.status = e.status || 400; return createErrorResponse(e.message); }
   }
+  // [G2] Aktifkan/nonaktifkan akun kepster. Menonaktifkan LANGSUNG mencabut
+  // seluruh sesinya (token lama tidak bisa dipakai lagi, socket ditendang).
+  static async setBarberActive({ params, body, staffId, set }: any) {
+    try {
+      await assertBarberBranchScope(params.id, staffId);
+      const isActive = body?.is_active === true;
+
+      const barber = await AdminCatalogService.getBarberStaffUser(params.id);
+      if (!barber?.staff_user_id) {
+        set.status = 404;
+        return createErrorResponse('Kepster tidak ditemukan');
+      }
+
+      const result = await AdminCatalogService.setStaffActive(
+        barber.staff_user_id,
+        isActive
+      );
+      await AuditService.logAction(
+        'admin', staffId,
+        isActive ? 'ACTIVATE_BARBER' : 'SUSPEND_BARBER',
+        'staff_users', barber.staff_user_id,
+        null,
+        { is_active: isActive, reason: body?.reason ?? null },
+        barber.branch_id
+      );
+      return createSuccessResponse(
+        isActive ? 'Akun kepster diaktifkan' : 'Akun kepster dinonaktifkan',
+        result
+      );
+    } catch (e: any) { set.status = e.status || 400; return createErrorResponse(e.message); }
+  }
+
+  // [G2] Aktifkan/nonaktifkan akun pelanggan, dengan pencabutan sesi yang sama.
+  static async setCustomerActive({ params, body, staffId, set }: any) {
+    try {
+      const isActive = body?.is_active === true;
+      const result = await AdminCatalogService.setCustomerActive(params.id, isActive);
+      await AuditService.logAction(
+        'admin', staffId,
+        isActive ? 'ACTIVATE_CUSTOMER' : 'SUSPEND_CUSTOMER',
+        'customers', params.id,
+        null,
+        { is_active: isActive, reason: body?.reason ?? null },
+        null
+      );
+      return createSuccessResponse(
+        isActive ? 'Akun pelanggan diaktifkan' : 'Akun pelanggan dinonaktifkan',
+        result
+      );
+    } catch (e: any) { set.status = e.status || 400; return createErrorResponse(e.message); }
+  }
+
   static async deleteBarber({ params, staffId, set }: any) {
     try {
       await assertBarberBranchScope(params.id, staffId);

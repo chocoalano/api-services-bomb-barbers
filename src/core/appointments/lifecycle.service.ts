@@ -4,7 +4,7 @@ import { appointments } from '../../db/schema';
 import { eq } from 'drizzle-orm';
 import { asRpcResult } from '../../db/procedures';
 import { transitionAppointmentStatusAtomic } from '../../db/appointment-procedures';
-import { getBarberStatusKey, redis } from '../../lib/redis';
+import { setBarberLiveStatus } from '../booking/presence.service';
 import { emitAppointmentStatusChanged } from '../../lib/socket';
 import { RealtimeTrackingService } from '../tracking/service';
 
@@ -25,7 +25,13 @@ type TransitionMetadata = {
     role: 'customer' | 'barber' | 'admin' | 'system';
   };
   reason: string;
-  event_type?: 'STATUS_TRANSITION' | 'ORDER_ACCEPTANCE_TIMEOUT' | 'APPOINTMENT_NO_SHOW_TIMEOUT' | 'APPOINTMENT_AUTO_COMPLETE_TIMEOUT';
+  event_type?:
+    | 'STATUS_TRANSITION'
+    | 'ORDER_ACCEPTANCE_TIMEOUT'
+    | 'APPOINTMENT_NO_SHOW_TIMEOUT'
+    | 'APPOINTMENT_AUTO_COMPLETE_TIMEOUT'
+    // [A4] Menghidupkan kembali order yang dibatalkan sistem karena batas bayar.
+    | 'PAYMENT_LATE_REVIVAL';
   customer_media_urls?: string[];
 };
 
@@ -88,11 +94,14 @@ export class AppointmentLifecycleService {
       throw new Error('Status appointment berubah oleh proses lain, muat ulang data terbaru');
     }
 
+    // [E8] Dulu status ini hanya ditulis ke Redis, sedangkan booking membaca DB —
+    // barber yang sedang melayani tetap ditawarkan ke customer. Sekarang lewat
+    // satu pintu yang menulis DB (otoritas) + Redis (cache).
     if (updated.barber_id) {
       if (targetStatus === 'in_service') {
-        await redis.set(getBarberStatusKey(updated.barber_id), 'serving');
+        await setBarberLiveStatus(updated.barber_id, 'serving');
       } else if (['completed', 'cancelled', 'no_show'].includes(targetStatus)) {
-        await redis.set(getBarberStatusKey(updated.barber_id), 'available');
+        await setBarberLiveStatus(updated.barber_id, 'available');
       }
     }
 

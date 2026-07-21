@@ -4,13 +4,33 @@ import {
   services as servicesTable,
   branchOperatingHours,
   barbers as barbersTable,
+  staffUsers,
   appointments as appointmentsTable,
   barberTimeOff
 } from '../../../db/schema';
-import { and, eq, ne, isNull, inArray, notInArray, gte, lt, gt } from 'drizzle-orm';
+import { and, eq, ne, isNull, inArray, notInArray, gte, lt, gt, asc } from 'drizzle-orm';
 import { OpenOrderService } from '../../../core/appointments/open-order.service';
 import { sweepExpiredUnpaidPendingOrders } from '../../../core/appointments/service';
-import { BOOKING_CONFIG, jakartaParts, minutesToTime } from '../../../config/booking';
+import {
+  BOOKING_CONFIG,
+  INACTIVE_APPOINTMENT_STATUSES,
+  ACTIVE_APPOINTMENT_STATUSES,
+  addMinutes,
+  earliestBookableAt,
+  jakartaParts,
+  minutesToTime
+} from '../../../config/booking';
+import {
+  blockOf,
+  computeScheduleBlock,
+  evaluateBarber,
+  fitsOperatingWindow,
+  lastBookableStartMinutes,
+  rangesOverlap,
+  resolveOperatingWindow,
+  type BarberSnapshot,
+  type TimeRange
+} from '../../../core/booking/rules';
 import {
   BranchServiceAreaService,
   normalizeLocation
@@ -33,28 +53,15 @@ type AvailableSlotsQuery = {
   exclude_appointment_id?: string;
 };
 
-type AppointmentBlock = {
-  barber_id: string | null;
-  start: Date;
-  end: Date;
-};
-
-type TimeOffBlock = {
-  barber_id: string;
-  start: Date;
-  end: Date;
-};
-
 // [SPEC BOOKING] Semua konstanta operasional dari satu sumber: src/config/booking.ts.
 // Jam kerja default 08:00–22:00. Customer memilih jam per KELIPATAN 1 JAM
 // (08:00,09:00,…22:00 inklusif). Setiap order menempati blok 2 jam pada Barber.
-const ACTIVE_APPOINTMENT_STATUSES = ['pending', 'confirmed', 'in_queue', 'in_service'];
-const DEFAULT_OPEN_TIME = `${minutesToTime(BOOKING_CONFIG.operationalStartMinutes)}:00`;
-const DEFAULT_CLOSE_TIME = `${minutesToTime(BOOKING_CONFIG.operationalLastBookingMinutes)}:00`;
+//
+// [E1–E8] Seluruh PREDIKAT ("boleh/tidak") kini berasal dari
+// `core/booking/rules` — generator ini adalah dry-run dari penegak, bukan
+// implementasi paralel. Jangan menuliskan ulang perbandingan jam/kuota/blok di
+// berkas ini.
 const DEFAULT_SLOT_INTERVAL_MIN = BOOKING_CONFIG.customerBookingIntervalMinutes;
-const BARBER_BLOCK_MIN = BOOKING_CONFIG.barberBlockMinutes;
-const IDLE_BARBER_STATUSES = BOOKING_CONFIG.idleBarberStatuses;
-const MAX_ORDERS_PER_BARBER_PER_DAY = BOOKING_CONFIG.maxDailyOrdersPerBarber;
 const DEFAULT_TIMEZONE_OFFSET = BOOKING_CONFIG.timezoneOffset;
 
 const normalizeServiceIds = (value: string[] | string) => {
@@ -69,7 +76,7 @@ const normalizeServiceIds = (value: string[] | string) => {
 };
 
 const normalizeInterval = (value?: number | string) => {
-  // [REVISI B7] Default 120 menit (kelipatan 2 jam). Nilai lain tetap boleh
+  // [REVISI B7] Default 60 menit (kelipatan 1 jam). Nilai lain tetap boleh
   // dikirim eksplisit (5–120) untuk kebutuhan khusus.
   if (value === undefined || value === null || value === '') return DEFAULT_SLOT_INTERVAL_MIN;
 
@@ -115,20 +122,6 @@ const getDayOfWeek = (date: string) => {
   const [year, month, day] = date.split('-').map(Number);
   return new Date(Date.UTC(year, month - 1, day)).getUTCDay();
 };
-
-const normalizeTime = (time?: string | null) => {
-  if (!time) return null;
-  return time.length === 5 ? `${time}:00` : time;
-};
-
-const combineDateTime = (date: string, time: string) =>
-  new Date(`${date}T${normalizeTime(time)}${DEFAULT_TIMEZONE_OFFSET}`);
-
-const addMinutes = (date: Date, minutes: number) =>
-  new Date(date.getTime() + minutes * 60 * 1000);
-
-const overlaps = (startA: Date, endA: Date, startB: Date, endB: Date) =>
-  startA < endB && endA > startB;
 
 const isMissingRelationError = (error: any) => {
   const message = String(error?.message || '').toLowerCase();
@@ -187,26 +180,38 @@ export class AvailabilityService {
       .where(and(eq(branchOperatingHours.branchId, branchId), eq(branchOperatingHours.dayOfWeek, dayOfWeek)))
       .limit(1);
 
-    const openTime = normalizeTime(operatingHour?.open_time) || DEFAULT_OPEN_TIME;
-    const closeTime = normalizeTime(operatingHour?.close_time) || DEFAULT_CLOSE_TIME;
-    const openAt = combineDateTime(date, openTime);
-    const closeAt = combineDateTime(date, closeTime);
-
-    if (closeAt <= openAt) {
+    // [E4] Cabang tanpa baris jam operasional: prosedur atomik SELALU menolak,
+    // jadi generator berhenti berpura-pura punya slot. Fail-closed & terlihat
+    // di log, bukan daftar slot palsu yang semuanya gagal saat submit.
+    const window = resolveOperatingWindow(operatingHour ?? null);
+    const emptyResponse = (reason: string) => {
+      if (reason) logger.warn({ branchId, date, reason }, '[Slots] Daftar slot kosong');
       return {
         branch_id: branchId,
         date,
         timezone_offset: DEFAULT_TIMEZONE_OFFSET,
         service_ids: serviceIds,
+        barber_id: query.barber_id || null,
         fulfillment_type: fulfillmentType,
         travel_buffer_min: travelBufferMin,
         duration_min: durationMin,
         slot_interval_min: slotIntervalMin,
-        operating_hours: { open_time: openTime, close_time: closeTime },
-        slots: []
+        min_lead_minutes: BOOKING_CONFIG.minCustomerLeadMinutes,
+        min_bookable_at: earliestBookableAt(new Date()).toISOString(),
+        operating_hours: window
+          ? { open_time: minutesToTime(window.openMin), close_time: minutesToTime(window.closeMin) }
+          : null,
+        slots: [] as any[]
       };
+    };
+
+    if (!window) {
+      return emptyResponse('BRANCH_HOURS_MISSING');
     }
 
+    // [E3] Join staff_users: prosedur atomik mensyaratkan staff aktif, jadi
+    // barber dengan staff nonaktif tidak boleh muncul di daftar slot maupun
+    // terpilih auto-assign. `orderBy` membuat hasilnya deterministik (E6).
     const barberConds = [
       eq(barbersTable.branchId, branchId),
       // [SPEC BOOKING] Hanya barber yang sudah dikonfirmasi admin.
@@ -215,15 +220,19 @@ export class AvailabilityService {
     ];
     if (query.barber_id) barberConds.push(eq(barbersTable.id, query.barber_id));
 
-    const allBarbers = await db
+    const barberRows = await db
       .select({
         id: barbersTable.id,
         display_name: barbersTable.displayName,
         live_status: barbersTable.liveStatus,
-        approval_status: barbersTable.approvalStatus
+        approval_status: barbersTable.approvalStatus,
+        staff_is_active: staffUsers.isActive,
+        staff_deleted_at: staffUsers.deletedAt
       })
       .from(barbersTable)
-      .where(and(...barberConds));
+      .leftJoin(staffUsers, eq(barbersTable.staffUserId, staffUsers.id))
+      .where(and(...barberConds))
+      .orderBy(asc(barbersTable.id));
 
     let eligibleRadiusBarberIds: Set<string> | null = null;
     const rawLat = query.latitude ?? query.lat;
@@ -241,30 +250,20 @@ export class AvailabilityService {
       );
     }
 
-    // [SPEC BOOKING] "Open Order" = barber idle/online. Hanya barber idle yang
-    // ditawarkan ke customer (auto maupun manual).
-    const barbers = (allBarbers ?? []).filter((b: any) =>
-      IDLE_BARBER_STATUSES.includes(String(b.live_status ?? '')) &&
-      (!eligibleRadiusBarberIds || eligibleRadiusBarberIds.has(b.id))
-    );
+    const barbers: BarberSnapshot[] = (barberRows ?? []).map((row: any) => ({
+      id: row.id,
+      live_status: row.live_status,
+      approval_status: row.approval_status,
+      // leftJoin: barber tanpa baris staff dianggap aktif (data lama), sama
+      // seperti perlakuan katalog.
+      staff_active: row.staff_is_active !== false && row.staff_deleted_at == null
+    }));
 
-    if (!barbers || barbers.length === 0) {
-      return {
-        branch_id: branchId,
-        date,
-        timezone_offset: DEFAULT_TIMEZONE_OFFSET,
-        service_ids: serviceIds,
-        barber_id: query.barber_id || null,
-        fulfillment_type: fulfillmentType,
-        travel_buffer_min: travelBufferMin,
-        duration_min: durationMin,
-        slot_interval_min: slotIntervalMin,
-        operating_hours: { open_time: openTime, close_time: closeTime },
-        slots: []
-      };
+    if (barbers.length === 0) {
+      return emptyResponse('NO_BARBER_IN_BRANCH');
     }
 
-    const barberIds = barbers.map((barber: any) => barber.id);
+    const barberIds = barbers.map((barber) => barber.id);
     const dayStart = new Date(`${date}T00:00:00${DEFAULT_TIMEZONE_OFFSET}`);
     const dayEnd = addMinutes(dayStart, 24 * 60);
 
@@ -276,10 +275,34 @@ export class AvailabilityService {
       typeof query.exclude_appointment_id === 'string' ? query.exclude_appointment_id.trim() : '';
     const excludeAppointmentId = rawExcludeId.length > 0 ? rawExcludeId : null;
 
-    // Ambil semua order non-cancelled hari itu: untuk hitung kuota harian (7)
-    // sekaligus blok bentrok. Order completed di masa lalu tak akan overlap slot
-    // mendatang, jadi aman ikut dihitung untuk blok.
-    const appointments = await db
+    // [E7] Kuota & bentrok dihitung LINTAS CABANG, sama seperti penegak
+    // (`countBarberOrdersForDay`/`barberHasConflict`). Dulu generator memfilter
+    // per cabang sehingga menawarkan slot yang pasti ditolak BARBER_QUOTA_FULL.
+    // Rentang diperlebar 1 hari ke belakang agar blok order yang mulai sebelum
+    // tengah malam tetap terlihat.
+    const barberAppointments = await db
+      .select({
+        id: appointmentsTable.id,
+        barber_id: appointmentsTable.barberId,
+        scheduled_at: appointmentsTable.scheduledAt,
+        scheduled_end_at: appointmentsTable.scheduledEndAt,
+        schedule_block_start_at: appointmentsTable.scheduleBlockStartAt,
+        schedule_block_end_at: appointmentsTable.scheduleBlockEndAt,
+        status: appointmentsTable.status
+      })
+      .from(appointmentsTable)
+      .where(
+        and(
+          inArray(appointmentsTable.barberId, barberIds),
+          notInArray(appointmentsTable.status, INACTIVE_APPOINTMENT_STATUSES as any),
+          gte(appointmentsTable.scheduledAt, addMinutes(dayStart, -24 * 60).toISOString()),
+          lt(appointmentsTable.scheduledAt, dayEnd.toISOString()),
+          ...(excludeAppointmentId ? [ne(appointmentsTable.id, excludeAppointmentId)] : [])
+        )
+      );
+
+    // Order tanpa barber (belum di-assign) tetap memakan kapasitas cabang.
+    const genericAppointments = await db
       .select({
         id: appointmentsTable.id,
         barber_id: appointmentsTable.barberId,
@@ -293,44 +316,49 @@ export class AvailabilityService {
       .where(
         and(
           eq(appointmentsTable.branchId, branchId),
-          notInArray(appointmentsTable.status, ['cancelled', 'no_show']),
-          gte(appointmentsTable.scheduledAt, dayStart.toISOString()),
+          isNull(appointmentsTable.barberId),
+          notInArray(appointmentsTable.status, INACTIVE_APPOINTMENT_STATUSES as any),
+          gte(appointmentsTable.scheduledAt, addMinutes(dayStart, -24 * 60).toISOString()),
           lt(appointmentsTable.scheduledAt, dayEnd.toISOString()),
           ...(excludeAppointmentId ? [ne(appointmentsTable.id, excludeAppointmentId)] : [])
         )
       );
 
-    // [SPEC BOOKING] Kuota harian per barber (semua order non-cancelled hari itu).
+    // [SPEC BOOKING] Kuota harian per barber: semua order non-cancelled pada
+    // TANGGAL yang diminta (bukan rentang diperlebar di atas).
     const dayOrderCount = new Map<string, number>();
-    for (const appointment of appointments ?? []) {
-      if (!appointment.barber_id) continue;
+    for (const appointment of barberAppointments ?? []) {
+      if (!appointment.barber_id || !appointment.scheduled_at) continue;
+      const startedAt = new Date(appointment.scheduled_at);
+      if (startedAt < dayStart || startedAt >= dayEnd) continue;
       dayOrderCount.set(
         appointment.barber_id,
         (dayOrderCount.get(appointment.barber_id) ?? 0) + 1
       );
     }
-    const quotaExhausted = new Set<string>(
-      [...dayOrderCount.entries()]
-        .filter(([, count]) => count >= MAX_ORDERS_PER_BARBER_PER_DAY)
-        .map(([barberId]) => barberId)
-    );
 
-    // Blok barber untuk tiap order = minimal 2 jam sejak mulai.
-    const appointmentBlocks: AppointmentBlock[] = (appointments ?? [])
-      .filter((appointment: any) => Boolean(appointment.scheduled_at)
-        && ACTIVE_APPOINTMENT_STATUSES.includes(appointment.status))
-      .map((appointment: any) => {
-        const blockStart = new Date(appointment.schedule_block_start_at || appointment.scheduled_at);
-        const storedEnd = appointment.schedule_block_end_at || appointment.scheduled_end_at;
-        const minBlockEnd = addMinutes(blockStart, BARBER_BLOCK_MIN);
-        return {
-          barber_id: appointment.barber_id,
-          start: blockStart,
-          end: storedEnd && new Date(storedEnd) > minBlockEnd ? new Date(storedEnd) : minBlockEnd
-        };
-      });
+    // [E5/E10/E11] Blok okupansi dari satu definisi (`blockOf`), termasuk baris
+    // lama yang kolom `schedule_block_*`-nya kosong.
+    const blocksByBarber = new Map<string, TimeRange[]>();
+    for (const appointment of barberAppointments ?? []) {
+      if (!appointment.barber_id) continue;
+      if (!ACTIVE_APPOINTMENT_STATUSES.includes(appointment.status as any)) continue;
+      const block = blockOf(appointment as any);
+      if (!block) continue;
+      const list = blocksByBarber.get(appointment.barber_id) ?? [];
+      list.push(block);
+      blocksByBarber.set(appointment.barber_id, list);
+    }
 
-    let timeOffBlocks: TimeOffBlock[] = [];
+    const genericBlocks: TimeRange[] = (genericAppointments ?? [])
+      .filter((appointment: any) => ACTIVE_APPOINTMENT_STATUSES.includes(appointment.status))
+      .map((appointment: any) => blockOf(appointment))
+      .filter((block): block is TimeRange => block !== null);
+
+    const openAt = new Date(dayStart.getTime() + window.openMin * 60_000);
+    const closeAt = new Date(dayStart.getTime() + window.closeMin * 60_000);
+
+    const timeOffByBarber = new Map<string, TimeRange[]>();
     try {
       const timeOff = await db
         .select({
@@ -343,18 +371,17 @@ export class AvailabilityService {
         .where(
           and(
             inArray(barberTimeOff.barberId, barberIds),
-            lt(barberTimeOff.startAt, closeAt.toISOString()),
+            lt(barberTimeOff.startAt, addMinutes(closeAt, BOOKING_CONFIG.barberBlockMinutes).toISOString()),
             gt(barberTimeOff.endAt, openAt.toISOString())
           )
         );
 
-      timeOffBlocks = timeOff
-        .filter((item: any) => !item.status || ['approved', 'active'].includes(item.status))
-        .map((item: any) => ({
-          barber_id: item.barber_id,
-          start: new Date(item.start_at),
-          end: new Date(item.end_at)
-        }));
+      for (const item of timeOff) {
+        if (item.status && !['approved', 'active'].includes(item.status)) continue;
+        const list = timeOffByBarber.get(item.barber_id) ?? [];
+        list.push({ start: new Date(item.start_at), end: new Date(item.end_at) });
+        timeOffByBarber.set(item.barber_id, list);
+      }
     } catch (timeOffError: any) {
       if (!isMissingRelationError(timeOffError)) {
         throw new Error('Gagal mengambil data cuti barber');
@@ -366,54 +393,75 @@ export class AvailabilityService {
     const openOrderContext = await OpenOrderService.loadContext(branchId, date);
 
     const now = new Date();
+    // [SPEC BOOKING] Jeda minimal 6 jam: customer yang membuka aplikasi pukul
+    // 08:00 hanya boleh memilih 14:00 ke atas. `minStart` selalu > now sehingga
+    // filter "slot sudah lewat" ikut tercakup di sini.
+    const minStart = earliestBookableAt(now);
     const slots = [];
-    // [SPEC BOOKING] Slot per KELIPATAN 1 JAM, mulai 08:00 s/d 22:00 (inklusif).
-    // Tiap slot menempati blok 2 jam pada Barber (durasi layanan maksimal).
-    for (let slotStart = new Date(openAt); slotStart <= closeAt; slotStart = addMinutes(slotStart, slotIntervalMin)) {
+
+    // [E1] Batas atas loop = jam MULAI terakhir yang layanannya masih selesai
+    // sebelum jam tutup. Dulu loop berhenti di `closeAt` tanpa memperhitungkan
+    // durasi, sehingga slot 22:00 untuk layanan 60 menit ditawarkan lalu
+    // ditolak prosedur "di luar jam operasional".
+    const lastStartAt = new Date(
+      dayStart.getTime() + lastBookableStartMinutes(window, durationMin) * 60_000
+    );
+
+    for (let slotStart = new Date(openAt); slotStart <= lastStartAt; slotStart = addMinutes(slotStart, slotIntervalMin)) {
+      if (slotStart < minStart) continue;
+      // Sabuk pengaman: predikat yang sama dengan yang dipakai penegak.
+      if (!fitsOperatingWindow(slotStart, durationMin, window).ok) continue;
+
       const slotEnd = addMinutes(slotStart, durationMin);
-      // Blok Barber yang dibutuhkan order ini = 2 jam sejak mulai.
-      const requestedBlockStart = slotStart;
-      const requestedBlockEnd = addMinutes(slotStart, BARBER_BLOCK_MIN);
-      if (slotStart <= now) continue;
+      const requestedBlock = computeScheduleBlock({
+        startAt: slotStart,
+        durationMin,
+        travelBufferMin
+      });
 
       // Jam booking lokal ('HH:MM') slot ini → dipetakan ke periode Open Order.
       const { minutes: slotMinutes } = jakartaParts(slotStart);
       const slotBookingTime = minutesToTime(slotMinutes);
 
-      const unavailableBarberIds = new Set<string>(quotaExhausted);
-      let genericAppointmentCount = 0;
+      // [E2/E3/E5/E6/E7] Satu predikat untuk seluruh kandidat — persis yang
+      // dijalankan penegak saat submit.
+      const availableBarbers = barbers.filter((barber) =>
+        evaluateBarber({
+          barber,
+          requestedBlock,
+          dayOrderCount: dayOrderCount.get(barber.id) ?? 0,
+          existingBlocks: blocksByBarber.get(barber.id) ?? [],
+          timeOff: timeOffByBarber.get(barber.id) ?? [],
+          isOpenOrder: OpenOrderService.isBarberOpen(openOrderContext, barber.id, slotBookingTime),
+          withinRadius: eligibleRadiusBarberIds ? eligibleRadiusBarberIds.has(barber.id) : undefined
+        }).ok
+      );
 
-      for (const block of appointmentBlocks) {
-        if (!overlaps(requestedBlockStart, requestedBlockEnd, block.start, block.end)) continue;
-        if (block.barber_id) unavailableBarberIds.add(block.barber_id);
-        else genericAppointmentCount += 1;
-      }
+      const genericOverlap = genericBlocks.filter((block) =>
+        rangesOverlap(requestedBlock, block)
+      ).length;
 
-      for (const block of timeOffBlocks) {
-        if (overlaps(requestedBlockStart, requestedBlockEnd, block.start, block.end)) {
-          unavailableBarberIds.add(block.barber_id);
-        }
-      }
-
-      const availableBarbers = barbers.filter((barber: any) =>
-        !unavailableBarberIds.has(barber.id)
-        && OpenOrderService.isBarberOpen(openOrderContext, barber.id, slotBookingTime));
+      // Kapasitas efektif: barber bebas dikurangi order yang belum punya barber.
       const availableCount = query.barber_id
         ? availableBarbers.length
-        : Math.max(availableBarbers.length - genericAppointmentCount, 0);
+        : Math.max(availableBarbers.length - genericOverlap, 0);
 
       if (availableCount <= 0) continue;
 
       slots.push({
         start_at: slotStart.toISOString(),
         end_at: slotEnd.toISOString(),
-        // [SPEC BOOKING §6] Customer memilih JAM MULAI per 1 jam (08:00, 09:00, …,
-        // 22:00). Label = jam mulai saja; JANGAN turunkan dari durasi layanan
+        // [SPEC BOOKING §6] Customer memilih JAM MULAI per 1 jam (08:00, 09:00, …).
+        // Label = jam mulai saja; JANGAN turunkan dari durasi layanan
         // (durasi 45/60 menit tidak boleh mengubah kelipatan slot menjadi :45).
         time: slotBookingTime,
         label: slotBookingTime,
         available_barber_count: availableCount,
-        available_barber_ids: availableBarbers.slice(0, availableCount).map((barber: any) => barber.id)
+        // [E6] Seluruh barber yang benar-benar bebas — tanpa `slice()` yang dulu
+        // membuang kandidat berdasarkan urutan query yang tidak deterministik.
+        // `available_barber_count` tetap kapasitas efektif dan bisa lebih kecil
+        // dari panjang daftar ini bila ada order tanpa barber.
+        available_barber_ids: availableBarbers.map((barber) => barber.id)
       });
     }
 
@@ -427,7 +475,14 @@ export class AvailabilityService {
       travel_buffer_min: travelBufferMin,
       duration_min: durationMin,
       slot_interval_min: slotIntervalMin,
-      operating_hours: { open_time: openTime, close_time: closeTime },
+      // Jeda minimal booking + instant paling awal yang boleh dipilih. Dikirim
+      // agar klien dapat menjelaskan mengapa daftar slot kosong/terpotong.
+      min_lead_minutes: BOOKING_CONFIG.minCustomerLeadMinutes,
+      min_bookable_at: minStart.toISOString(),
+      operating_hours: {
+        open_time: minutesToTime(window.openMin),
+        close_time: minutesToTime(window.closeMin)
+      },
       slots
     };
   }

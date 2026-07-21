@@ -2,8 +2,8 @@ import { createSuccessResponse, createErrorResponse } from '../../shared/respons
 import { CommissionService } from './service';
 import { db } from '../../lib/db';
 import { snakeKeys } from '../../db/helpers';
-import { commissionEntries, commissionRules, barbers, barberDailyStats, dailyBranchSummaries } from '../../db/schema';
-import { and, eq, desc, sql } from 'drizzle-orm';
+import { commissionEntries, commissionRules, barbers, barberDailyStats, dailyBranchSummaries, appointments } from '../../db/schema';
+import { and, eq, desc, isNull, sql } from 'drizzle-orm';
 
 export class CommissionController {
   static async calculateCommission({ params, set }: any) {
@@ -14,6 +14,36 @@ export class CommissionController {
     } catch (err: any) {
       if (err.message.includes('Idempotency')) set.status = 409;
       else set.status = 400;
+      return createErrorResponse(err.message);
+    }
+  }
+
+  /**
+   * Laporan "order selesai tanpa komisi". Sejak komisi dicatat otomatis lewat job
+   * COMMISSION_CALCULATE, kegagalan permanen (mis. tidak ada aturan komisi aktif)
+   * tidak terlihat siapa pun. Endpoint ini membuatnya kelihatan agar bisa
+   * ditindaklanjuti — tanpa ini, temuan A1 hanya berpindah bentuk.
+   */
+  static async getMissingCommissions({ query, set }: any) {
+    try {
+      const limit = Math.min(Number(query?.limit) || 50, 200);
+      const rows = await db
+        .select({
+          appointment_id: appointments.id,
+          branch_id: appointments.branchId,
+          barber_id: appointments.barberId,
+          scheduled_at: appointments.scheduledAt,
+          updated_at: appointments.updatedAt
+        })
+        .from(appointments)
+        .leftJoin(commissionEntries, eq(commissionEntries.appointmentId, appointments.id))
+        .where(and(eq(appointments.status, 'completed'), isNull(commissionEntries.id)))
+        .orderBy(desc(appointments.updatedAt))
+        .limit(limit);
+
+      return createSuccessResponse('Order selesai yang belum memiliki komisi', snakeKeys(rows));
+    } catch (err: any) {
+      set.status = 500;
       return createErrorResponse(err.message);
     }
   }

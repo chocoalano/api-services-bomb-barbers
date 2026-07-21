@@ -131,6 +131,40 @@ export const adminCatalogDocs = {
       errors: commonMutationErrors
     })
   },
+  setBarberActive: {
+    body: t.Object({
+      is_active: t.Boolean({ description: 'true = aktifkan kembali, false = nonaktifkan (suspend)' }),
+      reason: t.Optional(t.String({ description: 'Alasan (opsional, dicatat pada audit log)' }))
+    }),
+    detail: adminDetail({
+      tag: ADMIN_TAGS.barbers,
+      summary: 'Aktifkan / Nonaktifkan Akun Kepster (HQ)',
+      description:
+        'Menonaktifkan akun kepster akan LANGSUNG mencabut seluruh sesinya: token lama tidak bisa dipakai lagi dan koneksi realtime-nya diputus dengan kode ACCOUNT_SUSPENDED. Mengaktifkan kembali tidak memulihkan sesi lama — kepster perlu masuk ulang.',
+      required: ['Authorization: Bearer <access_token>', "permission 'manage_barber'"],
+      optional: [],
+      successMessage: 'Akun kepster dinonaktifkan',
+      successData: { id: '0f2c...', is_active: false },
+      errors: commonMutationErrors
+    })
+  },
+  setCustomerActive: {
+    body: t.Object({
+      is_active: t.Boolean({ description: 'true = aktifkan kembali, false = nonaktifkan (suspend)' }),
+      reason: t.Optional(t.String({ description: 'Alasan (opsional, dicatat pada audit log)' }))
+    }),
+    detail: adminDetail({
+      tag: ADMIN_TAGS.barbers,
+      summary: 'Aktifkan / Nonaktifkan Akun Pelanggan (HQ)',
+      description:
+        'Sama seperti pada kepster: menonaktifkan akun pelanggan langsung mencabut seluruh sesinya dan memutus koneksi realtime-nya dengan kode ACCOUNT_SUSPENDED.',
+      required: ['Authorization: Bearer <access_token>', "permission 'manage_barber'"],
+      optional: [],
+      successMessage: 'Akun pelanggan dinonaktifkan',
+      successData: { id: '9a11...', is_active: false },
+      errors: commonMutationErrors
+    })
+  },
   listServices: {
     detail: adminDetail({
       tag: ADMIN_TAGS.services,

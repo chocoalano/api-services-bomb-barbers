@@ -76,7 +76,16 @@ export class CommissionService {
         .where(eq(payments.appointmentId, appointmentId))
     );
     
-    const payment = Array.isArray(apt.payments) ? apt.payments[0] : apt.payments;
+    // Komisi hanya untuk order yang benar-benar dikerjakan. Tanpa guard ini order
+    // lunas yang kemudian dibatalkan/no-show tetap bisa menghasilkan komisi.
+    if (apt.status !== 'completed') {
+      throw new Error('Komisi hanya dihitung untuk pesanan yang sudah selesai');
+    }
+
+    // Utamakan baris payment berstatus 'paid'. Satu attempt gagal yang tersimpan
+    // lebih dulu tidak boleh membuat order lunas dianggap belum dibayar.
+    const paymentsArr = Array.isArray(apt.payments) ? apt.payments : [apt.payments].filter(Boolean);
+    const payment = paymentsArr.find((p: any) => p?.status === 'paid') ?? paymentsArr[0];
     if (!payment || payment.status !== 'paid') throw new Error('Pesanan ini belum lunas dibayar');
 
     const barberId = apt.barbers?.id || apt.barber_id; 
@@ -178,7 +187,13 @@ export class CommissionService {
 
     if (rpcErr) {
       if (rpcErr.code === '23505' || /commission_entries_appointment_id_unique/.test(rpcErr.message || '')) {
-        throw new Error('Komisi untuk pesanan ini sudah pernah dihitung (Idempotency Protection)');
+        // Beri kode agar pemanggil otomatis (job COMMISSION_CALCULATE) dapat
+        // memperlakukan duplikat sebagai SUKSES, bukan kegagalan yang di-retry.
+        const dup = new Error(
+          'Komisi untuk pesanan ini sudah pernah dihitung (Idempotency Protection)'
+        ) as Error & { code?: string };
+        dup.code = 'COMMISSION_ALREADY_RECORDED';
+        throw dup;
       }
       throw new Error('Gagal menyimpan komisi: ' + rpcErr.message);
     }

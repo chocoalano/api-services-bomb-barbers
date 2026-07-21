@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { BOOKING_CONFIG } from '../src/config/booking';
+import { BOOKING_CONFIG, isIdleLiveStatus } from '../src/config/booking';
 
 /**
  * Delta "multi-order per customer dibatasi kapasitas barber idle+online".
@@ -16,8 +16,14 @@ describe('BOOKING_CONFIG.allowCustomerConcurrentOrders', () => {
     expect(BOOKING_CONFIG.allowCustomerConcurrentOrders).toBe(true);
   });
 
-  it('idle statuses = online+available (basis kapasitas idle+online)', () => {
-    expect(BOOKING_CONFIG.idleBarberStatuses).toEqual(['online', 'available']);
+  // [E8] Kamus status disatukan: 'online' bukan lagi nilai tersimpan, melainkan
+  // alias yang dinormalkan ke 'available' (lihat normalizeLiveStatus). Kapasitas
+  // idle karena itu diuji lewat predikatnya, bukan lewat isi array mentah.
+  it('idle = available (alias online tetap dikenali)', () => {
+    expect(BOOKING_CONFIG.idleBarberStatuses).toEqual(['available']);
+    expect(isIdleLiveStatus('online')).toBe(true);
+    expect(isIdleLiveStatus('available')).toBe(true);
+    expect(isIdleLiveStatus('on_break')).toBe(false);
   });
 
   it('setiap order menempati blok 2 jam (dasar overlap kapasitas)', () => {

@@ -1,7 +1,8 @@
 import { createSuccessResponse, createErrorResponse } from '../../shared/response';
 import { StaffAuthService } from './service';
 import { AuthSessionService } from '../auth/session.service';
-import { NON_EXPIRING_JWT_VERIFY_OPTIONS } from '../../middleware/auth';
+import { NON_EXPIRING_JWT_VERIFY_OPTIONS, withAccessTokenExpiry } from '../../middleware/auth';
+import { SessionError, SessionErrorCode } from '../auth/session-errors';
 import {
   AuthRateLimitError,
   AuthSecurityService,
@@ -58,12 +59,14 @@ export class StaffAuthController {
         refreshJti,
         metadata
       );
-      const accessToken = await jwtAccess.sign({
-        sub: staff.id,
-        role: 'staff',
-        sid: session.id,
-        jti: crypto.randomUUID()
-      });
+      const accessToken = await jwtAccess.sign(
+        withAccessTokenExpiry({
+          sub: staff.id,
+          role: 'staff',
+          sid: session.id,
+          jti: crypto.randomUUID()
+        })
+      );
       const refreshToken = await jwtRefresh.sign({
         sub: staff.id,
         role: 'staff',
@@ -131,7 +134,7 @@ export class StaffAuthController {
         typeof payload.sid !== 'string' ||
         typeof payload.jti !== 'string'
       ) {
-        throw new Error('Refresh token tidak valid');
+        throw SessionError.refreshInvalid();
       }
       const staff = await StaffAuthService.verifyRefresh(payload);
 
@@ -143,12 +146,14 @@ export class StaffAuthController {
         payload.jti,
         newRefreshJti
       );
-      const accessToken = await jwtAccess.sign({
-        sub: staff.id,
-        role: 'staff',
-        sid: payload.sid,
-        jti: crypto.randomUUID()
-      });
+      const accessToken = await jwtAccess.sign(
+        withAccessTokenExpiry({
+          sub: staff.id,
+          role: 'staff',
+          sid: payload.sid,
+          jti: crypto.randomUUID()
+        })
+      );
       const newRefreshToken = await jwtRefresh.sign({
         sub: staff.id,
         role: 'staff',
@@ -176,13 +181,27 @@ export class StaffAuthController {
         }
       });
     } catch (error: any) {
+      // Kode error dikirim apa adanya. Aplikasi HANYA melogout pengguna bila
+      // kodenya terminal; 429 dan error tanpa kode diperlakukan sebagai
+      // gangguan sementara. Jangan menambahkan kode terminal di sini tanpa
+      // benar-benar yakin sesinya memang mati.
       if (error instanceof AuthRateLimitError) {
         set.status = 429;
         set.headers['Retry-After'] = String(error.retryAfterSeconds);
-      } else {
-        set.status = 401;
+        return createErrorResponse(error.message);
       }
-      return createErrorResponse(error.message);
+      if (error instanceof SessionError) {
+        set.status = error.status;
+        return createErrorResponse(error.message, null, error.code);
+      }
+      // Verifikasi JWT gagal (tanda tangan salah/rusak) = token ini memang tidak
+      // akan pernah bisa dipakai lagi.
+      set.status = 401;
+      return createErrorResponse(
+        error.message,
+        null,
+        SessionErrorCode.REFRESH_TOKEN_INVALID
+      );
     }
   }
 

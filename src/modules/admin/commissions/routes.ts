@@ -12,6 +12,9 @@ export const adminCommissionRoutes = new Elysia({ prefix: '/api/v1/admin' })
     ...commissionDocs.calculateCommission,
     beforeHandle: requireBranchScopeResolved(appointmentBranchResolver)
   })
+  // Order selesai yang belum berkomisi — jaring pengaman bila job otomatis gagal
+  // permanen (mis. tidak ada aturan komisi aktif untuk barber/cabang tersebut).
+  .get('/commissions/missing', CommissionController.getMissingCommissions, commissionDocs.getMissingCommissions)
   .get('/appointments/:id/commission', CommissionController.getCommissionDetail, {
     ...commissionDocs.getCommissionDetail,
     beforeHandle: requireBranchScopeResolved(appointmentBranchResolver)

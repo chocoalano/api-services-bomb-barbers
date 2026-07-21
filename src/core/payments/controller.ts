@@ -8,9 +8,63 @@ import { and, eq, desc, type SQL } from 'drizzle-orm';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { emitNewOrder, emitAppointmentStatusChanged } from '../../lib/socket';
 import { TopupService } from '../wallets/topup.service';
+import {
+  enqueueCommissionCalculation,
+  schedulePaidOrderEscalation,
+  settleProviderFaultRefund
+} from '../../lib/queue';
+import { revivePaidCancelledOrder } from '../appointments/late-payment-revival.service';
 import { logger } from '../../lib/logger';
 
 const unwrapRelation = (value: any) => Array.isArray(value) ? value[0] : value;
+
+/**
+ * [A4] Tindak lanjut setelah sebuah pembayaran ditandai lunas: sesuaikan dengan
+ * status appointment-nya saat ini.
+ *
+ *  - `completed` → jadwalkan pencatatan komisi (pembayaran menyusul)
+ *  - `pending`   → jadwalkan eskalasi (order lunas tidak boleh menggantung)
+ *  - terminal    → coba hidupkan kembali; bila tidak layak, kembalikan dananya
+ *
+ * @returns true bila order dalam keadaan hidup (barber boleh diberi tahu).
+ */
+async function settlePaidAppointment(apt: {
+  id: string;
+  status: string;
+  scheduled_at?: string | null;
+}): Promise<boolean> {
+  if (apt.status === 'completed') {
+    await enqueueCommissionCalculation(apt.id);
+    return true;
+  }
+
+  if (apt.status === 'pending') {
+    await schedulePaidOrderEscalation(apt.id, apt.scheduled_at ?? null);
+    return true;
+  }
+
+  if (apt.status === 'cancelled' || apt.status === 'no_show') {
+    const revival = await revivePaidCancelledOrder(apt.id);
+    if (revival.action === 'revived') {
+      await schedulePaidOrderEscalation(apt.id, apt.scheduled_at ?? null);
+      return true;
+    }
+
+    // Tidak bisa dihidupkan → uang tidak boleh ditahan untuk layanan yang tidak
+    // akan pernah diberikan.
+    logger.warn(
+      { appointmentId: apt.id, reason: revival.reason },
+      '[Revival] Order tidak dapat dihidupkan, dana dikembalikan'
+    );
+    await settleProviderFaultRefund(apt.id, {
+      reason: 'Refund: pembayaran diterima setelah pesanan dibatalkan',
+      processedBy: null
+    });
+    return false;
+  }
+
+  return true;
+}
 
 // Muat invoice + payment + appointment + branch (pengganti embed bertingkat).
 async function loadInvoiceForReceipt(cond: SQL) {
@@ -240,7 +294,8 @@ export class CustomerPaymentController {
           customer_id: appointments.customerId,
           status: appointments.status,
           barber_id: appointments.barberId,
-          branch_id: appointments.branchId
+          branch_id: appointments.branchId,
+          scheduled_at: appointments.scheduledAt
         })
         .from(appointments)
         .where(eq(appointments.id, params.id))
@@ -318,9 +373,13 @@ export class CustomerPaymentController {
         timestamp: new Date().toISOString()
       });
 
+      const orderIsLive = await settlePaidAppointment(apt);
+
       // Notifikasi barber bahwa pembayaran telah dikonfirmasi — barber tetap harus
       // menerima order secara eksplisit melalui endpoint verify-and-accept.
-      if (apt.barber_id) {
+      // Order yang tidak berhasil dihidupkan TIDAK diberitahukan: dulu barber
+      // menerima "Order Baru" untuk pesanan yang tidak ada di antreannya.
+      if (orderIsLive && apt.barber_id) {
         emitNewOrder(apt.barber_id, {
           appointment_id: apt.id,
           timestamp: new Date().toISOString()
@@ -555,7 +614,8 @@ export class WebhookController {
               status: appointments.status,
               barber_id: appointments.barberId,
               branch_id: appointments.branchId,
-              customer_id: appointments.customerId
+              customer_id: appointments.customerId,
+              scheduled_at: appointments.scheduledAt
             })
             .from(appointments)
             .where(eq(appointments.id, payment.appointment_id))
@@ -574,7 +634,9 @@ export class WebhookController {
             });
           }
 
-          if (apt?.barber_id) {
+          const orderIsLive = apt ? await settlePaidAppointment(apt) : false;
+
+          if (orderIsLive && apt?.barber_id) {
             emitNewOrder(apt.barber_id, {
               appointment_id: payment.appointment_id,
               timestamp: new Date().toISOString()

@@ -6,14 +6,37 @@ import { db } from '../../lib/db';
 import { snakeKeys, toDbDate } from '../../db/helpers';
 import { barbers, appointments, payments, appointmentServices, services, branches, customers } from '../../db/schema';
 import { and, eq } from 'drizzle-orm';
-import { asRpcResult, refundPaymentToWallet } from '../../db/procedures';
-import { emitBarberLocation, emitWalletRefundCredited, emitAppointmentStatusChanged } from '../../lib/socket';
+import { settleProviderFaultRefund } from '../../lib/queue';
+import { emitBarberLocation, emitAppointmentStatusChanged } from '../../lib/socket';
 import { RealtimeTrackingService } from '../tracking/service';
 import { redis, getBarberStatusKey, getTrackingRouteKey, getTrackingCustomerKey } from '../../lib/redis';
+import { setBarberLiveStatus } from '../booking/presence.service';
 import { GatewayFactory } from '../payments/gateways/factory';
 import { PaymentService } from '../payments/service';
 
-const VALID_PRESENCE_STATUSES = ['online', 'offline', 'unavailable'] as const;
+// [E8] App barber tetap boleh mengirim istilah lamanya (kompatibilitas versi
+// lama yang sudah terpasang di HP barber); nilainya dinormalkan ke kamus
+// kanonik oleh `setBarberLiveStatus` sebelum disimpan.
+const VALID_PRESENCE_STATUSES = [
+  'online', 'offline', 'unavailable',
+  'available', 'on_break'
+] as const;
+
+/**
+ * [A6] Order ONLINE hanya boleh diterima bila pembayarannya sudah lunas.
+ *
+ * Filter visibilitas antrean saja tidak cukup — barber yang memegang
+ * `appointment_id` tetap dapat memanggil endpoint accept secara langsung.
+ * Order walk-in (dicatat admin di lokasi) tidak terpengaruh.
+ */
+async function isOnlineOrderUnpaid(appointmentId: string, source: string | null) {
+  if (source !== 'online_booking') return false;
+  const rows = await db
+    .select({ status: payments.status })
+    .from(payments)
+    .where(eq(payments.appointmentId, appointmentId));
+  return !rows.some((p) => p.status === 'paid');
+}
 
 async function resolveBarber(staffId: string) {
   const [barber] = await db.select({ id: barbers.id }).from(barbers).where(eq(barbers.staffUserId, staffId)).limit(1);
@@ -28,6 +51,7 @@ async function resolveAppointmentForBarber(appointmentId: string, barberId: stri
         customer_id: appointments.customerId,
         branch_id: appointments.branchId,
         status: appointments.status,
+        source: appointments.source,
         scheduled_at: appointments.scheduledAt,
         journey_status: appointments.journeyStatus,
         customer_media_urls: appointments.customerMediaUrls,
@@ -65,6 +89,15 @@ export class BarberAppointmentController {
       if (!apt) { set.status = 403; return createErrorResponse('Tidak dapat menerima pesanan barber lain'); }
       if (apt.status !== 'pending') {
         set.status = 400; return createErrorResponse('Pesanan hanya bisa diterima jika statusnya pending');
+      }
+
+      if (await isOnlineOrderUnpaid(params.id, apt.source ?? null)) {
+        set.status = 400;
+        return createErrorResponse(
+          'Pesanan online hanya dapat diterima setelah pembayarannya lunas',
+          null,
+          'ORDER_NOT_PAID'
+        );
       }
 
       // [REVISI B8] Tolak jika kepster sudah melampaui kuota harian (order ini dikecualikan).
@@ -299,76 +332,28 @@ export class BarberAppointmentController {
       const reason = (body?.reason ?? '').trim();
       if (!reason) { set.status = 400; return createErrorResponse('Alasan penolakan wajib diisi'); }
 
-      // Ambil data appointment lengkap (butuh customer_id untuk refund)
-      const [fullApt] = await db
-        .select({ id: appointments.id, customer_id: appointments.customerId })
-        .from(appointments)
-        .where(eq(appointments.id, params.id))
-        .limit(1);
-
-      // Cek apakah ada payment yang sudah lunas → perlu refund
-      const [payment] = await db
-        .select({ id: payments.id, status: payments.status, total_amount: payments.totalAmount, method: payments.method })
-        .from(payments)
-        .where(eq(payments.appointmentId, params.id))
-        .limit(1);
-
       // Batalkan appointment
       const res = await AppointmentService.updateAppointmentStatus(params.id, 'cancelled', {
         actor: { type: 'staff', id: staffId, role: 'barber' },
         reason: `Ditolak barber: ${reason}`
       });
 
-      // Refund ke wallet customer jika payment sudah 'paid' (bukan cash)
-      let walletCredited = false;
-      let refundAmount = 0;
-
-      const onlinePaymentMethods = ['qris', 'card', 'bank_transfer', 'ewallet'];
-      const isPaidOnline = payment &&
-        payment.status === 'paid' &&
-        onlinePaymentMethods.includes(payment.method ?? '');
-
-      if (isPaidOnline && fullApt?.customer_id) {
-        refundAmount = Number(payment.total_amount);
-
-        try {
-          // Transisi payment→refunded, catat refund, dan kredit wallet dalam SATU
-          // transaksi atomik. Bila ada langkah gagal, semua rollback sehingga tidak
-          // ada payment ter-refund tanpa wallet dikredit. (M6)
-          const { data: refundResult, error: refundErr } = await asRpcResult(() =>
-            refundPaymentToWallet({
-              paymentId: payment.id,
-              customerId: fullApt.customer_id as string,
-              amount: refundAmount,
-              reason: `Refund order ditolak barber - ${reason}`,
-              processedBy: staffId
-            })
-          );
-
-          if (refundErr) throw new Error(refundErr.message);
-
-          walletCredited = true;
-
-          // Notifikasi real-time ke customer app
-          emitWalletRefundCredited({
-            customer_id: fullApt.customer_id,
-            appointment_id: params.id,
-            amount: refundAmount,
-            new_balance: refundResult?.new_balance ?? 0
-          });
-        } catch (refundErr: any) {
-          logger.error({ err: refundErr, appointmentId: params.id }, '[rejectOrder] Gagal proses refund');
-          // Jangan gagalkan penolakan karena error refund — catat saja untuk follow-up manual
-        }
-      }
+      // Pengembalian dana dijalankan lewat helper bersama + job ber-retry.
+      // Sebelumnya kegagalan refund hanya di-log dan hilang; sekarang percobaan
+      // pertama dilakukan langsung (agar respons dapat melaporkan hasilnya) dan
+      // kegagalannya dilempar ke antrean untuk dicoba ulang.
+      const refund = await settleProviderFaultRefund(params.id, {
+        reason: `Refund order ditolak barber - ${reason}`,
+        processedBy: staffId
+      });
 
       return createSuccessResponse('Order berhasil ditolak', {
         ...res,
         status: 'rejected',
         raw_status: res.status,
         reject_reason: reason,
-        refund_amount: walletCredited ? refundAmount : 0,
-        wallet_credited: walletCredited
+        refund_amount: refund.amount,
+        wallet_credited: refund.credited
       });
     } catch (err: any) {
       return handleControllerError(err, set, 'barber.rejectOrder', { detail: false });
@@ -387,14 +372,37 @@ export class BarberAppointmentController {
         return createErrorResponse('No-show hanya bisa dicatat jika status confirmed atau in_queue');
       }
 
+      // Gerbang waktu: no-show tidak masuk akal sebelum jadwalnya tiba. Tanpa ini
+      // barber dapat mematikan booking besok yang sudah dibayar hanya dengan satu
+      // tekan, dan status no_show tidak punya jalan kembali.
+      if (apt.scheduled_at && new Date(apt.scheduled_at).getTime() > Date.now()) {
+        set.status = 400;
+        return createErrorResponse(
+          'No-show baru dapat dicatat setelah waktu jadwal terlewat',
+          null,
+          'NO_SHOW_TOO_EARLY'
+        );
+      }
+
       const res = await AppointmentService.updateAppointmentStatus(params.id, 'no_show', {
         actor: { type: 'staff', id: staffId, role: 'barber' },
         reason: 'Customer tidak hadir (dicatat oleh barber)'
       });
+
+      // Kesalahan penyedia vs customer memang abu-abu di sini, tetapi order sudah
+      // dibayar dan layanan tidak diberikan — dana dikembalikan ke dompet agar
+      // tidak ada uang tertahan tanpa layanan.
+      const refund = await settleProviderFaultRefund(params.id, {
+        reason: 'Refund order ditandai no-show',
+        processedBy: staffId
+      });
+
       return createSuccessResponse('Customer ditandai tidak hadir', {
         ...res,
         status: 'no_show',
-        raw_status: res.status
+        raw_status: res.status,
+        refund_amount: refund.amount,
+        wallet_credited: refund.credited
       });
     } catch (err: any) {
       return handleControllerError(err, set, 'barber.markNoShow', { detail: false });
@@ -412,11 +420,10 @@ export class BarberAppointmentController {
       const barber = await resolveBarber(staffId);
       if (!barber) { set.status = 403; return createErrorResponse('Profil barber tidak ditemukan'); }
 
-      await db.update(barbers).set({ liveStatus: status }).where(eq(barbers.id, barber.id));
+      // [E8] Satu pintu tulis: DB (otoritas) + Redis (cache), sudah dinormalkan.
+      const canonical = await setBarberLiveStatus(barber.id, status);
 
-      await redis.set(getBarberStatusKey(barber.id), status);
-
-      return createSuccessResponse('Status kehadiran berhasil diperbarui', { status });
+      return createSuccessResponse('Status kehadiran berhasil diperbarui', { status: canonical });
     } catch (err: any) {
       return handleControllerError(err, set, 'barber.setPresenceStatus', { detail: false });
     }

@@ -214,17 +214,12 @@ export class DashboardService {
       .select({ id: appointments.id, source: appointments.source, status: appointments.status, barber_id: appointments.barberId })
       .from(appointments)
       .where(and(eq(appointments.barberId, barberId), gte(appointments.createdAt, start), lt(appointments.createdAt, end)));
-    const commissions = await db
-      .select({ barber_share: commissionEntries.barberShare, tip_amount: commissionEntries.tipAmount })
-      .from(commissionEntries)
-      .innerJoin(appointments, eq(commissionEntries.appointmentId, appointments.id))
-      .where(and(eq(appointments.barberId, barberId), gte(commissionEntries.calculatedAt, start), lt(commissionEntries.calculatedAt, end)));
+    // Query komisi dihapus bersama field pendapatan — barber tidak diizinkan
+    // mengetahui nominalnya, jadi datanya tidak perlu diambil sama sekali.
 
     const completedApts = aptList.filter(a => a.status === 'completed');
     const pendingOrders = aptList.filter(a => BARBER_PENDING_STATUSES.includes(a.status)).length;
     const activeOrders = aptList.filter(a => BARBER_ACTIVE_STATUSES.includes(a.status)).length;
-    const barberEarning = (commissions || []).reduce((sum, c) => sum + Number(c.barber_share), 0);
-    const barberTip = (commissions || []).reduce((sum, c) => sum + Number(c.tip_amount), 0);
     const rating = Number(barber.rating_avg || 0);
     const currentOrder = await this.getCurrentBarberOrder(barberId);
 
@@ -236,11 +231,10 @@ export class DashboardService {
       current_order: currentOrder,
       total_appointments: aptList.length,
       total_completed: completedApts.length,
-      heads_count: completedApts.length,
-      // barber_share sudah mencakup porsi tip barber; beri nama eksplisit agar tidak ambigu
-      barber_share_including_tip: barberEarning,
-      tip_amount: barberTip,
-      total_earnings: barberEarning
+      heads_count: completedApts.length
+      // [KEBIJAKAN] Seluruh field nominal pendapatan sudah dilepas dari respons
+      // ini: barber tidak diizinkan mengetahui pendapatannya. Metrik kinerja
+      // (jumlah order, rating) tetap dikirim.
     };
   }
 

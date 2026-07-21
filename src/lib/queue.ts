@@ -8,6 +8,10 @@ import { eq, inArray } from 'drizzle-orm';
 import { logger } from './logger';
 import { io } from './socket';
 import { AppointmentLifecycleService } from '../core/appointments/lifecycle.service';
+import { CommissionService } from '../core/commissions/service';
+import { PaymentService } from '../core/payments/service';
+import { escalatePaidPendingOrder } from '../core/appointments/paid-order-escalation.service';
+import { refundAppointmentToWallet } from '../core/appointments/refund.service';
 
 export const APPOINTMENT_QUEUE = 'appointment_events';
 export const AUDIT_QUEUE = 'audit_events';
@@ -17,22 +21,36 @@ export const APPOINTMENT_NO_SHOW_TIMEOUT = 'APPOINTMENT_NO_SHOW_TIMEOUT';
 export const APPOINTMENT_AUTO_COMPLETE_TIMEOUT = 'APPOINTMENT_AUTO_COMPLETE_TIMEOUT';
 // [REVISI C3] Pengingat appointment (dikirim 60 menit sebelum jadwal).
 export const APPOINTMENT_REMINDER = 'APPOINTMENT_REMINDER';
+// Pencatatan komisi otomatis saat order selesai & lunas. Sebelumnya komisi HANYA
+// tercatat bila admin menembak endpoint manual, sehingga pendapatan barber tidak
+// pernah masuk pembukuan.
+export const COMMISSION_CALCULATE = 'COMMISSION_CALCULATE';
+// Pengembalian dana ke dompet customer untuk order yang gagal karena penyedia
+// (barber menolak / no-show / dibatalkan admin). Dijadikan job agar kegagalan
+// di-retry, bukan ditelan log seperti sebelumnya.
+export const REFUND_APPOINTMENT = 'REFUND_APPOINTMENT';
+// [B1] Eskalasi order LUNAS yang tidak kunjung diterima barber: dialihkan ke
+// barber lain, dan sebagai jaring terakhir dibatalkan + dikembalikan dananya.
+export const PAID_ORDER_ESCALATION = 'PAID_ORDER_ESCALATION';
 
 const parsePositiveInteger = (value: string | undefined, fallback: number) => {
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 };
 
-export const ORDER_ACCEPTANCE_TIMEOUT_MINUTES = parsePositiveInteger(
-  process.env.ORDER_ACCEPTANCE_TIMEOUT_MINUTES,
-  60
-);
 // Batas waktu pesanan online yang BELUM dibayar sebelum dibatalkan otomatis.
-// Order lunas TIDAK terpengaruh (lanjut ke antrean). Default 120 menit (2 jam).
+// Order lunas TIDAK terpengaruh (lanjut ke antrean). Default 60 menit (1 jam).
+//
+// Catatan: konstanta `ORDER_ACCEPTANCE_TIMEOUT_MINUTES` yang dulu ada di sini
+// sudah dihapus — namanya mirip, nilainya juga 60, tetapi tidak pernah dipakai
+// di mana pun sehingga berisiko diubah orang yang mengira itu batas bayar.
 export const UNPAID_ORDER_EXPIRY_MINUTES = parsePositiveInteger(
   process.env.UNPAID_ORDER_EXPIRY_MINUTES,
-  120
+  60
 );
+// [B1] Tenggat pengalihan dihitung MUNDUR dari jam jadwal, supaya order masih
+// sempat dikerjakan bila berhasil dipindahkan ke barber lain.
+export const PAID_ORDER_ESCALATION_STAGES_MINUTES_BEFORE = [60, 20];
 export const APPOINTMENT_NO_SHOW_GRACE_MINUTES = parsePositiveInteger(
   process.env.APPOINTMENT_NO_SHOW_GRACE_MINUTES,
   15
@@ -87,12 +105,139 @@ type AppointmentTimeoutInput = {
 
 const delayUntil = (value: Date) => Math.max(value.getTime() - Date.now(), 0);
 
+/**
+ * Jadwalkan pencatatan komisi untuk sebuah order. Dipanggil dari DUA pemicu:
+ * (1) order bertransisi ke `completed`, dan (2) pembayaran menjadi `paid`
+ * sementara order sudah `completed` — tanpa pemicu kedua, order yang selesai
+ * sebelum dana settle tidak akan pernah berkomisi.
+ *
+ * Aman dipanggil berkali-kali: `jobId` deterministik meredam duplikasi di level
+ * antrean, dan unique constraint `commission_entries_appointment_id_unique`
+ * menjaga di level data.
+ */
+export const enqueueCommissionCalculation = async (appointmentId: string) => {
+  if (!appointmentId) return;
+  try {
+    await appointmentQueue.add(
+      'commission_calculate',
+      { type: COMMISSION_CALCULATE, appointmentId },
+      { jobId: `commission-${appointmentId}`, removeOnComplete: true }
+    );
+  } catch (err: any) {
+    // Non-fatal: penyelesaian order tidak boleh gagal hanya karena antrean.
+    // Sweeper/percobaan berikutnya masih bisa menutupinya.
+    logger.error({ err, appointmentId }, '[Commission] Gagal menjadwalkan perhitungan komisi');
+  }
+};
+
+/**
+ * Jadwalkan pengembalian dana ke dompet customer. Dipakai jalur kesalahan
+ * penyedia (barber menolak, no-show, pembatalan admin).
+ */
+export const enqueueAppointmentRefund = async (params: {
+  appointmentId: string;
+  reason: string;
+  processedBy: string | null;
+}) => {
+  if (!params.appointmentId) return;
+  try {
+    await appointmentQueue.add(
+      'refund_appointment',
+      { type: REFUND_APPOINTMENT, ...params },
+      { jobId: `refund-${params.appointmentId}`, removeOnComplete: true }
+    );
+  } catch (err: any) {
+    logger.error({ err, appointmentId: params.appointmentId }, '[Refund] Gagal menjadwalkan refund');
+  }
+};
+
+/**
+ * Jalankan pengembalian dana kesalahan penyedia dengan jaring pengaman:
+ * percobaan pertama dilakukan langsung agar respons API dapat melaporkan
+ * hasilnya, dan bila gagal dilempar ke antrean untuk di-retry.
+ *
+ * TIDAK PERNAH melempar — pembatalan order tidak boleh gagal gara-gara refund,
+ * tetapi kegagalannya juga tidak boleh hilang seperti perilaku lama.
+ *
+ * Diletakkan di sini (bukan di refund.service.ts) supaya tidak ada impor
+ * melingkar antara modul antrean dan modul refund.
+ */
+export const settleProviderFaultRefund = async (
+  appointmentId: string,
+  opts: { reason: string; processedBy: string | null }
+) => {
+  try {
+    return await refundAppointmentToWallet(appointmentId, opts);
+  } catch (err: any) {
+    logger.error(
+      { err, appointmentId },
+      '[Refund] Percobaan langsung gagal, dijadwalkan ulang lewat antrean'
+    );
+    await enqueueAppointmentRefund({ appointmentId, ...opts });
+    return { credited: false, amount: 0, skippedReason: null as null };
+  }
+};
+
+/**
+ * [B1] Jadwalkan eskalasi untuk order yang baru saja lunas. Tiga tahap:
+ * dua kali percobaan pengalihan sebelum jadwal, lalu satu jaring terakhir
+ * sesudah jadwal + masa tenggang (batalkan + refund).
+ *
+ * Tenggat yang sudah terlewat dijalankan segera (delay 0) — order mendadak
+ * yang dibayar dekat jadwalnya tetap dapat kesempatan dialihkan (keputusan F1).
+ */
+export const schedulePaidOrderEscalation = async (
+  appointmentId: string,
+  scheduledAtIso: string | null | undefined
+) => {
+  if (!appointmentId || !scheduledAtIso) return;
+  const scheduledAt = new Date(scheduledAtIso);
+  if (Number.isNaN(scheduledAt.getTime())) return;
+
+  const stages = [
+    ...PAID_ORDER_ESCALATION_STAGES_MINUTES_BEFORE.map((minutesBefore, index) => ({
+      stage: index + 1,
+      finalStage: false,
+      at: new Date(scheduledAt.getTime() - minutesBefore * 60_000)
+    })),
+    {
+      stage: PAID_ORDER_ESCALATION_STAGES_MINUTES_BEFORE.length + 1,
+      finalStage: true,
+      at: new Date(scheduledAt.getTime() + APPOINTMENT_NO_SHOW_GRACE_MINUTES * 60_000)
+    }
+  ];
+
+  try {
+    await Promise.all(
+      stages.map((s) =>
+        appointmentQueue.add(
+          'paid_order_escalation',
+          {
+            type: PAID_ORDER_ESCALATION,
+            appointmentId,
+            finalStage: s.finalStage,
+            deadlineAt: s.at.toISOString()
+          },
+          {
+            delay: delayUntil(s.at),
+            jobId: `escalation-${appointmentId}-${s.stage}`,
+            removeOnComplete: true
+          }
+        )
+      )
+    );
+  } catch (err: any) {
+    logger.error({ err, appointmentId }, '[Escalation] Gagal menjadwalkan eskalasi order lunas');
+  }
+};
+
 export const scheduleAppointmentTimeouts = async (appointment: AppointmentTimeoutInput) => {
   const jobs = [];
 
   if (appointment.source === 'online_booking' && appointment.status === 'pending') {
     const createdAt = new Date(appointment.created_at || Date.now());
-    // Batalkan otomatis bila belum dibayar dalam 2 jam sejak dibuat.
+    // Batalkan otomatis bila belum dibayar dalam UNPAID_ORDER_EXPIRY_MINUTES
+    // (default 1 jam) sejak dibuat.
     const deadlineAt = new Date(
       createdAt.getTime() + UNPAID_ORDER_EXPIRY_MINUTES * 60_000
     );
@@ -246,6 +391,65 @@ export const processAppointmentJob = async (job: Pick<Job, 'data'>) => {
     return;
   }
 
+  // Pencatatan komisi otomatis. Duplikat diperlakukan sebagai sukses agar retry
+  // tidak menumpuk error; kegagalan lain dilempar supaya BullMQ me-retry.
+  if (type === COMMISSION_CALCULATE) {
+    if (appointment.status !== 'completed') return;
+    try {
+      await CommissionService.calculateCommission(appointmentId);
+      logger.info({ appointmentId }, '[Commission] Komisi tercatat otomatis');
+    } catch (err: any) {
+      if (err?.code === 'COMMISSION_ALREADY_RECORDED') return;
+      // Order selesai tapi belum lunas: biarkan pemicu pembayaran yang menangani,
+      // jangan habiskan retry untuk kondisi yang memang belum saatnya.
+      if (/belum lunas dibayar/i.test(err?.message ?? '')) return;
+      logger.error({ err, appointmentId }, '[Commission] Gagal mencatat komisi');
+      throw err;
+    }
+    return;
+  }
+
+  // Pengembalian dana untuk order yang gagal karena penyedia.
+  if (type === REFUND_APPOINTMENT) {
+    const outcome = await refundAppointmentToWallet(appointmentId, {
+      reason: job.data.reason ?? 'Pengembalian dana otomatis',
+      processedBy: job.data.processedBy ?? null
+    });
+    if (!outcome.credited) {
+      logger.info(
+        { appointmentId, reason: outcome.skippedReason },
+        '[Refund] Tidak ada dana yang perlu dikembalikan'
+      );
+    }
+    return;
+  }
+
+  // [B1] Order lunas yang tidak kunjung diterima barber.
+  if (type === PAID_ORDER_ESCALATION) {
+    const outcome = await escalatePaidPendingOrder(appointmentId, {
+      finalStage: job.data.finalStage === true
+    });
+
+    if (outcome.action !== 'exhausted') return;
+
+    // Tidak ada lagi yang bisa dialihkan → kesalahan penyedia: batalkan dan
+    // kembalikan dananya. Customer tidak boleh dibiarkan menunggu selamanya.
+    if (appointment.status !== 'pending') return;
+    await AppointmentLifecycleService.transition(appointmentId, 'cancelled', {
+      actor: { type: 'system', id: null, role: 'system' },
+      reason: 'Dibatalkan otomatis: tidak ada barber yang menerima pesanan berbayar ini'
+    });
+    await settleProviderFaultRefund(appointmentId, {
+      reason: 'Refund order berbayar yang tidak diterima barber',
+      processedBy: null
+    });
+    logger.warn(
+      { appointmentId, reason: outcome.reason },
+      '[Escalation] Order lunas dibatalkan & dana dikembalikan'
+    );
+    return;
+  }
+
   if (type === ORDER_ACCEPTANCE_TIMEOUT || type === 'AUTO_CANCEL_NO_SHOW') {
     // Job legacy AUTO_CANCEL_NO_SHOW diperlakukan sebagai acceptance timeout.
     // Appointment yang sudah confirmed tidak boleh dibatalkan oleh timeout ini.
@@ -253,7 +457,7 @@ export const processAppointmentJob = async (job: Pick<Job, 'data'>) => {
 
     // Order yang SUDAH dibayar tidak boleh dibatalkan — order lunas harus tetap
     // ada dan lanjut menunggu antrean. Hanya order yang belum lunas yang gugur
-    // setelah 2 jam.
+    // setelah batas UNPAID_ORDER_EXPIRY_MINUTES (default 1 jam).
     const pays = await db
       .select({ status: payments.status })
       .from(payments)
@@ -261,10 +465,15 @@ export const processAppointmentJob = async (job: Pick<Job, 'data'>) => {
     const isPaid = pays.some((p) => p.status === 'paid');
     if (isPaid) return;
 
+    // [A4] Rekonsiliasi terakhir ke gateway: pembayaran mungkin sudah lunas
+    // tetapi webhook-nya belum sampai. Bila ternyata lunas, order TIDAK
+    // dibatalkan.
+    if (await PaymentService.reconcilePendingPaymentFromGateway(appointmentId)) return;
+
     await AppointmentLifecycleService.transition(appointmentId, 'cancelled', {
       actor: { type: 'system', id: null, role: 'system' },
       event_type: ORDER_ACCEPTANCE_TIMEOUT,
-      reason: 'Order dibatalkan otomatis karena belum dibayar dalam 2 jam'
+      reason: `Order dibatalkan otomatis karena belum dibayar dalam ${UNPAID_ORDER_EXPIRY_MINUTES} menit`
     });
     return;
   }
@@ -276,6 +485,13 @@ export const processAppointmentJob = async (job: Pick<Job, 'data'>) => {
       actor: { type: 'system', id: null, role: 'system' },
       event_type: APPOINTMENT_NO_SHOW_TIMEOUT,
       reason: 'Customer tidak hadir sampai batas waktu setelah jadwal'
+    });
+
+    // Order lunas yang berakhir no-show tetap dikembalikan dananya — konsisten
+    // dengan jalur no-show yang ditandai barber.
+    await settleProviderFaultRefund(appointmentId, {
+      reason: 'Refund order no-show otomatis',
+      processedBy: null
     });
     return;
   }
@@ -307,6 +523,9 @@ export const processAppointmentJob = async (job: Pick<Job, 'data'>) => {
       event_type: APPOINTMENT_AUTO_COMPLETE_TIMEOUT,
       reason: 'Order otomatis diselesaikan setelah layanan selesai + masa tenggang'
     });
+    // Jalur ini memanggil lifecycle langsung (tidak lewat
+    // AppointmentService.updateAppointmentStatus), jadi komisi dijadwalkan di sini.
+    await enqueueCommissionCalculation(appointmentId);
   }
 };
 

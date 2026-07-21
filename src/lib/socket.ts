@@ -145,6 +145,9 @@ io.use(async (socket, next) => {
 
     socket.data.userId = payload.sub;
     socket.data.role = payload.role;
+    // Sesi disimpan agar socket yang sesinya dicabut bisa ditendang seketika,
+    // tanpa menunggu request HTTP berikutnya. (G2)
+    socket.data.sessionId = payload.sid;
     next();
   } catch (error) {
     logger.warn({ err: error, socketId: socket.id }, '[SocketAuth] Token tidak valid');
@@ -263,7 +266,47 @@ io.on('connection', async (socket: Socket) => {
   } else if (socket.data.barberId) {
     void socket.join(`barber:${socket.data.barberId}`);
   }
+  // Room per-akun & per-sesi khusus untuk pencabutan (G2).
+  void socket.join(`account:${role}:${userId}`);
+  if (socket.data.sessionId) {
+    void socket.join(`session:${socket.data.sessionId}`);
+  }
 });
+
+/**
+ * Tendang socket yang sesinya baru saja dicabut.
+ *
+ * Ini SATU-SATUNYA event socket yang boleh berujung pada layar login di
+ * aplikasi. Karena itu ia selalu membawa `code` (lihat `session-errors.ts`) —
+ * aplikasi mengabaikan `auth:revoked` tanpa kode terminal.
+ *
+ * @param sessionIds sesi yang dicabut. Kosong = seluruh sesi akun tersebut.
+ */
+export const disconnectRevokedSessions = async (params: {
+  userType: 'customer' | 'staff';
+  userId: string;
+  sessionIds?: string[];
+  code: string;
+  message: string;
+}) => {
+  const payload = { code: params.code, message: params.message };
+  const rooms =
+    params.sessionIds && params.sessionIds.length > 0
+      ? params.sessionIds.map((sid) => `session:${sid}`)
+      : [`account:${params.userType}:${params.userId}`];
+
+  for (const room of rooms) {
+    io.to(room).emit('auth:revoked', payload);
+    try {
+      const sockets = await io.in(room).fetchSockets();
+      for (const socket of sockets) socket.disconnect(true);
+    } catch (error) {
+      // Socket yang gagal ditendang bukan alasan menggagalkan pencabutan:
+      // sesinya sudah mati di database, request HTTP berikutnya pasti ditolak.
+      logger.warn({ err: error, room }, '[SocketRevoke] Gagal memutus socket');
+    }
+  }
+};
 
 export type AppointmentStatusEvent = {
   appointment_id: string;

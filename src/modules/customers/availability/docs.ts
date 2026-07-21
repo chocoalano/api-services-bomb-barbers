@@ -60,7 +60,7 @@ export const availabilityDocs = {
     detail: customerDetail({
       tag: CUSTOMER_TAGS.availability,
       summary: 'Lihat Slot Booking Tersedia',
-      description: 'Menghitung slot booking berdasarkan jam operasional cabang, total durasi layanan, appointment aktif, exclusion window barber, barber aktif, dan cuti barber. Untuk home_service, travel buffer diterapkan sebelum dan sesudah layanan agar slot frontend konsisten dengan RPC booking atomik. Jika jam operasional belum tersedia, backend menggunakan fallback 09:00–21:00 WIB. Slot yang sudah lewat tidak dikembalikan.',
+      description: 'Menghitung slot booking berdasarkan jam operasional cabang, total durasi layanan, appointment aktif, exclusion window barber, barber aktif, dan cuti barber. Untuk home_service, travel buffer diterapkan sebelum dan sesudah layanan agar slot frontend konsisten dengan RPC booking atomik. Jika jam operasional belum tersedia, backend menggunakan fallback 09:00–21:00 WIB. Slot yang sudah lewat tidak dikembalikan. Berlaku pula jeda minimal pemesanan (default 6 jam): hanya slot yang mulai pada atau sesudah `min_bookable_at` yang dikembalikan, sehingga customer yang membuka aplikasi pukul 08:00 memperoleh pilihan mulai 14:00.',
       required: ['path.id', 'query.date', 'query.service_ids (minimal satu UUID)'],
       optional: ['query.barber_id', 'query.slot_interval_min', 'query.fulfillment_type', 'query.travel_buffer_min', 'query.exclude_appointment_id'],
       successMessage: 'Slot jam tersedia berhasil diambil',
@@ -74,6 +74,8 @@ export const availabilityDocs = {
         travel_buffer_min: 15,
         duration_min: 75,
         slot_interval_min: 15,
+        min_lead_minutes: 360,
+        min_bookable_at: '2026-06-25T07:00:00.000Z',
         operating_hours: {
           open_time: '09:00:00',
           close_time: '21:00:00'

@@ -76,9 +76,10 @@ export const paymentDocs = {
       )
     }),
     body: t.Object({
-      method: t.String({
-        minLength: 1,
-        description: 'Metode pembayaran, misalnya qris, bank_transfer, ewallet, atau cash.',
+      // [A6] Customer hanya boleh memilih kanal online. `cash` khusus order
+      // walk-in yang dicatat admin — lihat CUSTOMER_ALLOWED_PAYMENT_METHODS.
+      method: t.UnionEnum(['qris', 'card', 'bank_transfer', 'ewallet'], {
+        description: 'Metode pembayaran online: qris, card, bank_transfer, atau ewallet.',
         examples: ['qris']
       }),
       provider: t.Optional(t.String({
@@ -93,12 +94,12 @@ export const paymentDocs = {
     }, {
       examples: [
         {
-          method: 'cash'
+          method: 'qris',
+          provider: 'midtrans'
         },
         {
-          method: 'qris',
-          provider: 'midtrans',
-          tip_amount: 20000
+          method: 'ewallet',
+          provider: 'midtrans'
         }
       ]
     }),

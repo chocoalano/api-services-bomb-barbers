@@ -5,11 +5,18 @@ import { appointments, barbers, services, payments, appointmentServices, appoint
 import { and, or, eq, ne, inArray, notInArray, gte, lte, lt, desc, asc, isNull, sql, type SQL } from 'drizzle-orm';
 import { asRpcResult, parseDbTime } from '../../db/procedures';
 import { createAppointmentAtomic } from '../../db/appointment-procedures';
-import { scheduleAppointmentTimeouts, scheduleAppointmentReminder, UNPAID_ORDER_EXPIRY_MINUTES } from '../../lib/queue';
+import {
+  scheduleAppointmentTimeouts,
+  scheduleAppointmentReminder,
+  enqueueCommissionCalculation,
+  enqueueAppointmentRefund,
+  UNPAID_ORDER_EXPIRY_MINUTES
+} from '../../lib/queue';
 import { getTrackingRouteKey, redis } from '../../lib/redis';
 import { logger } from '../../lib/logger';
 import { io, emitNewOrder } from '../../lib/socket';
 import { AppointmentLifecycleService } from './lifecycle.service';
+import { PaymentService } from '../payments/service';
 import { OpenOrderService } from './open-order.service';
 import {
   BranchServiceAreaService,
@@ -19,6 +26,21 @@ import {
   BOOKING_CONFIG,
   jakartaParts as configJakartaParts
 } from '../../config/booking';
+import {
+  blockOf,
+  computeScheduleBlock,
+  evaluateBarber,
+  evaluateSlotTiming,
+  rangesOverlap,
+  toClientCode,
+  type RuleVerdict,
+  type TimeRange
+} from '../booking/rules';
+import {
+  loadBarberContext,
+  loadBarberSnapshots,
+  loadOperatingWindow
+} from '../booking/eligibility.service';
 
 type CreatePayload = {
   branch_id: string;
@@ -197,6 +219,18 @@ const formatCustomerAppointment = (appointment: any) => {
     duration_min: service.duration_min
   }));
 
+  // Batas pembayaran hanya relevan untuk order online yang masih menunggu
+  // pembayaran. Order lunas, walk-in, atau yang sudah berjalan/selesai
+  // mengembalikan null agar aplikasi tidak menampilkan hitung mundur palsu.
+  const paymentDeadlineAt = (apt: any, paid: any) => {
+    if (paid) return null;
+    if (apt.status !== 'pending' || apt.source !== 'online_booking') return null;
+    if (!apt.created_at) return null;
+    const createdAt = new Date(apt.created_at);
+    if (Number.isNaN(createdAt.getTime())) return null;
+    return new Date(createdAt.getTime() + UNPAID_ORDER_EXPIRY_MINUTES * 60_000).toISOString();
+  };
+
   // Sumber kebenaran nominal tagihan ada di baris payment (subtotal + biaya
   // layanan + ongkir − diskon). Utamakan baris berstatus 'paid' agar tidak
   // tertutup attempt lama; fallback ke baris pertama, lalu ke subtotal layanan.
@@ -255,6 +289,12 @@ const formatCustomerAppointment = (appointment: any) => {
     product_amount: primaryPayment ? Number(primaryPayment.product_amount ?? 0) : 0,
     tip_amount: primaryPayment ? Number(primaryPayment.tip_amount ?? 0) : 0,
     payment_method: primaryPayment?.method ?? null,
+    // Batas waktu pembayaran: order online yang masih `pending` dan belum lunas
+    // akan dibatalkan otomatis pada waktu ini. Dikirim agar aplikasi dapat
+    // menampilkan hitung mundur tanpa menghitung sendiri dari `created_at` —
+    // dan agar hitungannya tidak bergantung pada jam perangkat.
+    payment_deadline_at: paymentDeadlineAt(appointment, paidPayment),
+    payment_expiry_minutes: UNPAID_ORDER_EXPIRY_MINUTES,
     // Rating & ulasan customer untuk order ini (null bila belum diulas).
     review: review ? {
       rating: review.rating ?? null,
@@ -349,10 +389,9 @@ export const formatBarberQueueOrder = async (appointment: any) => {
   const serviceNames = appointmentServices
     .map((item: any) => unwrapRelation(item.services)?.name)
     .filter(Boolean);
-  const price = appointmentServices.reduce(
-    (sum: number, item: any) => sum + Number(item.price_amount || 0),
-    0
-  ) * 0.4;
+  // [KEBIJAKAN] Nominal TIDAK dikirim ke barber. Sebelumnya di sini dihitung
+  // `Σ price_amount * 0.4` — angka komisi hardcoded yang juga tidak pernah cocok
+  // dengan `barber_pct` yang sebenarnya berlaku.
   const route = await readTrackingRoute(appointment.id);
 
   const fulfillmentType = appointment.fulfillment_type ?? 'in_store';
@@ -367,7 +406,6 @@ export const formatBarberQueueOrder = async (appointment: any) => {
     id: appointment.id,
     customer_name: customer?.full_name ?? 'Pelanggan walk-in',
     service_name: serviceNames.length > 0 ? serviceNames.join(' + ') : 'Layanan belum dipilih',
-    price,
     distance: formatDistance(route),
     eta: formatEta(appointment, route),
     eta_minutes: toNumberOrNull(route?.eta_minutes) ?? null,
@@ -401,16 +439,13 @@ const formatBarberHistoryOrder = (appointment: any) => {
   const serviceNames = appointmentServices
     .map((item: any) => unwrapRelation(item.services)?.name)
     .filter(Boolean);
-  const price = appointmentServices.reduce(
-    (sum: number, item: any) => sum + Number(item.price_amount || 0),
-    0
-  ) * 0.4;
+  // [KEBIJAKAN] Nominal tidak dikirim ke barber — lihat catatan pada
+  // formatBarberQueueOrder.
 
   return {
     id: appointment.id,
     customer_name: customer?.full_name ?? 'Pelanggan walk-in',
     service_name: serviceNames.length > 0 ? serviceNames.join(' + ') : 'Layanan belum dipilih',
-    price,
     status: appointment.status,
     fulfillment_type: appointment.fulfillment_type ?? 'in_store',
     service_address: appointment.service_address ?? null,
@@ -432,11 +467,9 @@ const formatBarberHistoryOrder = (appointment: any) => {
 //   tetap dapat melayani per jam (Barber berbeda mengisi jam berbeda).
 // - Auto-pick Barber idle yang membuka Open Order bila customer tidak memilih manual.
 // ============================================================================
-const WORK_OPEN_MINUTES = BOOKING_CONFIG.operationalStartMinutes;    // 08:00
-const WORK_CLOSE_MINUTES = BOOKING_CONFIG.operationalLastBookingMinutes; // 22:00
-const SLOT_INTERVAL_MINUTES = BOOKING_CONFIG.customerBookingIntervalMinutes; // kelipatan 1 jam
-const BARBER_BLOCK_MINUTES = BOOKING_CONFIG.barberBlockMinutes; // blok 2 jam per order
-const IDLE_BARBER_STATUSES = BOOKING_CONFIG.idleBarberStatuses;
+// [E1–E8] Jam kerja, interval slot, blok, dan status idle TIDAK lagi dibaca
+// langsung di sini — semuanya lewat `core/booking/rules` agar generator slot,
+// pre-flight, dan prosedur atomik memakai angka & predikat yang sama.
 const MAX_ORDERS_PER_BARBER_PER_DAY = BOOKING_CONFIG.maxDailyOrdersPerBarber;
 // Bila true (default), customer boleh punya >1 order aktif di jam yang sama;
 // kapasitasnya dibatasi jumlah barber idle+online (cek per-barber di bawah),
@@ -475,28 +508,45 @@ const configBookingTime = (scheduledAtIso: string) => {
 // di-default ke waktu sekarang yang hampir tidak pernah pas di menit :00,
 // sehingga aturan slot jam-bulat tidak boleh dipaksakan — cukup validasi
 // bahwa waktunya masih di dalam jam kerja (berfungsi sebagai cutoff).
-const assertWithinWorkingWindow = (scheduledAtIso: string, opts: { enforceSlot?: boolean } = {}) => {
-  const { enforceSlot = true } = opts;
+// [E1/E4] Jam operasional dibaca dari `branch_operating_hours` cabang yang
+// bersangkutan — bukan lagi konstanta 08:00–22:00 — dan layanan WAJIB SELESAI
+// sebelum jam tutup (keputusan klien 2026-07-21). Predikatnya sama persis
+// dengan yang dipakai generator slot & prosedur atomik.
+const assertSlotTiming = async (
+  branchId: string,
+  scheduledAtIso: string,
+  opts: { durationMin: number; enforceSlot?: boolean; enforceMinLead?: boolean }
+) => {
   const date = new Date(scheduledAtIso);
   if (Number.isNaN(date.getTime())) {
     throw makeError('scheduled_at tidak valid');
   }
-  const { minutes } = jakartaParts(date);
-  if (minutes < WORK_OPEN_MINUTES || minutes > WORK_CLOSE_MINUTES) {
-    throw makeError('Order hanya dapat dibuat pada jam kerja 08:00–22:00', 400, 'OUTSIDE_WORKING_HOURS');
-  }
-  if (enforceSlot && minutes % SLOT_INTERVAL_MINUTES !== 0) {
-    throw makeError('Jadwal harus pada slot kelipatan 1 jam (08:00, 09:00, … 22:00)', 400, 'INVALID_SLOT');
+
+  const window = await loadOperatingWindow(branchId, date);
+  const verdict = evaluateSlotTiming({
+    startAt: date,
+    durationMin: opts.durationMin,
+    window,
+    enforceSlot: opts.enforceSlot,
+    enforceMinLead: opts.enforceMinLead
+  });
+  if (!verdict.ok) {
+    throw makeError(verdict.message, 400, toClientCode(verdict.code));
   }
 };
 
-// Blok waktu barber untuk sebuah order: [start, start + 2 jam], minimal 2 jam
-// walau durasi layanan/ongkir lebih pendek (2 jam = durasi layanan maksimal).
-const barberBlockRange = (scheduledAtIso: string) => {
-  const start = new Date(scheduledAtIso);
-  const end = new Date(start.getTime() + BARBER_BLOCK_MINUTES * 60_000);
-  return { start, end };
-};
+// [E5/E11] Blok okupansi barber: minimal 2 jam, mengikuti durasi bila lebih
+// panjang (layanan gabungan >2 jam dulu hanya mengunci 2 jam). Satu definisi
+// dipakai generator, pre-flight, dan prosedur atomik.
+const barberBlockRange = (
+  scheduledAtIso: string,
+  opts: { durationMin?: number; travelBufferMin?: number } = {}
+): TimeRange =>
+  computeScheduleBlock({
+    startAt: new Date(scheduledAtIso),
+    durationMin: opts.durationMin ?? 0,
+    travelBufferMin: opts.travelBufferMin ?? 0
+  });
 
 // Rentang hari (Asia/Jakarta) untuk suatu waktu, sebagai ISO instant.
 const jakartaDayRange = (scheduledAtIso: string) => {
@@ -506,20 +556,30 @@ const jakartaDayRange = (scheduledAtIso: string) => {
   return { dayStart, dayEnd };
 };
 
+// [E12] Order yang dikecualikan dari perhitungan bisa lebih dari satu: saat
+// booking baru akan menggantikan order lama customer yang belum dibayar, order
+// itu harus sudah "tidak dihitung" SEBELUM benar-benar dibatalkan.
+const excludeCondition = (exclude?: string | string[] | null): SQL[] => {
+  if (!exclude) return [];
+  const ids = (Array.isArray(exclude) ? exclude : [exclude]).filter(Boolean);
+  if (ids.length === 0) return [];
+  return [notInArray(appointments.id, ids)];
+};
+
 // [REVISI B8] Hitung jumlah order aktif barber pada hari jadwal.
 const countBarberOrdersForDay = async (
   barberId: string,
   scheduledAtIso: string,
-  excludeAppointmentId?: string
+  excludeAppointmentId?: string | string[]
 ) => {
   const { dayStart, dayEnd } = jakartaDayRange(scheduledAtIso);
   const conds: SQL[] = [
     eq(appointments.barberId, barberId),
     notInArray(appointments.status, ['cancelled', 'no_show']),
     gte(appointments.scheduledAt, dayStart.toISOString()),
-    lt(appointments.scheduledAt, dayEnd.toISOString())
+    lt(appointments.scheduledAt, dayEnd.toISOString()),
+    ...excludeCondition(excludeAppointmentId)
   ];
-  if (excludeAppointmentId) conds.push(ne(appointments.id, excludeAppointmentId));
   const rows = await db.select({ count: sql<number>`count(*)` }).from(appointments).where(and(...conds));
   return Number(rows[0]?.count ?? 0);
 };
@@ -530,15 +590,15 @@ const barberHasConflict = async (
   barberId: string,
   start: Date,
   end: Date,
-  excludeAppointmentId?: string
+  excludeAppointmentId?: string | string[]
 ) => {
   const conds: SQL[] = [
     eq(appointments.barberId, barberId),
     inArray(appointments.status, ACTIVE_APPOINTMENT_STATUSES as any),
     gte(appointments.scheduledAt, new Date(start.getTime() - 24 * 3600_000).toISOString()),
-    lt(appointments.scheduledAt, new Date(end.getTime() + 24 * 3600_000).toISOString())
+    lt(appointments.scheduledAt, new Date(end.getTime() + 24 * 3600_000).toISOString()),
+    ...excludeCondition(excludeAppointmentId)
   ];
-  if (excludeAppointmentId) conds.push(ne(appointments.id, excludeAppointmentId));
   const data = snakeKeys(
     await db
       .select({
@@ -552,15 +612,11 @@ const barberHasConflict = async (
       .where(and(...conds))
   ) as any[];
 
+  // [E5/E10] Satu definisi blok (`blockOf`), termasuk baris lama yang kolom
+  // `schedule_block_*`-nya kosong.
   return data.some((apt: any) => {
-    const blockStart = new Date(apt.schedule_block_start_at || apt.scheduled_at);
-    const storedEnd = apt.schedule_block_end_at || apt.scheduled_end_at;
-    // Blok efektif barber minimal 2 jam sejak mulai.
-    const minBlockEnd = new Date(blockStart.getTime() + BARBER_BLOCK_MINUTES * 60_000);
-    const blockEnd = storedEnd && new Date(storedEnd) > minBlockEnd
-      ? new Date(storedEnd)
-      : minBlockEnd;
-    return blockStart < end && blockEnd > start;
+    const block = blockOf(apt);
+    return block ? rangesOverlap({ start, end }, block) : false;
   });
 };
 
@@ -570,15 +626,15 @@ const customerHasConflict = async (
   customerId: string,
   start: Date,
   end: Date,
-  excludeAppointmentId?: string
+  excludeAppointmentId?: string | string[]
 ) => {
   const conds: SQL[] = [
     eq(appointments.customerId, customerId),
     inArray(appointments.status, ACTIVE_APPOINTMENT_STATUSES as any),
     gte(appointments.scheduledAt, new Date(start.getTime() - 24 * 3600_000).toISOString()),
-    lt(appointments.scheduledAt, new Date(end.getTime() + 24 * 3600_000).toISOString())
+    lt(appointments.scheduledAt, new Date(end.getTime() + 24 * 3600_000).toISOString()),
+    ...excludeCondition(excludeAppointmentId)
   ];
-  if (excludeAppointmentId) conds.push(ne(appointments.id, excludeAppointmentId));
   const data = snakeKeys(
     await db
       .select({
@@ -593,13 +649,8 @@ const customerHasConflict = async (
   ) as any[];
 
   return data.some((apt: any) => {
-    const blockStart = new Date(apt.schedule_block_start_at || apt.scheduled_at);
-    const storedEnd = apt.schedule_block_end_at || apt.scheduled_end_at;
-    const minBlockEnd = new Date(blockStart.getTime() + BARBER_BLOCK_MINUTES * 60_000);
-    const blockEnd = storedEnd && new Date(storedEnd) > minBlockEnd
-      ? new Date(storedEnd)
-      : minBlockEnd;
-    return blockStart < end && blockEnd > start;
+    const block = blockOf(apt);
+    return block ? rangesOverlap({ start, end }, block) : false;
   });
 };
 
@@ -611,7 +662,11 @@ const customerHasConflict = async (
 // customer boleh punya beberapa order terjadwal ke depan (dibayar/diedit belakangan);
 // hanya order lampau (scheduled_at <= now) atau tanpa jadwal yang direplace.
 // Mengembalikan daftar id yang dibatalkan agar UI bisa memberi tahu customer.
-const cancelReplaceableUnpaidOrders = async (customerId: string): Promise<string[]> => {
+// [E12] Dipisah dari pembatalannya: pemanggil MENCARI dulu (murni baca), lalu
+// mengecualikan id-id ini dari cek konflik/kuota, dan baru MEMBATALKAN setelah
+// seluruh validasi lolos. Dulu pembatalan dijalankan lebih dulu, sehingga
+// booking yang akhirnya gagal 409 tetap menghanguskan order pending customer.
+const findReplaceableUnpaidOrderIds = async (customerId: string): Promise<string[]> => {
   const data = await db
     .select({
       id: appointments.id,
@@ -625,7 +680,7 @@ const cancelReplaceableUnpaidOrders = async (customerId: string): Promise<string
   if (!data.length) return [];
 
   const now = Date.now();
-  const cancelled: string[] = [];
+  const replaceable: string[] = [];
   for (const apt of data as any[]) {
     if (apt.source !== 'online_booking') continue;
     const isPaid = apt.payStatus === 'paid';
@@ -635,15 +690,24 @@ const cancelReplaceableUnpaidOrders = async (customerId: string): Promise<string
     if (scheduledAt && !Number.isNaN(scheduledAt.getTime()) && scheduledAt.getTime() > now) {
       continue;
     }
+    replaceable.push(apt.id);
+  }
+  return replaceable;
+};
+
+/** Batalkan order yang sudah dipastikan boleh digantikan (lihat fungsi di atas). */
+const cancelReplacedOrders = async (appointmentIds: string[]): Promise<string[]> => {
+  const cancelled: string[] = [];
+  for (const id of appointmentIds) {
     try {
-      await AppointmentLifecycleService.transition(apt.id, 'cancelled', {
+      await AppointmentLifecycleService.transition(id, 'cancelled', {
         actor: { type: 'system', id: null, role: 'system' },
         reason: 'Dibatalkan otomatis: customer membuat booking baru & order ini belum dibayar'
       });
-      cancelled.push(apt.id);
+      cancelled.push(id);
     } catch (err: any) {
       // Non-fatal: kegagalan membatalkan satu order tidak boleh memblokir booking baru.
-      logger.error({ err, appointmentId: apt.id }, '[AutoReplace] Gagal membatalkan order');
+      logger.error({ err, appointmentId: id }, '[AutoReplace] Gagal membatalkan order');
     }
   }
   return cancelled;
@@ -683,6 +747,9 @@ export const sweepExpiredUnpaidPendingOrders = async (
   for (const apt of data as any[]) {
     const isPaid = apt.payStatus === 'paid';
     if (isPaid) continue;
+    // [A4] Sebelum membatalkan, pastikan pembayarannya memang belum masuk.
+    // Customer bisa saja sudah membayar tetapi webhook-nya terlambat tiba.
+    if (await PaymentService.reconcilePendingPaymentFromGateway(apt.id)) continue;
     try {
       await AppointmentLifecycleService.transition(apt.id, 'cancelled', {
         actor: { type: 'system', id: null, role: 'system' },
@@ -721,43 +788,56 @@ const lastCompletedAt = async (barberId: string): Promise<number | null> => {
 const pickBestAvailableBarber = async (
   branchId: string,
   scheduledAtIso: string,
-  eligibleBarberIds?: string[]
+  eligibleBarberIds?: string[],
+  // [B1] Barber yang tidak boleh dipilih — dipakai saat mengalihkan order lunas
+  // yang tidak kunjung diterima, agar tidak kembali ke barber yang sama.
+  excludeBarberIds?: string[],
+  opts: {
+    durationMin?: number;
+    travelBufferMin?: number;
+    /** Order yang tidak boleh ikut dihitung (mis. order lama yang akan diganti). */
+    excludeAppointmentIds?: string[];
+  } = {}
 ): Promise<string> => {
-  const barberRows = await db
-    .select({ id: barbers.id, live_status: barbers.liveStatus, approval_status: barbers.approvalStatus })
-    .from(barbers)
-    .where(
-      and(
-        eq(barbers.branchId, branchId),
-        // [REVISI C1] Auto-pick hanya barber yang sudah dikonfirmasi admin.
-        eq(barbers.approvalStatus, 'approved'),
-        isNull(barbers.deletedAt)
-      )
-    );
-
-  const idleBarbers = barberRows.filter((b: any) =>
-    b.approval_status === 'approved' &&
-    IDLE_BARBER_STATUSES.includes(String(b.live_status ?? '')) &&
-    (!eligibleBarberIds || eligibleBarberIds.includes(b.id))
+  // [E3] Snapshot menyertakan status staff — auto-pick dulu tidak mengeceknya
+  // sehingga bisa memilih barber yang staff-nya sudah dinonaktifkan (404).
+  const snapshots = (await loadBarberSnapshots(branchId)).filter(
+    (barber) =>
+      (!eligibleBarberIds || eligibleBarberIds.includes(barber.id)) &&
+      (!excludeBarberIds || !excludeBarberIds.includes(barber.id))
   );
-  if (idleBarbers.length === 0) {
+  if (snapshots.length === 0) {
     throw makeError(NO_BARBER_MESSAGE, 409, 'NO_BARBER_AVAILABLE');
   }
 
-  const { start, end } = barberBlockRange(scheduledAtIso);
+  const requestedBlock = barberBlockRange(scheduledAtIso, opts);
+  const scheduledAt = new Date(scheduledAtIso);
 
   // [SPEC BOOKING §11] Barber hanya dipertimbangkan bila membuka Open Order pada
   // periode yang mencakup jam booking. Muat konteks sekali untuk seluruh kandidat.
   const openOrderContext = await OpenOrderService.loadContextForIso(branchId, scheduledAtIso);
   const bookingTime = configBookingTime(scheduledAtIso);
+  // [E2/E7] Kuota, blok, dan CUTI dimuat sekali untuk semua kandidat (dulu satu
+  // query per kandidat, dan cuti tidak dimuat sama sekali).
+  const context = await loadBarberContext(
+    snapshots.map((barber) => barber.id),
+    scheduledAt,
+    { excludeAppointmentIds: opts.excludeAppointmentIds }
+  );
 
-  // Kumpulkan kandidat yang lolos Open Order, kuota & bentrok, beserta metrik prioritas.
+  // Kandidat = yang lolos evaluator yang sama dengan generator & prosedur.
   const candidates: { id: string; orders: number; lastDone: number | null }[] = [];
-  for (const barber of idleBarbers) {
-    if (!OpenOrderService.isBarberOpen(openOrderContext, barber.id, bookingTime)) continue;
-    const orders = await countBarberOrdersForDay(barber.id, scheduledAtIso);
-    if (orders >= MAX_ORDERS_PER_BARBER_PER_DAY) continue;
-    if (await barberHasConflict(barber.id, start, end)) continue;
+  for (const barber of snapshots) {
+    const orders = context.dayOrderCount.get(barber.id) ?? 0;
+    const verdict = evaluateBarber({
+      barber,
+      requestedBlock,
+      dayOrderCount: orders,
+      existingBlocks: context.blocks.get(barber.id) ?? [],
+      timeOff: context.timeOff.get(barber.id) ?? [],
+      isOpenOrder: OpenOrderService.isBarberOpen(openOrderContext, barber.id, bookingTime)
+    });
+    if (!verdict.ok) continue;
     candidates.push({ id: barber.id, orders, lastDone: await lastCompletedAt(barber.id) });
   }
 
@@ -1095,31 +1175,43 @@ export class AppointmentService {
         eligibleBarberIds = serviceArea.eligibleBarbers.map((barber) => barber.id);
       }
 
-      // Jam kerja 08:00–22:00 + slot kelipatan 1 jam. Juga berfungsi sebagai
-      // cutoff: order on-demand yang dibuat di luar jam kerja akan ditolak.
-      // Slot jam-bulat hanya divalidasi bila customer menjadwalkan eksplisit.
-      assertWithinWorkingWindow(scheduledAt, { enforceSlot: !isOnDemand });
+      // [E1/E4] Jam operasional cabang + slot kelipatan 1 jam + jeda minimal,
+      // dievaluasi dengan predikat yang sama seperti generator slot. Layanan
+      // wajib SELESAI sebelum jam tutup, jadi durasi ikut diperhitungkan.
+      // Slot jam-bulat & jeda minimal hanya untuk jadwal eksplisit; order
+      // on-demand/ASAP dijadwalkan ke waktu sekarang yang hampir tak pernah
+      // jatuh di menit :00.
+      const durationMin = await sumServiceDurations(payload.service_ids);
+      await assertSlotTiming(payload.branch_id, scheduledAt, {
+        durationMin,
+        enforceSlot: !isOnDemand,
+        enforceMinLead: !isOnDemand
+      });
 
       // [SELF-HEAL] Bersihkan order kedaluwarsa & belum dibayar di cabang ini
       // (fallback bila worker mati) agar slot/kuota barber yang sudah "hangus"
-      // tidak ikut memblokir booking baru. Non-fatal: jangan sampai menghambat booking.
+      // tidak ikut memblokir booking baru. Aman dijalankan sebelum validasi:
+      // yang dibatalkan hanya order yang memang sudah lewat tenggat, bukan
+      // milik booking ini. Non-fatal.
       try {
         await sweepExpiredUnpaidPendingOrders({ branchId: payload.branch_id });
       } catch (err: any) {
         logger.error({ err, branchId: payload.branch_id }, '[Sweep] Gagal membersihkan order kedaluwarsa saat booking');
       }
 
-      // [AUTO-REPLACE] Bebaskan order lama customer yang BELUM DIBAYAR sebelum
-      // cek konflik/kuota. Karena semua cek di bawah mengabaikan status
-      // 'cancelled', membatalkan di sini otomatis melepas konflik slot customer,
-      // blok & kuota barber — sehingga booking baru tidak terblokir oleh order
-      // customer sendiri yang belum dibayar. Dilakukan setelah validasi jam kerja
-      // agar order lama tidak terlanjur dibatalkan bila jam yang diminta invalid.
-      if (payload.customer_id) {
-        replacedAppointmentIds = await cancelReplaceableUnpaidOrders(payload.customer_id);
-      }
+      // [AUTO-REPLACE + E12] Order lama customer yang belum dibayar hanya
+      // DICARI di sini, belum dibatalkan — id-nya dikecualikan dari seluruh cek
+      // di bawah sehingga tetap tidak memblokir booking baru. Pembatalannya
+      // dilakukan setelah semua validasi lolos, agar booking yang gagal 409
+      // tidak ikut menghanguskan order pending customer.
+      const replaceableIds = payload.customer_id
+        ? await findReplaceableUnpaidOrderIds(payload.customer_id)
+        : [];
 
-      const { start: blockStart, end: blockEnd } = barberBlockRange(scheduledAt);
+      const { start: blockStart, end: blockEnd } = barberBlockRange(scheduledAt, {
+        durationMin,
+        travelBufferMin
+      });
 
       // Customer boleh punya >1 order aktif di jam yang sama SELAMA masih ada
       // barber idle+online (dibatasi cek per-barber/pickBestAvailableBarber di
@@ -1127,7 +1219,7 @@ export class AppointmentService {
       // dimatikan (ALLOW_CUSTOMER_CONCURRENT_ORDERS=false).
       if (!ALLOW_CUSTOMER_CONCURRENT_ORDERS
         && payload.customer_id
-        && await customerHasConflict(payload.customer_id, blockStart, blockEnd)) {
+        && await customerHasConflict(payload.customer_id, blockStart, blockEnd, replaceableIds)) {
         throw makeError(
           'Anda sudah memiliki booking aktif pada jam tersebut. Silakan pilih jam lain.',
           409,
@@ -1136,29 +1228,53 @@ export class AppointmentService {
       }
 
       if (resolvedBarberId) {
-        // Manual: Barber harus membuka Open Order pada periode ini, belum penuh,
-        // & tidak bentrok pada blok 2 jam.
-        if (!(await OpenOrderService.isBarberOpenForIso(resolvedBarberId, payload.branch_id, scheduledAt))) {
-          throw makeError('Barber tidak tersedia pada jam tersebut.', 409, 'BARBER_NOT_OPEN');
+        // [E2/E3/E5/E7] Manual: satu evaluator, sama dengan generator slot &
+        // auto-pick — termasuk cuti dan status staff yang dulu hanya dicek
+        // prosedur (gagal 404/P0001 setelah slot terlanjur ditawarkan).
+        const [snapshot] = await loadBarberSnapshots(payload.branch_id, {
+          barberId: resolvedBarberId
+        });
+        if (!snapshot) {
+          throw makeError('Barber tidak ditemukan pada cabang ini.', 404, 'NO_BARBER_AVAILABLE');
         }
-        const count = await countBarberOrdersForDay(resolvedBarberId, scheduledAt);
-        if (count >= MAX_ORDERS_PER_BARBER_PER_DAY) {
-          throw makeError(
-            'Barber sudah mencapai batas maksimal order harian.',
-            409,
-            'BARBER_QUOTA_FULL'
-          );
-        }
-        if (await barberHasConflict(resolvedBarberId, blockStart, blockEnd)) {
-          throw makeError('Barber tidak tersedia pada jam tersebut.', 409, 'NO_BARBER_AVAILABLE');
+
+        const scheduledAtDate = new Date(scheduledAt);
+        // Order lama yang akan digantikan tidak boleh ikut memblokir (E12).
+        const context = await loadBarberContext([resolvedBarberId], scheduledAtDate, {
+          excludeAppointmentIds: replaceableIds
+        });
+        const verdict: RuleVerdict = evaluateBarber({
+          barber: snapshot,
+          requestedBlock: { start: blockStart, end: blockEnd },
+          dayOrderCount: context.dayOrderCount.get(resolvedBarberId) ?? 0,
+          existingBlocks: context.blocks.get(resolvedBarberId) ?? [],
+          timeOff: context.timeOff.get(resolvedBarberId) ?? [],
+          isOpenOrder: await OpenOrderService.isBarberOpenForIso(
+            resolvedBarberId,
+            payload.branch_id,
+            scheduledAt
+          ),
+          withinRadius: eligibleBarberIds
+            ? eligibleBarberIds.includes(resolvedBarberId)
+            : undefined
+        });
+        if (!verdict.ok) {
+          throw makeError(verdict.message, 409, toClientCode(verdict.code));
         }
       } else {
         // Auto: pilih Barber idle terbaik (tersedikit order → paling idle → acak).
         resolvedBarberId = await pickBestAvailableBarber(
           payload.branch_id,
           scheduledAt,
-          eligibleBarberIds
+          eligibleBarberIds,
+          undefined,
+          { durationMin, travelBufferMin, excludeAppointmentIds: replaceableIds }
         );
+      }
+
+      // Semua validasi lolos — baru sekarang order lama boleh dibatalkan (E12).
+      if (replaceableIds.length > 0) {
+        replacedAppointmentIds = await cancelReplacedOrders(replaceableIds);
       }
     }
 
@@ -1234,158 +1350,14 @@ export class AppointmentService {
     return { ...appointment, replaced_appointment_ids: replacedAppointmentIds };
   }
 
-  /**
-   * [REVISI A8] Ubah order SEBELUM dibayar. Hanya boleh saat status masih
-   * `pending` dan belum ada pembayaran `paid`. Field yang dapat diubah (sesuai
-   * keputusan klien): TANGGAL/JAM, LOKASI tujuan, dan CATATAN. Barber dan
-   * daftar layanan TIDAK dapat diubah di sini (untuk mengganti: batalkan & pesan
-   * ulang) agar penugasan & harga snapshot tetap konsisten.
-   */
-  static async updateBeforePayment(
-    customerId: string,
-    appointmentId: string,
-    payload: {
-      scheduled_at?: string;
-      service_address?: string;
-      destination_latitude?: number;
-      destination_longitude?: number;
-      location_notes?: string;
-    }
-  ) {
-    const [apt] = snakeKeys(
-      await db
-        .select({
-          id: appointments.id,
-          customer_id: appointments.customerId,
-          status: appointments.status,
-          branch_id: appointments.branchId,
-          barber_id: appointments.barberId,
-          fulfillment_type: appointments.fulfillmentType,
-          scheduled_at: appointments.scheduledAt,
-          travel_buffer_min: appointments.travelBufferMin,
-          destination_latitude: appointments.destinationLatitude,
-          destination_longitude: appointments.destinationLongitude
-        })
-        .from(appointments)
-        .where(eq(appointments.id, appointmentId))
-        .limit(1)
-    ) as any[];
-
-    if (!apt || apt.customer_id !== customerId) {
-      throw makeError('Pemesanan tidak ditemukan', 404);
-    }
-    if (apt.status !== 'pending') {
-      throw makeError('Order hanya dapat diubah selagi masih menunggu konfirmasi (pending)', 400, 'ORDER_NOT_EDITABLE');
-    }
-    const paidRows = await db
-      .select({ status: payments.status })
-      .from(payments)
-      .where(eq(payments.appointmentId, appointmentId));
-    if (paidRows.some((p) => p.status === 'paid')) {
-      throw makeError('Order sudah dibayar, tidak dapat diubah lagi', 400, 'ALREADY_PAID');
-    }
-    apt.appointment_services = await db
-      .select({ duration_min: appointmentServices.durationMin })
-      .from(appointmentServices)
-      .where(eq(appointmentServices.appointmentId, appointmentId));
-
-    if (apt.fulfillment_type === 'home_service') {
-      const destination = normalizeLocation(
-        payload.destination_latitude ?? apt.destination_latitude,
-        payload.destination_longitude ?? apt.destination_longitude,
-        'destination_latitude',
-        'destination_longitude'
-      );
-      await BranchServiceAreaService.assertBranchCanServeLocation(
-        apt.branch_id,
-        destination,
-        {
-          barberId: apt.barber_id,
-          customerId,
-          source: 'booking_update_before_payment'
-        }
-      );
-    }
-
-    const durationMin = (apt.appointment_services ?? [])
-      .reduce((sum: number, item: any) => sum + Number(item.duration_min || 0), 0) || 30;
-
-    const requestedScheduledAt = payload.scheduled_at
-      ? normalizeAppointmentDateTime(payload.scheduled_at)
-      : undefined;
-    const existingScheduledAt = apt.scheduled_at
-      ? normalizeAppointmentDateTime(apt.scheduled_at)
-      : null;
-    const newScheduledAt = requestedScheduledAt || existingScheduledAt;
-    if (!newScheduledAt) {
-      throw makeError('Jadwal appointment tidak tersedia', 400, 'SCHEDULE_NOT_AVAILABLE');
-    }
-
-    if (requestedScheduledAt) {
-      assertWithinWorkingWindow(requestedScheduledAt);
-
-      // Re-validasi bentrok pada blok 2 jam (kecualikan order ini sendiri).
-      const { start: blockStart, end: blockEnd } = barberBlockRange(requestedScheduledAt);
-      // Konsisten dengan create: larangan double-booking customer hanya berlaku
-      // bila fitur multi-order dimatikan. Kapasitas tetap dijaga cek per-barber.
-      if (!ALLOW_CUSTOMER_CONCURRENT_ORDERS
-        && await customerHasConflict(customerId, blockStart, blockEnd, appointmentId)) {
-        throw makeError(
-          'Anda sudah memiliki booking aktif pada jam tersebut. Silakan pilih jam lain.',
-          409,
-          'CUSTOMER_DOUBLE_BOOKING'
-        );
-      }
-      if (apt.barber_id
-        && await barberHasConflict(apt.barber_id, blockStart, blockEnd, appointmentId)) {
-        throw makeError(NO_BARBER_MESSAGE, 409, 'NO_BARBER_AVAILABLE');
-      }
-    }
-
-    const start = new Date(newScheduledAt);
-    const end = new Date(start.getTime() + durationMin * 60_000);
-    const buffer = Number(apt.travel_buffer_min || 0);
-
-    const updates: Record<string, any> = {
-      scheduledAt: toDbDate(newScheduledAt),
-      scheduledEndAt: toDbDate(end),
-      scheduleBlockStartAt: toDbDate(new Date(start.getTime() - buffer * 60_000)),
-      scheduleBlockEndAt: toDbDate(new Date(end.getTime() + buffer * 60_000))
-    };
-    if (payload.service_address !== undefined) {
-      updates.serviceAddress = payload.service_address?.trim() || null;
-    }
-    if (payload.destination_latitude !== undefined) {
-      updates.destinationLatitude = payload.destination_latitude != null ? String(payload.destination_latitude) : null;
-    }
-    if (payload.destination_longitude !== undefined) {
-      updates.destinationLongitude = payload.destination_longitude != null ? String(payload.destination_longitude) : null;
-    }
-    if (payload.location_notes !== undefined) {
-      updates.locationNotes = payload.location_notes?.trim() || null;
-    }
-
-    const res: any = await db
-      .update(appointments)
-      .set(updates)
-      .where(and(eq(appointments.id, appointmentId), eq(appointments.status, 'pending')));
-    const affected = (Array.isArray(res) ? res[0]?.affectedRows : res?.affectedRows) ?? 0;
-    if (!affected) {
-      throw makeError('Gagal memperbarui order: tidak ada baris ter-update', 400);
-    }
-    const [updated] = snakeKeys(await db.select().from(appointments).where(eq(appointments.id, appointmentId)).limit(1));
-
-    // Beri tahu Barber (penugasan tidak berubah) bila jadwal/lokasi diperbarui.
-    if (apt.barber_id) {
-      emitNewOrder(apt.barber_id, { appointment_id: appointmentId, timestamp: new Date().toISOString() });
-    }
-
-    return updated;
-  }
+  // [KEBIJAKAN] `updateBeforePayment` DIHAPUS. Customer tidak dapat mengubah
+  // pesanan sama sekali — termasuk pesanan yang belum dibayar. Salah pilih
+  // sebelum bayar diselesaikan dengan membatalkan lalu memesan ulang; pesanan
+  // yang sudah dibayar hanya dapat diubah/dibatalkan lewat admin.
 
   static async getCustomerAppointments(customerId: string, query: CustomerAppointmentsQuery = {}) {
     // [SELF-HEAL] Batalkan dulu order milik customer ini yang belum dibayar &
-    // sudah lewat 2 jam, agar tidak ikut tampil di daftar "Pesanan" (fallback
+    // sudah lewat batas bayar, agar tidak ikut tampil di daftar "Pesanan" (fallback
     // bila BullMQ worker tidak berjalan). Non-fatal.
     try {
       await sweepExpiredUnpaidPendingOrders({ customerId });
@@ -1482,11 +1454,16 @@ export class AppointmentService {
 
     // [REVISI B6] Barber tidak lagi perlu "Cek Pembayaran". Order online yang
     // BELUM lunas tidak ditampilkan ke barber sampai pembayaran terkonfirmasi
-    // (via webhook/confirm). Cash & order yang sudah paid tetap tampil.
+    // (via webhook/confirm).
+    //
+    // [A6] Klausa `p.method === 'cash'` DIHAPUS. Baris di bawah sudah meloloskan
+    // semua order non-online_booking (walk-in tunai tetap tampil), sehingga
+    // klausa itu hanya dapat tercapai oleh order ONLINE — yaitu persis jalur
+    // eksploitasi "bayar tunai" yang membuat order dikerjakan tanpa dibayar.
     const visible = data.filter((apt: any) => {
       if (apt.status !== 'pending' || apt.source !== 'online_booking') return true;
       const pays = Array.isArray(apt.payments) ? apt.payments : (apt.payments ? [apt.payments] : []);
-      return pays.some((p: any) => p.status === 'paid' || p.method === 'cash');
+      return pays.some((p: any) => p.status === 'paid');
     });
 
     return Promise.all(visible.map(formatBarberQueueOrder));
@@ -1669,17 +1646,114 @@ export class AppointmentService {
     return updated;
   }
 
+  /**
+   * [A4] Apakah seorang barber bebas pada blok 2 jam sebuah jadwal (mengecualikan
+   * order tertentu). Dipakai saat memutuskan apakah order yang dihidupkan
+   * kembali masih boleh memakai barber semula.
+   */
+  static async isBarberFreeForSlot(
+    barberId: string,
+    scheduledAtIso: string,
+    excludeAppointmentId?: string
+  ): Promise<boolean> {
+    const { start, end } = barberBlockRange(scheduledAtIso);
+    if (await barberHasConflict(barberId, start, end, excludeAppointmentId)) return false;
+    const orders = await countBarberOrdersForDay(barberId, scheduledAtIso, excludeAppointmentId);
+    return orders < MAX_ORDERS_PER_BARBER_PER_DAY;
+  }
+
+  /**
+   * [B1] Pilih barber pengganti untuk order yang perlu dialihkan. Memakai aturan
+   * yang sama persis dengan auto-assign saat order dibuat (idle, Open Order,
+   * kuota harian, blok 2 jam), dengan barber tertentu dikecualikan.
+   *
+   * Melempar `NO_BARBER_AVAILABLE` bila tidak ada kandidat.
+   */
+  static async pickReplacementBarber(
+    branchId: string,
+    scheduledAtIso: string,
+    excludeBarberIds: string[] = [],
+    // [E9] Order yang sedang dialihkan. Tanpa ini, pengalihan order home_service
+    // dulu memanggil auto-pick dengan `eligibleBarberIds = undefined` sehingga
+    // RADIUS LAYANAN diabaikan — barber di luar jangkauan bisa terpilih.
+    opts: { appointmentId?: string } = {}
+  ): Promise<string> {
+    let eligibleBarberIds: string[] | undefined;
+    let durationMin: number | undefined;
+    let travelBufferMin: number | undefined;
+
+    if (opts.appointmentId) {
+      const [apt] = snakeKeys(
+        await db
+          .select({
+            id: appointments.id,
+            fulfillment_type: appointments.fulfillmentType,
+            destination_latitude: appointments.destinationLatitude,
+            destination_longitude: appointments.destinationLongitude,
+            travel_buffer_min: appointments.travelBufferMin,
+            scheduled_at: appointments.scheduledAt,
+            scheduled_end_at: appointments.scheduledEndAt
+          })
+          .from(appointments)
+          .where(eq(appointments.id, opts.appointmentId))
+          .limit(1)
+      ) as any[];
+
+      if (apt) {
+        travelBufferMin = Number(apt.travel_buffer_min ?? 0) || 0;
+        if (apt.scheduled_at && apt.scheduled_end_at) {
+          const diff =
+            (new Date(apt.scheduled_end_at).getTime() - new Date(apt.scheduled_at).getTime()) / 60_000;
+          if (Number.isFinite(diff) && diff > 0) durationMin = diff;
+        }
+        if (
+          apt.fulfillment_type === 'home_service' &&
+          apt.destination_latitude != null &&
+          apt.destination_longitude != null
+        ) {
+          const eligible = await BranchServiceAreaService.getEligibleBarbersForBranch(
+            branchId,
+            {
+              lat: Number(apt.destination_latitude),
+              lng: Number(apt.destination_longitude)
+            },
+            { source: 'reassignment' }
+          );
+          eligibleBarberIds = eligible.map((barber: any) => barber.id);
+        }
+      }
+    }
+
+    return pickBestAvailableBarber(branchId, scheduledAtIso, eligibleBarberIds, excludeBarberIds, {
+      durationMin,
+      travelBufferMin
+    });
+  }
+
   static async updateAppointmentStatus(id: string, newStatus: string, metadata: {
     actor: AppointmentActor;
     reason: string;
-    event_type?: 'STATUS_TRANSITION' | 'ORDER_ACCEPTANCE_TIMEOUT' | 'APPOINTMENT_NO_SHOW_TIMEOUT';
+    event_type?:
+      | 'STATUS_TRANSITION'
+      | 'ORDER_ACCEPTANCE_TIMEOUT'
+      | 'APPOINTMENT_NO_SHOW_TIMEOUT'
+      | 'PAYMENT_LATE_REVIVAL';
     customer_media_urls?: string[];
   }) {
-    return AppointmentLifecycleService.transition(id, newStatus, {
+    const updated = await AppointmentLifecycleService.transition(id, newStatus, {
       actor: metadata.actor,
       reason: metadata.reason,
       event_type: metadata.event_type,
       customer_media_urls: metadata.customer_media_urls
     });
+
+    // Order selesai → catat komisi otomatis. Dijadwalkan sebagai job (bukan
+    // dipanggil langsung) agar kegagalan menghitung komisi TIDAK pernah
+    // menggagalkan penyelesaian order, dan tetap di-retry.
+    if (newStatus === 'completed') {
+      await enqueueCommissionCalculation(id);
+    }
+
+    return updated;
   }
 }

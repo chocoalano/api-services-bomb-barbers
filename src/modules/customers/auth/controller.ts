@@ -1,7 +1,8 @@
 import { createSuccessResponse, createErrorResponse } from '../../../shared/response';
 import { CustomerAuthService } from './service';
 import { AuthSessionService } from '../../../core/auth/session.service';
-import { NON_EXPIRING_JWT_VERIFY_OPTIONS } from '../../../middleware/auth';
+import { NON_EXPIRING_JWT_VERIFY_OPTIONS, withAccessTokenExpiry } from '../../../middleware/auth';
+import { SessionError, SessionErrorCode } from '../../../core/auth/session-errors';
 import {
   AuthRateLimitError,
   AuthSecurityService,
@@ -50,12 +51,14 @@ export class CustomerAuthController {
         refreshJti,
         metadata
       );
-      const accessToken = await jwtAccess.sign({
-        sub: customer.id,
-        role: 'customer',
-        sid: session.id,
-        jti: crypto.randomUUID()
-      });
+      const accessToken = await jwtAccess.sign(
+        withAccessTokenExpiry({
+          sub: customer.id,
+          role: 'customer',
+          sid: session.id,
+          jti: crypto.randomUUID()
+        })
+      );
       const refreshToken = await jwtRefresh.sign({
         sub: customer.id,
         role: 'customer',
@@ -102,7 +105,7 @@ export class CustomerAuthController {
         typeof payload.sid !== 'string' ||
         typeof payload.jti !== 'string'
       ) {
-        throw new Error('Refresh token tidak valid');
+        throw SessionError.refreshInvalid();
       }
       const customer = await CustomerAuthService.verifyRefresh(payload);
 
@@ -114,12 +117,14 @@ export class CustomerAuthController {
         payload.jti,
         newRefreshJti
       );
-      const accessToken = await jwtAccess.sign({
-        sub: customer.id,
-        role: 'customer',
-        sid: payload.sid,
-        jti: crypto.randomUUID()
-      });
+      const accessToken = await jwtAccess.sign(
+        withAccessTokenExpiry({
+          sub: customer.id,
+          role: 'customer',
+          sid: payload.sid,
+          jti: crypto.randomUUID()
+        })
+      );
       const newRefreshToken = await jwtRefresh.sign({
         sub: customer.id,
         role: 'customer',
@@ -135,13 +140,23 @@ export class CustomerAuthController {
 
       return createSuccessResponse('Token berhasil diperbarui', { accessToken, refreshToken: newRefreshToken });
     } catch (error: any) {
+      // Lihat catatan di StaffAuthController.refresh: hanya kode terminal yang
+      // membuat aplikasi memulangkan pengguna ke layar login.
       if (error instanceof AuthRateLimitError) {
         set.status = 429;
         set.headers['Retry-After'] = String(error.retryAfterSeconds);
-      } else {
-        set.status = 401;
+        return createErrorResponse(error.message);
       }
-      return createErrorResponse(error.message);
+      if (error instanceof SessionError) {
+        set.status = error.status;
+        return createErrorResponse(error.message, null, error.code);
+      }
+      set.status = 401;
+      return createErrorResponse(
+        error.message,
+        null,
+        SessionErrorCode.REFRESH_TOKEN_INVALID
+      );
     }
   }
 
