@@ -17,6 +17,7 @@ import {
   ACTIVE_APPOINTMENT_STATUSES,
   addMinutes,
   earliestBookableAt,
+  minLeadAppliesTo,
   jakartaParts,
   minutesToTime
 } from '../../../config/booking';
@@ -140,6 +141,15 @@ export class AvailabilityService {
     );
     parseBookingDate(date);
 
+    // [MIN-LEAD DAY-SCOPED] Jeda minimal (default 6 jam) hanya berlaku untuk
+    // slot hari ini & besok (H+0/H+1). Untuk lusa ke atas (H+2+) jeda TIDAK
+    // berlaku sehingga seluruh jam operasional terbuka. Dihitung sekali per
+    // request karena semua slot berbagi tanggal `date` yang sama.
+    const now = new Date();
+    const requestedDayStart = new Date(`${date}T00:00:00${DEFAULT_TIMEZONE_OFFSET}`);
+    const leadApplies = minLeadAppliesTo(requestedDayStart, now);
+    const minStart = leadApplies ? earliestBookableAt(now) : null;
+
     const [branch] = await db
       .select({ id: branches.id, name: branches.name, is_active: branches.isActive })
       .from(branches)
@@ -197,7 +207,9 @@ export class AvailabilityService {
         duration_min: durationMin,
         slot_interval_min: slotIntervalMin,
         min_lead_minutes: BOOKING_CONFIG.minCustomerLeadMinutes,
-        min_bookable_at: earliestBookableAt(new Date()).toISOString(),
+        // [MIN-LEAD DAY-SCOPED] Sadar-tanggal: null untuk lusa ke atas.
+        min_lead_active: leadApplies,
+        min_bookable_at: minStart ? minStart.toISOString() : null,
         operating_hours: window
           ? { open_time: minutesToTime(window.openMin), close_time: minutesToTime(window.closeMin) }
           : null,
@@ -264,7 +276,7 @@ export class AvailabilityService {
     }
 
     const barberIds = barbers.map((barber) => barber.id);
-    const dayStart = new Date(`${date}T00:00:00${DEFAULT_TIMEZONE_OFFSET}`);
+    const dayStart = requestedDayStart;
     const dayEnd = addMinutes(dayStart, 24 * 60);
 
     // Saat EDIT jadwal sebuah order, order tsb tidak boleh menghitung dirinya
@@ -392,11 +404,10 @@ export class AvailabilityService {
     // sekali saja. Barber hanya ditawarkan pada slot yang masuk periode Open Order-nya.
     const openOrderContext = await OpenOrderService.loadContext(branchId, date);
 
-    const now = new Date();
-    // [SPEC BOOKING] Jeda minimal 6 jam: customer yang membuka aplikasi pukul
-    // 08:00 hanya boleh memilih 14:00 ke atas. `minStart` selalu > now sehingga
-    // filter "slot sudah lewat" ikut tercakup di sini.
-    const minStart = earliestBookableAt(now);
+    // [MIN-LEAD DAY-SCOPED] `now`, `minStart`, dan `leadApplies` dihitung di awal
+    // fungsi (sadar-tanggal). Untuk H+0/H+1 `minStart` = now + jeda dan > now,
+    // sehingga filter "slot sudah lewat" ikut tercakup. Untuk lusa ke atas
+    // `minStart` = null → seluruh jam operasional terbuka.
     const slots = [];
 
     // [E1] Batas atas loop = jam MULAI terakhir yang layanannya masih selesai
@@ -408,7 +419,7 @@ export class AvailabilityService {
     );
 
     for (let slotStart = new Date(openAt); slotStart <= lastStartAt; slotStart = addMinutes(slotStart, slotIntervalMin)) {
-      if (slotStart < minStart) continue;
+      if (minStart && slotStart < minStart) continue;
       // Sabuk pengaman: predikat yang sama dengan yang dipakai penegak.
       if (!fitsOperatingWindow(slotStart, durationMin, window).ok) continue;
 
@@ -477,8 +488,11 @@ export class AvailabilityService {
       slot_interval_min: slotIntervalMin,
       // Jeda minimal booking + instant paling awal yang boleh dipilih. Dikirim
       // agar klien dapat menjelaskan mengapa daftar slot kosong/terpotong.
+      // [MIN-LEAD DAY-SCOPED] `min_lead_active` false + `min_bookable_at` null
+      // untuk lusa ke atas (H+2+), menandakan jeda tidak berlaku pada tanggal ini.
       min_lead_minutes: BOOKING_CONFIG.minCustomerLeadMinutes,
-      min_bookable_at: minStart.toISOString(),
+      min_lead_active: leadApplies,
+      min_bookable_at: minStart ? minStart.toISOString() : null,
       operating_hours: {
         open_time: minutesToTime(window.openMin),
         close_time: minutesToTime(window.closeMin)

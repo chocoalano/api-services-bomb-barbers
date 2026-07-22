@@ -15,6 +15,11 @@ const parsePositiveInt = (value: string | undefined, fallback: number) => {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 };
 
+const parseNonNegativeInt = (value: string | undefined, fallback: number) => {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : fallback;
+};
+
 // --- Konfigurasi utama (dapat di-override via env) --------------------------
 export const BOOKING_CONFIG = {
   /** Jam awal order (menit-dalam-hari). 08:00. */
@@ -71,7 +76,19 @@ export const BOOKING_CONFIG = {
    * order walk-in yang dibuat admin di lokasi tidak dibatasi.
    * Override via env BOOKING_MIN_LEAD_MINUTES.
    */
-  minCustomerLeadMinutes: parsePositiveInt(process.env.BOOKING_MIN_LEAD_MINUTES, 6 * 60)
+  minCustomerLeadMinutes: parsePositiveInt(process.env.BOOKING_MIN_LEAD_MINUTES, 6 * 60),
+  /**
+   * Batas offset hari (relatif "sekarang" WIB) di mana jeda minimal MASIH
+   * berlaku. 0 = hanya hari ini; 1 = hari ini & besok (default, keputusan klien
+   * 2026-07-22). Slot pada tanggal dengan offset LEBIH BESAR dari nilai ini
+   * bebas dari jeda minimal — customer boleh memilih jam berapa pun.
+   *
+   * Contoh (lead 6 jam, jam 08:00–22:00): order tgl 22 pukul 22:00 untuk tgl 23
+   * pukul 08:00 → offset 1 → jeda tetap dicek (dan lolos, selisih 10 jam).
+   * Order untuk tgl 24 (lusa) → offset 2 → jeda TIDAK berlaku.
+   * Override via env BOOKING_MIN_LEAD_MAX_DAY_OFFSET.
+   */
+  minLeadMaxDayOffset: parseNonNegativeInt(process.env.BOOKING_MIN_LEAD_MAX_DAY_OFFSET, 1)
 } as const;
 
 // ============================================================================
@@ -245,18 +262,55 @@ export const addMinutes = (date: Date, minutes: number): Date =>
 /**
  * Instant paling awal yang boleh dipilih customer = now + jeda minimal.
  * Dipakai oleh generator slot (memfilter jam yang terlalu dekat) dan oleh
- * validator saat order dibuat/diubah.
+ * validator saat order dibuat/diubah. Nilai ini TIDAK sadar-tanggal; gunakan
+ * `minLeadAppliesTo` untuk menentukan apakah jeda berlaku pada slot tertentu.
  */
 export const earliestBookableAt = (now: Date = new Date()): Date =>
   addMinutes(now, BOOKING_CONFIG.minCustomerLeadMinutes);
 
 /**
- * true bila `slotStart` memenuhi jeda minimal terhadap `now` (inklusif).
- * Perbandingan bersifat ketat terhadap menit: pada pukul 08:07 slot 14:00 sudah
- * lewat batas (08:07+6j = 14:07), sehingga slot valid pertama adalah 15:00.
+ * Selisih hari KALENDER WIB antara `target` dan `now` (target − now).
+ * Hari ini → 0, besok → 1, kemarin → -1. Perbandingan pada tanggal kalender
+ * WIB (bukan selisih 24 jam) agar batas hari konsisten dengan slot booking.
  */
-export const satisfiesMinLead = (slotStart: Date, now: Date = new Date()): boolean =>
-  slotStart.getTime() >= earliestBookableAt(now).getTime();
+export const jakartaDayOffset = (target: Date, now: Date = new Date()): number => {
+  const toUtcMidnight = (iso: string) => {
+    const [y, m, d] = iso.split('-').map(Number);
+    return Date.UTC(y, m - 1, d);
+  };
+  const nowDay = toUtcMidnight(jakartaParts(now).date);
+  const targetDay = toUtcMidnight(jakartaParts(target).date);
+  return Math.round((targetDay - nowDay) / 86_400_000);
+};
+
+/**
+ * true bila jeda minimal berlaku untuk slot yang mulai pada `slotStart`
+ * (day-scoped, keputusan klien 2026-07-22). H+0/H+1 → berlaku; H+2+ bebas.
+ */
+export const minLeadAppliesTo = (slotStart: Date, now: Date = new Date()): boolean =>
+  jakartaDayOffset(slotStart, now) <= BOOKING_CONFIG.minLeadMaxDayOffset;
+
+/**
+ * Instant paling awal yang boleh dipilih UNTUK slot pada `slotStart`.
+ * H+0/H+1 → now + jeda minimal. H+2+ → null (tidak dibatasi jeda).
+ * Dipakai generator & response `min_bookable_at` agar sadar-tanggal.
+ */
+export const earliestBookableForSlot = (
+  slotStart: Date,
+  now: Date = new Date()
+): Date | null => (minLeadAppliesTo(slotStart, now) ? earliestBookableAt(now) : null);
+
+/**
+ * true bila `slotStart` memenuhi jeda minimal terhadap `now` (inklusif).
+ * Untuk slot H+2 ke atas jeda TIDAK berlaku sehingga selalu true (day-scoped).
+ * Untuk H+0/H+1 perbandingan bersifat ketat terhadap menit: pada pukul 08:07
+ * slot 14:00 sudah lewat batas (08:07+6j = 14:07), sehingga slot valid pertama
+ * adalah 15:00.
+ */
+export const satisfiesMinLead = (slotStart: Date, now: Date = new Date()): boolean => {
+  if (!minLeadAppliesTo(slotStart, now)) return true;
+  return slotStart.getTime() >= earliestBookableAt(now).getTime();
+};
 
 /** true bila rentang [startA,endA) dan [startB,endB) saling bertumpuk. */
 export const overlaps = (startA: Date, endA: Date, startB: Date, endB: Date): boolean =>

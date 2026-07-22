@@ -24,6 +24,11 @@ import { deny, OK, type OperatingWindow, type RuleVerdict } from './types';
  * Aturan waktu yang tidak bergantung barber: jam operasional (termasuk jam
  * selesai layanan — E1), slot kelipatan 1 jam, dan jeda minimal 6 jam.
  *
+ * Jeda minimal bersifat DAY-SCOPED (keputusan klien 2026-07-22): hanya berlaku
+ * untuk slot hari ini & besok (H+0/H+1). Slot lusa ke atas (H+2+) otomatis
+ * lolos — logika ini ada di `satisfiesMinLead`, sehingga generator slot dan
+ * penegak di sini tetap memakai satu predikat yang sama.
+ *
  * @param enforceSlot false untuk order on-demand/ASAP yang memang tidak
  *   dipaksa jatuh pada jam bulat.
  * @param enforceMinLead false untuk on-demand & walk-in.
