@@ -60,7 +60,11 @@ export const loadOperatingWindow = async (
   const dayOfWeek = new Date(Date.UTC(year, month - 1, day)).getUTCDay();
 
   const [row] = await db
-    .select({ open_time: branchOperatingHours.openTime, close_time: branchOperatingHours.closeTime })
+    .select({
+      open_time: branchOperatingHours.openTime,
+      close_time: branchOperatingHours.closeTime,
+      is_closed: branchOperatingHours.isClosed
+    })
     .from(branchOperatingHours)
     .where(
       and(eq(branchOperatingHours.branchId, branchId), eq(branchOperatingHours.dayOfWeek, dayOfWeek))

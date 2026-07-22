@@ -60,7 +60,7 @@ export const availabilityDocs = {
     detail: customerDetail({
       tag: CUSTOMER_TAGS.availability,
       summary: 'Lihat Slot Booking Tersedia',
-      description: 'Menghitung slot booking berdasarkan jam operasional cabang, total durasi layanan, appointment aktif, exclusion window barber, barber aktif, dan cuti barber. Untuk home_service, travel buffer diterapkan sebelum dan sesudah layanan agar slot frontend konsisten dengan RPC booking atomik. Jika jam operasional belum tersedia, backend menggunakan fallback 09:00–21:00 WIB. Slot yang sudah lewat tidak dikembalikan. Berlaku pula jeda minimal pemesanan (default 6 jam) yang bersifat DAY-SCOPED: jeda hanya diterapkan untuk slot hari ini & besok (H+0/H+1) — hanya slot yang mulai pada atau sesudah `min_bookable_at` yang dikembalikan, sehingga customer yang membuka aplikasi pukul 08:00 memperoleh pilihan mulai 14:00. Untuk tanggal lusa ke atas (H+2+) jeda TIDAK berlaku: `min_lead_active` bernilai false, `min_bookable_at` null, dan seluruh jam operasional terbuka.',
+      description: 'Menghitung slot booking berdasarkan jam operasional cabang (per hari, dari branch_operating_hours — tidak ada lagi batas statis 08:00–22:00; semua mengikuti open_time/close_time cabang), total durasi layanan, appointment aktif, exclusion window barber, barber aktif, dan cuti barber. Untuk home_service, travel buffer diterapkan sebelum dan sesudah layanan agar slot frontend konsisten dengan RPC booking atomik. Bila jam operasional cabang belum dikonfigurasi, backend fail-closed (daftar slot kosong, tanpa fallback). Bila cabang ditandai libur pada hari itu (is_closed), daftar slot juga kosong dan operating_hours null. Slot yang sudah lewat tidak dikembalikan. Berlaku pula jeda minimal pemesanan (default 6 jam) yang bersifat DAY-SCOPED: jeda hanya diterapkan untuk slot hari ini & besok (H+0/H+1) — hanya slot yang mulai pada atau sesudah `min_bookable_at` yang dikembalikan, sehingga customer yang membuka aplikasi pukul 08:00 memperoleh pilihan mulai 14:00. Untuk tanggal lusa ke atas (H+2+) jeda TIDAK berlaku: `min_lead_active` bernilai false, `min_bookable_at` null, dan seluruh jam operasional terbuka.',
       required: ['path.id', 'query.date', 'query.service_ids (minimal satu UUID)'],
       optional: ['query.barber_id', 'query.slot_interval_min', 'query.fulfillment_type', 'query.travel_buffer_min', 'query.exclude_appointment_id'],
       successMessage: 'Slot jam tersedia berhasil diambil',
@@ -78,8 +78,8 @@ export const availabilityDocs = {
         min_lead_active: true,
         min_bookable_at: '2026-06-25T07:00:00.000Z',
         operating_hours: {
-          open_time: '09:00:00',
-          close_time: '21:00:00'
+          open_time: '08:00:00',
+          close_time: '22:00:00'
         },
         slots: [
           {

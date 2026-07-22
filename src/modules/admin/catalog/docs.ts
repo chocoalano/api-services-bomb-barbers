@@ -63,6 +63,27 @@ const priceExample = {
   updated_at: '2026-06-20T08:00:00.000Z'
 };
 
+// Contoh payload set jam operasional: Sen–Sab 08:00–22:00, Minggu libur.
+const operatingHoursRequestExample = [
+  { day_of_week: 0, is_closed: true },
+  { day_of_week: 1, open_time: '08:00', close_time: '22:00' },
+  { day_of_week: 2, open_time: '08:00', close_time: '22:00' },
+  { day_of_week: 3, open_time: '08:00', close_time: '22:00' },
+  { day_of_week: 4, open_time: '08:00', close_time: '22:00' },
+  { day_of_week: 5, open_time: '08:00', close_time: '22:00' },
+  { day_of_week: 6, open_time: '09:00', close_time: '23:00' }
+];
+
+const operatingHoursExample = [
+  { day_of_week: 0, is_closed: true, open_time: null, close_time: null },
+  { day_of_week: 1, is_closed: false, open_time: '08:00', close_time: '22:00' },
+  { day_of_week: 2, is_closed: false, open_time: '08:00', close_time: '22:00' },
+  { day_of_week: 3, is_closed: false, open_time: '08:00', close_time: '22:00' },
+  { day_of_week: 4, is_closed: false, open_time: '08:00', close_time: '22:00' },
+  { day_of_week: 5, is_closed: false, open_time: '08:00', close_time: '22:00' },
+  { day_of_week: 6, is_closed: false, open_time: '09:00', close_time: '23:00' }
+];
+
 const idParams = (description: string, example: string) =>
   t.Object({ id: uuidField(description, example) });
 
@@ -292,6 +313,46 @@ export const adminCatalogDocs = {
       optional: [],
       successMessage: 'Branch dihapus',
       successData: null,
+      errors: commonMutationErrors
+    })
+  },
+  getBranchOperatingHours: {
+    params: idParams('UUID cabang.', ADMIN_EXAMPLES.branchId),
+    detail: adminDetail({
+      tag: ADMIN_TAGS.branches,
+      summary: 'Jam Operasional Cabang',
+      description: 'Mengembalikan jam buka/tutup cabang untuk 7 hari (day_of_week 0=Minggu … 6=Sabtu). Hari libur ditandai is_closed=true dengan open_time/close_time null.',
+      required: ['path id', 'Authorization: Bearer <access_token>', "permission 'manage_branch'"],
+      optional: [],
+      successMessage: 'Jam operasional cabang',
+      successData: operatingHoursExample,
+      errors: commonMutationErrors
+    })
+  },
+  setBranchOperatingHours: {
+    params: idParams('UUID cabang.', ADMIN_EXAMPLES.branchId),
+    body: t.Object({
+      operating_hours: t.Array(
+        t.Object({
+          day_of_week: t.Integer({ minimum: 0, maximum: 6, description: '0=Minggu … 6=Sabtu.', examples: [1] }),
+          is_closed: t.Optional(t.Boolean({ description: 'true = cabang libur pada hari itu; open_time/close_time diabaikan.', examples: [false] })),
+          open_time: t.Optional(t.String({ description: 'Jam buka HH:MM (wajib bila tidak libur).', examples: ['08:00'] })),
+          close_time: t.Optional(t.String({ description: 'Jam tutup HH:MM (wajib bila tidak libur, harus > open_time).', examples: ['22:00'] }))
+        }),
+        { minItems: 7, maxItems: 7, description: 'Tepat 7 entri, satu per day_of_week 0..6 (lengkap & unik).' }
+      )
+    }, requestExamples(
+      { operating_hours: operatingHoursRequestExample },
+      { operating_hours: operatingHoursRequestExample }
+    )),
+    detail: adminDetail({
+      tag: ADMIN_TAGS.branches,
+      summary: 'Atur Jam Operasional Cabang',
+      description: 'Mengganti (replace) jam buka/tutup cabang untuk seluruh 7 hari secara atomik. Semua slot booking & Open Order mengikuti jam ini (tidak ada lagi batas statis 08:00–22:00). Tandai hari libur dengan is_closed=true.',
+      required: ['path id', 'operating_hours (7 hari)', 'Authorization: Bearer <access_token>', "permission 'manage_branch'"],
+      optional: [],
+      successMessage: 'Jam operasional cabang diperbarui',
+      successData: operatingHoursExample,
       errors: commonMutationErrors
     })
   },

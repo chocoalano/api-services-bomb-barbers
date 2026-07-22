@@ -74,6 +74,37 @@ describe('E1 — layanan wajib selesai sebelum jam tutup', () => {
   });
 });
 
+describe('D2 — cap statis 22:00 dihapus (semua mengikuti close_time cabang)', () => {
+  it('jam mulai terakhir murni close_time − durasi, boleh melewati 22:00', () => {
+    // Cabang tutup 23:00, layanan 30 menit → slot mulai terakhir 22:30.
+    // Dengan cap lama (min 22:00) hasilnya keliru terpotong ke 22:00.
+    const until23 = resolveOperatingWindow({ open_time: '08:00', close_time: '23:00' })!;
+    expect(lastBookableStartMinutes(until23, 30)).toBe(22 * 60 + 30);
+    expect(fitsOperatingWindow(at(DATE, '22:00'), 60, until23).ok).toBe(true);
+  });
+
+  it('cabang boleh buka sebelum 08:00 (mis. 07:00)', () => {
+    const from07 = resolveOperatingWindow({ open_time: '07:00', close_time: '22:00' })!;
+    expect(fitsOperatingWindow(at(DATE, '07:00'), 60, from07).ok).toBe(true);
+    expect(fitsOperatingWindow(at(DATE, '06:00'), 60, from07).ok).toBe(false);
+  });
+});
+
+describe('D1 — hari libur (is_closed)', () => {
+  it('is_closed=true → window ditandai libur, ditolak BRANCH_CLOSED_ON_DAY', () => {
+    const closed = resolveOperatingWindow({ is_closed: true, open_time: '08:00', close_time: '22:00' })!;
+    expect(closed.isClosed).toBe(true);
+    const verdict = fitsOperatingWindow(at(DATE, '10:00'), 60, closed);
+    expect(verdict.ok).toBe(false);
+    expect((verdict as any).code).toBe('BRANCH_CLOSED_ON_DAY');
+  });
+
+  it('dibedakan dari baris hilang (BRANCH_HOURS_MISSING)', () => {
+    const missing = fitsOperatingWindow(at(DATE, '10:00'), 60, resolveOperatingWindow(null));
+    expect((missing as any).code).toBe('BRANCH_HOURS_MISSING');
+  });
+});
+
 describe('E5/E11 — blok okupansi barber', () => {
   it('layanan pendek tetap mengunci 2 jam penuh', () => {
     const block = computeScheduleBlock({ startAt: at(DATE, '09:00'), durationMin: 30 });

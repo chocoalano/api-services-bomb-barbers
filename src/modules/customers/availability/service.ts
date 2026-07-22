@@ -185,7 +185,11 @@ export class AvailabilityService {
 
     const dayOfWeek = getDayOfWeek(date);
     const [operatingHour] = await db
-      .select({ open_time: branchOperatingHours.openTime, close_time: branchOperatingHours.closeTime })
+      .select({
+        open_time: branchOperatingHours.openTime,
+        close_time: branchOperatingHours.closeTime,
+        is_closed: branchOperatingHours.isClosed
+      })
       .from(branchOperatingHours)
       .where(and(eq(branchOperatingHours.branchId, branchId), eq(branchOperatingHours.dayOfWeek, dayOfWeek)))
       .limit(1);
@@ -210,7 +214,7 @@ export class AvailabilityService {
         // [MIN-LEAD DAY-SCOPED] Sadar-tanggal: null untuk lusa ke atas.
         min_lead_active: leadApplies,
         min_bookable_at: minStart ? minStart.toISOString() : null,
-        operating_hours: window
+        operating_hours: window && !window.isClosed
           ? { open_time: minutesToTime(window.openMin), close_time: minutesToTime(window.closeMin) }
           : null,
         slots: [] as any[]
@@ -219,6 +223,11 @@ export class AvailabilityService {
 
     if (!window) {
       return emptyResponse('BRANCH_HOURS_MISSING');
+    }
+    // Hari libur eksplisit: tidak ada slot, alasan dibedakan agar FE bisa
+    // menampilkan pesan "cabang tutup pada hari ini" alih-alih "belum dikonfigurasi".
+    if (window.isClosed) {
+      return emptyResponse('BRANCH_CLOSED_ON_DAY');
     }
 
     // [E3] Join staff_users: prosedur atomik mensyaratkan staff aktif, jadi

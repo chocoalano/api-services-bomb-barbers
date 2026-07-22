@@ -117,6 +117,22 @@ export class AdminCatalogController {
     } catch(e: any) { set.status = 400; return createErrorResponse(e.message); }
   }
 
+  // Jam operasional cabang (jam buka/tutup per hari, termasuk hari libur).
+  static async getBranchOperatingHours({ params, staffId, set }: any) {
+    try {
+      await assertTargetBranchInScope(params.id, staffId);
+      const data = await AdminCatalogService.getOperatingHours(params.id);
+      return createSuccessResponse('Jam operasional cabang', data);
+    } catch(e: any) { set.status = e.status || 400; return createErrorResponse(e.message); }
+  }
+  static async setBranchOperatingHours({ params, body, staffId, set }: any) {
+    try {
+      await assertTargetBranchInScope(params.id, staffId);
+      const data = await AdminCatalogService.setOperatingHours(params.id, body?.operating_hours);
+      return createSuccessResponse('Jam operasional cabang diperbarui', data);
+    } catch(e: any) { set.status = e.status || 400; return createErrorResponse(e.message); }
+  }
+
   // Barbers
   static async listBarbers({ staffId, set }: any) {
     try {

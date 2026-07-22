@@ -248,9 +248,17 @@ export const branchOperatingHours = mysqlTable('branch_operating_hours', {
   dayOfWeek: int('day_of_week').notNull(),
   openTime: time('open_time').notNull(),
   closeTime: time('close_time').notNull(),
+  // Hari libur eksplisit: bila true, cabang dianggap TUTUP pada hari tersebut
+  // dan open_time/close_time diabaikan. Dibedakan dari "baris tidak ada"
+  // (BRANCH_HOURS_MISSING = belum dikonfigurasi) agar pesan ke customer tepat.
+  isClosed: boolean('is_closed').notNull().default(false),
   createdAt: datetime('created_at', { mode: 'string', fsp: 6 }).notNull().default(sql`CURRENT_TIMESTAMP(6)`),
   updatedAt: datetime('updated_at', { mode: 'string', fsp: 6 }).notNull().default(sql`CURRENT_TIMESTAMP(6)`).$onUpdateFn(() => sql`CURRENT_TIMESTAMP(6)`),
-});
+}, (table) => ({
+  // Satu baris jam per cabang per hari — loader & prosedur atomik mengandalkan
+  // keunikan ini (menggantikan pengaman `ORDER BY created_at DESC LIMIT 1`).
+  branchOperatingHoursBranchDayUnique: unique('branch_operating_hours_branch_day_unique').on(table.branchId, table.dayOfWeek),
+}));
 
 export const branchPhotos = mysqlTable('branch_photos', {
   id: char('id', { length: 36 }).primaryKey().notNull().$defaultFn(() => randomUUID()),

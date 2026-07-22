@@ -11,21 +11,28 @@
 //      dulu tidak, sehingga seluruh daftar slotnya palsu.
 // ============================================================================
 
-import { BOOKING_CONFIG, jakartaParts, timeToMinutes } from '../../../config/booking';
+import { jakartaParts, timeToMinutes } from '../../../config/booking';
 import { deny, OK, type OperatingWindow, type RuleVerdict } from './types';
 
 export type OperatingHoursRow = {
   open_time?: string | null;
   close_time?: string | null;
+  /** Hari libur eksplisit (kolom `is_closed`). */
+  is_closed?: boolean | number | null;
 } | null | undefined;
 
 /**
  * Baris `branch_operating_hours` → jendela operasional.
- * `null` bila baris tidak ada atau jamnya tidak masuk akal (tutup <= buka):
- * pemanggil WAJIB memperlakukannya sebagai penolakan (`BRANCH_HOURS_MISSING`).
+ * - `null` bila baris tidak ada atau jamnya tidak masuk akal (tutup <= buka):
+ *   pemanggil WAJIB memperlakukannya sebagai penolakan (`BRANCH_HOURS_MISSING`).
+ * - `{ isClosed: true }` bila cabang ditandai libur pada hari itu — pemanggil
+ *   menolaknya dengan pesan berbeda (`BRANCH_CLOSED_ON_DAY`).
  */
 export const resolveOperatingWindow = (row: OperatingHoursRow): OperatingWindow | null => {
-  if (!row?.open_time || !row?.close_time) return null;
+  if (!row) return null;
+  // Hari libur eksplisit menang atas jam apa pun. openMin/closeMin tak bermakna.
+  if (row.is_closed) return { openMin: 0, closeMin: 0, isClosed: true };
+  if (!row.open_time || !row.close_time) return null;
 
   let openMin: number;
   let closeMin: number;
@@ -37,23 +44,20 @@ export const resolveOperatingWindow = (row: OperatingHoursRow): OperatingWindow 
   }
   if (!(closeMin > openMin)) return null;
 
-  return {
-    openMin,
-    closeMin,
-    lastBookingStartMin: BOOKING_CONFIG.operationalLastBookingMinutes
-  };
+  return { openMin, closeMin };
 };
 
 /**
- * [E1] Jam MULAI terakhir yang sah untuk durasi layanan tertentu.
- * = min(batas 22:00 dari config, jam tutup − durasi).
+ * [E1/D2] Jam MULAI terakhir yang sah untuk durasi layanan tertentu.
+ * = jam tutup cabang − durasi (tidak ada lagi cap statis 22:00; sepenuhnya
+ * mengikuti `close_time` cabang dari DB — keputusan klien 2026-07-22).
  * Bisa lebih kecil dari `openMin` bila layanannya lebih panjang dari jam buka
  * cabang — artinya tidak ada slot sama sekali, dan itu memang jawaban yang benar.
  */
 export const lastBookableStartMinutes = (
   window: OperatingWindow,
   durationMin: number
-): number => Math.min(window.lastBookingStartMin, window.closeMin - Math.max(durationMin, 0));
+): number => window.closeMin - Math.max(durationMin, 0);
 
 /**
  * Apakah layanan berdurasi `durationMin` yang dimulai pada `startAt` muat di
@@ -72,6 +76,12 @@ export const fitsOperatingWindow = (
     return deny(
       'BRANCH_HOURS_MISSING',
       'Jam operasional cabang belum dikonfigurasi. Hubungi admin cabang.'
+    );
+  }
+  if (window.isClosed) {
+    return deny(
+      'BRANCH_CLOSED_ON_DAY',
+      'Cabang tutup pada hari tersebut. Silakan pilih tanggal lain.'
     );
   }
 

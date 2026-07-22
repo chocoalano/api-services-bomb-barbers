@@ -29,7 +29,7 @@ export class BarberOpenOrderController {
 
       return createSuccessResponse('Daftar Open Order berhasil diambil', {
         date,
-        available_slots: OpenOrderService.availableSlotOptions(date),
+        available_slots: await OpenOrderService.availableSlotOptions(date, barber.branch_id),
         open_orders: openOrders
       });
     } catch (err: any) {
@@ -70,7 +70,7 @@ export class BarberOpenOrderController {
       const startTime = (body?.start_time || '').trim();
       if (!startTime) { set.status = 400; return createErrorResponse('start_time wajib diisi'); }
 
-      const openOrders = await OpenOrderService.closeSlot(barber.id, date, startTime);
+      const openOrders = await OpenOrderService.closeSlot(barber.id, barber.branch_id, date, startTime);
       return createSuccessResponse('Open Order berhasil ditutup', { date, open_orders: openOrders });
     } catch (err: any) {
       set.status = err.status || 400;

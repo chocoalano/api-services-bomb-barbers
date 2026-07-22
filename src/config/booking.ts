@@ -166,42 +166,48 @@ export const minutesToTime = (minutes: number): string => {
 // GENERATOR & VALIDATOR SLOT (spec §15 & §16)
 // ============================================================================
 
+// [D2/R2/R3] Batas jam (buka/tutup) kini mengikuti cabang. Fungsi grid menerima
+// `openMin`/`closeMin` opsional; default = konstanta config (08:00–22:00) demi
+// kompatibilitas — cabang default menghasilkan grid yang identik dengan sebelumnya.
+
 /**
- * Slot Open Order barber: kelipatan 2 jam dari 08:00 sampai 22:00 inklusif.
- * → 08:00, 10:00, 12:00, 14:00, 16:00, 18:00, 20:00, 22:00. Tidak menghasilkan 23:00/24:00.
- * Parameter `date` diterima untuk konsistensi signature (jam operasional tetap sama tiap hari).
+ * Slot Open Order barber: kelipatan 2 jam dari jam buka cabang sampai jam tutup
+ * (inklusif). Anchor kelipatan dihitung dari `openMin`. Untuk cabang default
+ * 08:00–22:00 → 08:00, 10:00, …, 22:00 (identik dengan sebelumnya).
  */
-export const generateBarberOpenOrderSlots = (_date?: string): string[] => {
+export const generateBarberOpenOrderSlots = (
+  _date?: string,
+  openMin: number = BOOKING_CONFIG.operationalStartMinutes,
+  closeMin: number = BOOKING_CONFIG.operationalLastBookingMinutes
+): string[] => {
   const slots: string[] = [];
-  for (
-    let m = BOOKING_CONFIG.operationalStartMinutes;
-    m <= BOOKING_CONFIG.operationalLastBookingMinutes;
-    m += BOOKING_CONFIG.barberOpenOrderIntervalMinutes
-  ) {
+  for (let m = openMin; m <= closeMin; m += BOOKING_CONFIG.barberOpenOrderIntervalMinutes) {
     slots.push(minutesToTime(m));
   }
   return slots;
 };
 
 /**
- * Slot booking customer: kelipatan 1 jam dari 08:00 sampai 22:00 inklusif.
- * → 08:00 … 22:00. Tidak menghasilkan 23:00.
+ * Slot booking customer: kelipatan 1 jam dari jam buka sampai jam tutup cabang
+ * (inklusif). Untuk cabang default 08:00–22:00 → 08:00 … 22:00.
  */
-export const generateCustomerBookingSlots = (_date?: string): string[] => {
+export const generateCustomerBookingSlots = (
+  _date?: string,
+  openMin: number = BOOKING_CONFIG.operationalStartMinutes,
+  closeMin: number = BOOKING_CONFIG.operationalLastBookingMinutes
+): string[] => {
   const slots: string[] = [];
-  for (
-    let m = BOOKING_CONFIG.operationalStartMinutes;
-    m <= BOOKING_CONFIG.operationalLastBookingMinutes;
-    m += BOOKING_CONFIG.customerBookingIntervalMinutes
-  ) {
+  for (let m = openMin; m <= closeMin; m += BOOKING_CONFIG.customerBookingIntervalMinutes) {
     slots.push(minutesToTime(m));
   }
   return slots;
 };
 
 /**
- * Valid bila: 08:00 <= time <= 22:00 DAN menit == 00 (jam penuh).
- * Tidak mengecek apakah waktu selesai layanan melewati 22:00 (spec §3.6, §16).
+ * [R2] Valid bila time jatuh pada jam bulat (kelipatan interval booking customer).
+ * Batas buka/tutup TIDAK lagi dicek di sini — itu tugas jam operasional cabang
+ * (`fitsOperatingWindow`), sehingga cabang yang buka <08:00 atau tutup >22:00
+ * tetap konsisten antara generator slot dan pre-flight.
  */
 export const isValidCustomerBookingSlot = (time: string): boolean => {
   let minutes: number;
@@ -211,14 +217,21 @@ export const isValidCustomerBookingSlot = (time: string): boolean => {
     return false;
   }
   return (
-    minutes >= BOOKING_CONFIG.operationalStartMinutes &&
-    minutes <= BOOKING_CONFIG.operationalLastBookingMinutes &&
+    minutes >= 0 &&
+    minutes < 24 * 60 &&
     minutes % BOOKING_CONFIG.customerBookingIntervalMinutes === 0
   );
 };
 
-/** Valid bila time termasuk slot Open Order barber (kelipatan 2 jam, 08:00–22:00). */
-export const isValidBarberOpenOrderSlot = (time: string): boolean => {
+/**
+ * Valid bila time termasuk slot Open Order barber (kelipatan 2 jam) dalam jam
+ * operasional cabang. Anchor dihitung dari `openMin`.
+ */
+export const isValidBarberOpenOrderSlot = (
+  time: string,
+  openMin: number = BOOKING_CONFIG.operationalStartMinutes,
+  closeMin: number = BOOKING_CONFIG.operationalLastBookingMinutes
+): boolean => {
   let minutes: number;
   try {
     minutes = timeToMinutes(time);
@@ -226,24 +239,29 @@ export const isValidBarberOpenOrderSlot = (time: string): boolean => {
     return false;
   }
   return (
-    minutes >= BOOKING_CONFIG.operationalStartMinutes &&
-    minutes <= BOOKING_CONFIG.operationalLastBookingMinutes &&
-    (minutes - BOOKING_CONFIG.operationalStartMinutes) % BOOKING_CONFIG.barberOpenOrderIntervalMinutes === 0
+    minutes >= openMin &&
+    minutes <= closeMin &&
+    (minutes - openMin) % BOOKING_CONFIG.barberOpenOrderIntervalMinutes === 0
   );
 };
 
 /**
  * Mapping jam booking customer → periode Open Order barber yang mencakupnya.
- * Periode Open Order 2 jam: 08:00 mencakup 08:00 & 09:00, dst. 22:00 hanya 22:00.
- * Mengembalikan 'HH:MM' periode, atau null bila jam booking bukan slot customer valid.
- *   08:00→08:00, 09:00→08:00, 10:00→10:00, 11:00→10:00, … 20:00→20:00, 21:00→20:00, 22:00→22:00.
+ * Periode Open Order 2 jam di-anchor ke `openMin`: untuk cabang default 08:00,
+ * 08:00 mencakup 08:00 & 09:00, dst. Mengembalikan 'HH:MM' periode, atau null
+ * bila jam booking bukan slot customer valid / di luar jam operasional cabang.
  */
-export const getOpenOrderPeriodForCustomerSlot = (bookingTime: string): string | null => {
+export const getOpenOrderPeriodForCustomerSlot = (
+  bookingTime: string,
+  openMin: number = BOOKING_CONFIG.operationalStartMinutes,
+  closeMin: number = BOOKING_CONFIG.operationalLastBookingMinutes
+): string | null => {
   if (!isValidCustomerBookingSlot(bookingTime)) return null;
   const minutes = timeToMinutes(bookingTime);
-  const offset = minutes - BOOKING_CONFIG.operationalStartMinutes;
+  if (minutes < openMin || minutes > closeMin) return null;
+  const offset = minutes - openMin;
   const periodOffset = offset - (offset % BOOKING_CONFIG.barberOpenOrderIntervalMinutes);
-  return minutesToTime(BOOKING_CONFIG.operationalStartMinutes + periodOffset);
+  return minutesToTime(openMin + periodOffset);
 };
 
 // ============================================================================

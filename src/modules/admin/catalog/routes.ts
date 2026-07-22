@@ -23,6 +23,9 @@ export const adminCatalogRoutes = new Elysia({ prefix: '/api/v1/hq' })
     .post('/', AdminCatalogController.createBranch, adminCatalogDocs.createBranch)
     .put('/:id', AdminCatalogController.updateBranch, adminCatalogDocs.updateBranch)
     .delete('/:id', AdminCatalogController.deleteBranch, adminCatalogDocs.deleteBranch)
+    // Jam operasional cabang (jam buka/tutup per hari + hari libur).
+    .get('/:id/operating-hours', AdminCatalogController.getBranchOperatingHours, adminCatalogDocs.getBranchOperatingHours)
+    .put('/:id/operating-hours', AdminCatalogController.setBranchOperatingHours, adminCatalogDocs.setBranchOperatingHours)
   )
   // Barbers
   .get('/barbers', AdminCatalogController.listBarbers, {

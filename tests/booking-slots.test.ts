@@ -50,23 +50,19 @@ describe('generateCustomerBookingSlots (spec §16, §20.3–5)', () => {
   });
 });
 
-describe('isValidCustomerBookingSlot (spec §20.6–8)', () => {
-  it('menerima jam penuh dalam rentang 08:00–22:00 (termasuk 22:00)', () => {
-    expect(isValidCustomerBookingSlot('08:00')).toBe(true);
-    expect(isValidCustomerBookingSlot('22:00')).toBe(true);
+describe('isValidCustomerBookingSlot (R2: hanya jam-bulat; batas buka/tutup di jam operasional cabang)', () => {
+  it('menerima setiap jam penuh (batas cabang bukan lagi tanggung jawab fungsi ini)', () => {
+    // Sejak R2 (jam dinamis per-branch), fungsi ini HANYA memvalidasi jam bulat.
+    // Batas buka/tutup ditegakkan `fitsOperatingWindow` per cabang, sehingga
+    // cabang yang buka <08:00 atau tutup >22:00 tetap konsisten.
+    for (const t of ['07:00', '08:00', '22:00', '23:00', '00:00']) {
+      expect(isValidCustomerBookingSlot(t)).toBe(true);
+    }
   });
 
-  it('menolak jam 23:00 (di luar rentang)', () => {
-    expect(isValidCustomerBookingSlot('23:00')).toBe(false);
-  });
-
-  it('menolak jam 08:30 (bukan jam penuh)', () => {
+  it('menolak jam bukan jam penuh (menit != 00)', () => {
     expect(isValidCustomerBookingSlot('08:30')).toBe(false);
     expect(isValidCustomerBookingSlot('22:30')).toBe(false);
-  });
-
-  it('menolak jam sebelum 08:00', () => {
-    expect(isValidCustomerBookingSlot('07:00')).toBe(false);
     expect(isValidCustomerBookingSlot('07:30')).toBe(false);
   });
 });
@@ -115,8 +111,9 @@ describe('getOpenOrderPeriodForCustomerSlot (spec §16, §20.20)', () => {
 });
 
 describe('OpenOrderService.isBarberOpen (gating murni, spec §10.3/§11.3)', () => {
+  // grid default 08:00–22:00 (menit) — identik dengan konstanta config.
   const ctx = (openByBarber: Map<string, Set<string>>, tableAvailable = true): OpenOrderContext =>
-    ({ tableAvailable, openByBarber });
+    ({ tableAvailable, openByBarber, grid: { openMin: 8 * 60, closeMin: 22 * 60 } });
 
   it('barber yang membuka periode 08:00 tersedia untuk booking 08:00 & 09:00, bukan 10:00', () => {
     const context = ctx(new Map([['barberA', new Set(['08:00'])]]));

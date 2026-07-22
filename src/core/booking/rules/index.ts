@@ -51,7 +51,7 @@ export const evaluateSlotTiming = (params: {
     if (!isValidCustomerBookingSlot(minutesToTime(minutes))) {
       return deny(
         'INVALID_SLOT',
-        'Jadwal harus pada slot kelipatan 1 jam (08:00, 09:00, … 22:00)'
+        'Jadwal harus pada jam bulat (kelipatan 1 jam).'
       );
     }
   }

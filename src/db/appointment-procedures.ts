@@ -219,16 +219,25 @@ export async function createAppointmentAtomic(params: CreateAppointmentParams) {
       const dow = localStart.getUTCDay(); // 0=Minggu .. 6=Sabtu (sama dgn extract(dow))
       const oh = await one(
         tx,
-        sql`SELECT open_time, close_time FROM branch_operating_hours
+        sql`SELECT open_time, close_time, is_closed FROM branch_operating_hours
             WHERE branch_id = ${params.branchId} AND day_of_week = ${dow}
             ORDER BY created_at DESC LIMIT 1`
       );
       const window = resolveOperatingWindow(
-        oh ? { open_time: String(oh.open_time), close_time: String(oh.close_time) } : null
+        oh
+          ? {
+              open_time: String(oh.open_time),
+              close_time: String(oh.close_time),
+              is_closed: Boolean(oh.is_closed)
+            }
+          : null
       );
       const hours = fitsOperatingWindow(scheduledAt, totalDuration, window);
       if (!hours.ok)
-        throw new ProcedureError('Jadwal berada di luar jam operasional cabang', '22023');
+        throw new ProcedureError(
+          hours.message || 'Jadwal berada di luar jam operasional cabang',
+          '22023'
+        );
 
       // Cuti barber (overlap dgn buffer)
       if (params.barberId) {

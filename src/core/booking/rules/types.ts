@@ -24,7 +24,8 @@ export type RuleCode =
   | 'NO_BARBER_AVAILABLE'
   | 'BARBER_ON_LEAVE'
   | 'BARBER_INACTIVE'
-  | 'BRANCH_HOURS_MISSING';
+  | 'BRANCH_HOURS_MISSING'
+  | 'BRANCH_CLOSED_ON_DAY';
 
 export type RuleVerdict =
   | { ok: true }
@@ -49,6 +50,9 @@ export const toClientCode = (code: RuleCode): RuleCode => {
     case 'BARBER_INACTIVE':
       return 'NO_BARBER_AVAILABLE';
     case 'BRANCH_HOURS_MISSING':
+    case 'BRANCH_CLOSED_ON_DAY':
+      // FE customer hanya mengenal OUTSIDE_WORKING_HOURS untuk urusan jam;
+      // pesan spesifik (libur vs belum dikonfigurasi) tetap terbawa di `message`.
       return 'OUTSIDE_WORKING_HOURS';
     default:
       return code;
@@ -66,10 +70,18 @@ export type TimeRange = { start: Date; end: Date };
 export type OperatingWindow = {
   /** Jam buka cabang. */
   openMin: number;
-  /** Jam tutup cabang. Layanan WAJIB selesai paling lambat di sini. */
+  /**
+   * Jam tutup cabang. Layanan WAJIB selesai paling lambat di sini, dan ini pula
+   * batas atas jam MULAI booking (tidak ada lagi cap statis 22:00 — keputusan
+   * klien 2026-07-22, semua mengikuti `close_time` cabang dari DB).
+   */
   closeMin: number;
-  /** Batas atas jam MULAI booking dari BOOKING_CONFIG (22:00). */
-  lastBookingStartMin: number;
+  /**
+   * true bila cabang ditandai libur pada hari itu (hari libur eksplisit,
+   * `branch_operating_hours.is_closed`). Saat true, [openMin]/[closeMin] tidak
+   * bermakna dan booking ditolak dengan `BRANCH_CLOSED_ON_DAY`.
+   */
+  isClosed?: boolean;
 };
 
 /** Data barber yang dibutuhkan evaluator (subset kolom `barbers` + join staff). */

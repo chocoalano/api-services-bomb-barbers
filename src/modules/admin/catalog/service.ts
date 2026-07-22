@@ -5,12 +5,35 @@ import { snakeKeys, camelKeys, toDbDate } from '../../../db/helpers';
 import { branches, barbers, staffUsers, customers, services, servicePrices, branchOperatingHours } from '../../../db/schema';
 import { and, eq, isNull, inArray, asc, desc } from 'drizzle-orm';
 import { revokeAccountSessions } from '../../../core/auth/session-revocation';
-import { BOOKING_CONFIG, minutesToTime } from '../../../config/booking';
+import { BOOKING_CONFIG, minutesToTime, timeToMinutes } from '../../../config/booking';
 
 async function selectOneSnake(table: any, id: string) {
   const [row] = await db.select().from(table).where(eq(table.id, id)).limit(1);
   return snakeKeys(row);
 }
+
+const badRequest = (message: string, status = 400) => {
+  const err = new Error(message) as Error & { status?: number };
+  err.status = status;
+  return err;
+};
+
+// Normalisasi 'H:MM' / 'HH:MM' / 'HH:MM:SS' → 'HH:MM:SS' (kolom MySQL `time`),
+// menolak nilai yang tak valid. Dipakai saat set jam operasional cabang.
+const normalizeTimeOrThrow = (value: any, field: string): string => {
+  const raw = String(value ?? '').trim();
+  const m = raw.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+  if (!m) throw badRequest(`${field} harus format HH:MM.`);
+  const h = Number(m[1]);
+  const min = Number(m[2]);
+  const sec = m[3] ? Number(m[3]) : 0;
+  if (h > 23 || min > 59 || sec > 59) throw badRequest(`${field} tidak valid.`);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${pad(h)}:${pad(min)}:${pad(sec)}`;
+};
+
+/** Baca 'HH:MM:SS' DB → 'HH:MM' untuk output ke klien. */
+const toHHMM = (value: any): string => String(value ?? '').slice(0, 5);
 
 export class AdminCatalogService {
   // Branches
@@ -42,6 +65,87 @@ export class AdminCatalogService {
   static async deleteBranch(id: string) {
     await db.update(branches).set({ deletedAt: toDbDate(new Date()) }).where(eq(branches.id, id));
     return true;
+  }
+
+  // Branch operating hours (jam buka/tutup per hari) ------------------------
+
+  /** Jam operasional cabang (7 hari, urut day_of_week). */
+  static async getOperatingHours(branchId: string) {
+    const rows = await db
+      .select({
+        day_of_week: branchOperatingHours.dayOfWeek,
+        open_time: branchOperatingHours.openTime,
+        close_time: branchOperatingHours.closeTime,
+        is_closed: branchOperatingHours.isClosed
+      })
+      .from(branchOperatingHours)
+      .where(eq(branchOperatingHours.branchId, branchId))
+      .orderBy(asc(branchOperatingHours.dayOfWeek));
+
+    return rows.map((r) => {
+      const isClosed = Boolean(r.is_closed);
+      return {
+        day_of_week: r.day_of_week,
+        is_closed: isClosed,
+        open_time: isClosed ? null : toHHMM(r.open_time),
+        close_time: isClosed ? null : toHHMM(r.close_time)
+      };
+    });
+  }
+
+  /**
+   * Set penuh (replace) jam operasional cabang untuk 7 hari sekaligus, atomik.
+   * Setiap entri: { day_of_week 0..6, is_closed?, open_time?, close_time? }.
+   * - is_closed=true → hari libur; open_time/close_time diabaikan.
+   * - is_closed=false/absen → open_time & close_time wajib, open < close.
+   */
+  static async setOperatingHours(branchId: string, days: any) {
+    const [branch] = await db
+      .select({ id: branches.id })
+      .from(branches)
+      .where(and(eq(branches.id, branchId), isNull(branches.deletedAt)))
+      .limit(1);
+    if (!branch) throw badRequest('Cabang tidak ditemukan', 404);
+
+    if (!Array.isArray(days) || days.length !== 7) {
+      throw badRequest('operating_hours wajib berisi tepat 7 hari (day_of_week 0..6).');
+    }
+
+    const seen = new Set<number>();
+    const normalized = days.map((d: any) => {
+      const dow = Number(d?.day_of_week);
+      if (!Number.isInteger(dow) || dow < 0 || dow > 6) {
+        throw badRequest('day_of_week harus bilangan 0..6.');
+      }
+      if (seen.has(dow)) throw badRequest(`day_of_week ${dow} duplikat.`);
+      seen.add(dow);
+
+      if (d?.is_closed === true) {
+        return { dayOfWeek: dow, isClosed: true, openTime: '00:00:00', closeTime: '00:00:00' };
+      }
+      const openTime = normalizeTimeOrThrow(d?.open_time, `open_time (hari ${dow})`);
+      const closeTime = normalizeTimeOrThrow(d?.close_time, `close_time (hari ${dow})`);
+      if (timeToMinutes(closeTime) <= timeToMinutes(openTime)) {
+        throw badRequest(`Jam tutup harus setelah jam buka (hari ${dow}).`);
+      }
+      return { dayOfWeek: dow, isClosed: false, openTime, closeTime };
+    });
+
+    await db.transaction(async (tx) => {
+      await tx.delete(branchOperatingHours).where(eq(branchOperatingHours.branchId, branchId));
+      await tx.insert(branchOperatingHours).values(
+        normalized.map((n) => ({
+          id: randomUUID(),
+          branchId,
+          dayOfWeek: n.dayOfWeek,
+          openTime: n.openTime,
+          closeTime: n.closeTime,
+          isClosed: n.isClosed
+        })) as any
+      );
+    });
+
+    return this.getOperatingHours(branchId);
   }
 
   // Barbers. `branchIds` (opsional) membatasi ke cabang tertentu.
