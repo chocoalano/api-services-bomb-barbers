@@ -451,13 +451,13 @@ const rowMenuItems = (branch: AdminBranch) => [
   [
     { label: 'Salin ID cabang', icon: 'i-lucide-copy', onSelect: () => copyText('ID cabang', branch.id) },
     { label: 'Salin koordinat', icon: 'i-lucide-locate-fixed', onSelect: () => copyText('Koordinat', hasCoordinates(branch) ? coordinateText(branch) : null) },
-    { label: 'Salin telepon', icon: 'i-lucide-phone', onSelect: () => copyText('Telepon', branch.phone) }
+    { label: 'Salin telepon', icon: 'i-lucide-phone', onSelect: () => copyText('Telepon', branch.phone) },
+    { label: 'Atur jam operasional', icon: 'i-lucide-clock', onSelect: () => openHours(branch) },
   ],
   ...(canManageBranch.value
     ? [
         [
           { label: 'Edit cabang', icon: 'i-lucide-pencil', onSelect: () => openEdit(branch) },
-          { label: 'Atur jam operasional', icon: 'i-lucide-clock', onSelect: () => openHours(branch) },
           {
             label: branch.is_active ? 'Nonaktifkan' : 'Aktifkan',
             icon: branch.is_active ? 'i-lucide-circle-off' : 'i-lucide-circle-check',
