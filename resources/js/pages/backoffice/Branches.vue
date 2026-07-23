@@ -17,9 +17,12 @@ import {
   createBranch,
   deleteBranch,
   fetchAdminBranches,
+  fetchBranchOperatingHours,
   getStoredStaff,
   updateBranch,
+  updateBranchOperatingHours,
   type AdminBranch,
+  type BranchOperatingHour,
   type BranchPayload
 } from '../../lib/api';
 
@@ -346,6 +349,100 @@ const confirmDelete = async () => {
   }
 };
 
+/* ------------------------------------------------------------------ */
+/* Jam operasional (buka/tutup per hari, 0=Minggu .. 6=Sabtu)          */
+/* ------------------------------------------------------------------ */
+
+const DAY_LABELS = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
+const DEFAULT_OPEN = '08:00';
+const DEFAULT_CLOSE = '22:00';
+
+type HoursDraft = {
+  day_of_week: number;
+  is_closed: boolean;
+  open_time: string;
+  close_time: string;
+};
+
+const hoursOpen = ref(false);
+const hoursLoading = ref(false);
+const hoursBusy = ref(false);
+const hoursRow = ref<AdminBranch | null>(null);
+const hoursError = ref('');
+const hoursForm = ref<HoursDraft[]>([]);
+
+// Susun tepat 7 hari (0..6) dari respons backend yang mungkin belum lengkap.
+const buildHoursDraft = (rows: BranchOperatingHour[]): HoursDraft[] => {
+  const byDay = new Map(rows.map((r) => [r.day_of_week, r]));
+  return Array.from({ length: 7 }, (_, day) => {
+    const row = byDay.get(day);
+    return {
+      day_of_week: day,
+      is_closed: Boolean(row?.is_closed),
+      open_time: row?.open_time ?? DEFAULT_OPEN,
+      close_time: row?.close_time ?? DEFAULT_CLOSE
+    };
+  });
+};
+
+const openHours = async (branch: AdminBranch) => {
+  hoursRow.value = branch;
+  hoursError.value = '';
+  hoursForm.value = buildHoursDraft([]);
+  hoursOpen.value = true;
+  hoursLoading.value = true;
+  try {
+    hoursForm.value = buildHoursDraft(await fetchBranchOperatingHours(branch.id));
+  } catch (err) {
+    hoursError.value = err instanceof Error ? err.message : 'Gagal memuat jam operasional.';
+  } finally {
+    hoursLoading.value = false;
+  }
+};
+
+// Salin jam hari pertama yang buka ke seluruh hari yang buka.
+const applyHoursToAll = () => {
+  const source = hoursForm.value.find((d) => !d.is_closed) ?? hoursForm.value[0];
+  if (!source) return;
+  for (const day of hoursForm.value) {
+    if (day.is_closed) continue;
+    day.open_time = source.open_time;
+    day.close_time = source.close_time;
+  }
+};
+
+const invalidHourDays = computed(() =>
+  hoursForm.value
+    .filter((d) => !d.is_closed)
+    .filter((d) => !d.open_time || !d.close_time || d.open_time >= d.close_time)
+    .map((d) => d.day_of_week)
+);
+
+const canSaveHours = computed(
+  () => Boolean(hoursRow.value) && !hoursLoading.value && invalidHourDays.value.length === 0
+);
+
+const saveHours = async () => {
+  if (!hoursRow.value || !canSaveHours.value || hoursBusy.value) return;
+  hoursBusy.value = true;
+  hoursError.value = '';
+  try {
+    const payload: BranchOperatingHour[] = hoursForm.value.map((d) => ({
+      day_of_week: d.day_of_week,
+      is_closed: d.is_closed,
+      open_time: d.is_closed ? null : d.open_time,
+      close_time: d.is_closed ? null : d.close_time
+    }));
+    await updateBranchOperatingHours(hoursRow.value.id, payload);
+    hoursOpen.value = false;
+    flash('success', `Jam operasional ${hoursRow.value.name} berhasil disimpan.`);
+  } catch (err) {
+    hoursError.value = err instanceof Error ? err.message : 'Gagal menyimpan jam operasional.';
+  } finally {
+    hoursBusy.value = false;
+  }
+};
+
 const rowMenuItems = (branch: AdminBranch) => [
   [
     { label: 'Lihat detail', icon: 'i-lucide-eye', onSelect: () => openDetail(branch) },
@@ -360,6 +457,7 @@ const rowMenuItems = (branch: AdminBranch) => [
     ? [
         [
           { label: 'Edit cabang', icon: 'i-lucide-pencil', onSelect: () => openEdit(branch) },
+          { label: 'Atur jam operasional', icon: 'i-lucide-clock', onSelect: () => openHours(branch) },
           {
             label: branch.is_active ? 'Nonaktifkan' : 'Aktifkan',
             icon: branch.is_active ? 'i-lucide-circle-off' : 'i-lucide-circle-check',
@@ -601,6 +699,15 @@ onMounted(load);
               v-if="canManageBranch"
               color="neutral"
               variant="soft"
+              icon="i-lucide-clock"
+              @click="openHours(detailRow)"
+            >
+              Jam operasional
+            </UButton>
+            <UButton
+              v-if="canManageBranch"
+              color="neutral"
+              variant="soft"
               :icon="detailRow.is_active ? 'i-lucide-circle-off' : 'i-lucide-circle-check'"
               :loading="busyId === detailRow.id"
               @click="toggleActive(detailRow)"
@@ -700,6 +807,93 @@ onMounted(load);
         <div class="flex w-full justify-end gap-2">
           <UButton color="neutral" variant="ghost" @click="() => { editOpen = false; }">Batal</UButton>
           <UButton color="primary" icon="i-lucide-save" :loading="editBusy" :disabled="!canSaveEdit" @click="saveEdit">
+            Simpan
+          </UButton>
+        </div>
+      </template>
+    </UModal>
+
+    <UModal
+      v-model:open="hoursOpen"
+      :title="hoursRow ? `Jam Operasional — ${hoursRow.name}` : 'Jam Operasional'"
+      :ui="{ content: 'max-w-lg' }"
+    >
+      <template #body>
+        <div class="space-y-3 text-sm">
+          <p class="text-xs text-zinc-500">
+            Atur jam buka dan tutup layanan tiap hari. Tandai hari libur agar cabang tidak menerima
+            pesanan pada hari tersebut. Jam tutup harus setelah jam buka.
+          </p>
+
+          <div
+            v-if="hoursError"
+            class="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700"
+          >
+            {{ hoursError }}
+          </div>
+
+          <div v-if="hoursLoading" class="py-6 text-center text-zinc-400">
+            Memuat jam operasional…
+          </div>
+
+          <div v-else class="space-y-2">
+            <div class="flex justify-end">
+              <UButton
+                color="neutral"
+                variant="soft"
+                size="xs"
+                icon="i-lucide-copy"
+                @click="applyHoursToAll"
+              >
+                Samakan semua hari
+              </UButton>
+            </div>
+
+            <div
+              v-for="day in hoursForm"
+              :key="day.day_of_week"
+              class="grid grid-cols-[5.5rem_1fr_1fr_auto] items-center gap-2 rounded-md border border-zinc-200 px-3 py-2"
+              :class="{ 'bg-zinc-50': day.is_closed }"
+            >
+              <span class="text-sm font-medium text-zinc-700">{{ DAY_LABELS[day.day_of_week] }}</span>
+              <UInput
+                v-model="day.open_time"
+                type="time"
+                :disabled="day.is_closed"
+                :color="!day.is_closed && invalidHourDays.includes(day.day_of_week) ? 'error' : 'neutral'"
+                class="w-full"
+              />
+              <UInput
+                v-model="day.close_time"
+                type="time"
+                :disabled="day.is_closed"
+                :color="!day.is_closed && invalidHourDays.includes(day.day_of_week) ? 'error' : 'neutral'"
+                class="w-full"
+              />
+              <label class="flex items-center gap-1.5 text-xs text-zinc-500">
+                <input v-model="day.is_closed" type="checkbox" class="size-4 accent-emerald-600" />
+                Libur
+              </label>
+            </div>
+
+            <p v-if="invalidHourDays.length" class="text-xs text-red-600">
+              Periksa jam pada:
+              {{ invalidHourDays.map((d) => DAY_LABELS[d]).join(', ') }}
+              — jam tutup harus setelah jam buka.
+            </p>
+          </div>
+        </div>
+      </template>
+      <template #footer>
+        <div class="flex w-full justify-end gap-2">
+          <UButton color="neutral" variant="ghost" @click="() => { hoursOpen = false; }">Batal</UButton>
+          <UButton
+            color="primary"
+            icon="i-lucide-save"
+            :loading="hoursBusy"
+            :disabled="!canSaveHours"
+            @click="saveHours"
+          >
             Simpan
           </UButton>
         </div>

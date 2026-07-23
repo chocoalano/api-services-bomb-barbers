@@ -302,6 +302,28 @@ export const updateBranch = (id: string, payload: Partial<BranchPayload>) =>
 export const deleteBranch = (id: string) =>
   authSendJson(`/api/v1/hq/branches/${id}`, 'DELETE').then((e) => e.data);
 
+// Jam operasional cabang per hari (0=Minggu .. 6=Sabtu). Jam dalam format 'HH:MM'.
+// Hari libur → is_closed true dan open_time/close_time null.
+export type BranchOperatingHour = {
+  day_of_week: number;
+  is_closed: boolean;
+  open_time: string | null;
+  close_time: string | null;
+};
+
+export const fetchBranchOperatingHours = (id: string) =>
+  authGetJson<BranchOperatingHour[]>(`/api/v1/hq/branches/${id}/operating-hours`).then(
+    (e) => e.data ?? []
+  );
+
+// PUT = replace penuh 7 hari, atomik. Backend menolak jika bukan tepat 7 hari.
+export const updateBranchOperatingHours = (id: string, hours: BranchOperatingHour[]) =>
+  authSendJson<BranchOperatingHour[]>(
+    `/api/v1/hq/branches/${id}/operating-hours`,
+    'PUT',
+    { operating_hours: hours }
+  ).then((e) => e.data ?? []);
+
 // Ringkasan "hari ini" (Asia/Jakarta) — global untuk super_admin, atau per-cabang
 // untuk branch_admin. Sumbernya dihitung on-the-fly di backend.
 export const fetchHQToday = () =>
