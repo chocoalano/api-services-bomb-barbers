@@ -257,6 +257,36 @@ io.on('connection', async (socket: Socket) => {
     }
   });
 
+  // Room presence per-cabang untuk daftar barber di form Buat Pesanan.
+  // Berbeda dari `join_branch` (staff, RBAC penuh): ini hanya menyiarkan status
+  // kehadiran barber (online/offline/serving) yang bersifat non-sensitif, jadi
+  // customer mana pun boleh berlangganan cabang yang sedang dilihatnya.
+  socket.on('join_branch_presence', async (branchId: unknown, ack?: SocketAck) => {
+    try {
+      if (typeof branchId !== 'string' || !branchId.trim()) {
+        throw new Error('branch_id wajib dikirim');
+      }
+      const id = branchId.trim();
+      await socket.join(`branch:presence:${id}`);
+      acknowledge(ack, { success: true, data: { branch_id: id } });
+    } catch (error: any) {
+      acknowledgeError(socket, 'join_branch_presence', error, ack);
+    }
+  });
+
+  socket.on('leave_branch_presence', async (branchId: unknown, ack?: SocketAck) => {
+    try {
+      if (typeof branchId !== 'string' || !branchId.trim()) {
+        throw new Error('branch_id wajib dikirim');
+      }
+      const id = branchId.trim();
+      await socket.leave(`branch:presence:${id}`);
+      acknowledge(ack, { success: true, data: { branch_id: id } });
+    } catch (error: any) {
+      acknowledgeError(socket, 'leave_branch_presence', error, ack);
+    }
+  });
+
   socket.on('disconnect', (reason) => {
     logger.debug({ socketId: socket.id, userId, role, reason }, 'Socket disconnected');
   });
@@ -401,6 +431,24 @@ export type WalletRefundEvent = {
 
 export const emitWalletRefundCredited = (data: WalletRefundEvent) => {
   io.to(`customer:${data.customer_id}`).emit('wallet:refund_credited', data);
+};
+
+export type BarberStatusEvent = {
+  barber_id: string;
+  branch_id: string;
+  /** Status kanonik (available|serving|on_break|offline) hasil normalizeLiveStatus. */
+  live_status: string;
+  timestamp: string;
+};
+
+/**
+ * Siarkan perubahan status kehadiran barber ke semua customer yang sedang
+ * melihat daftar barber cabang tersebut. Dipanggil dari satu pintu tulis
+ * `setBarberLiveStatus` (presence.service.ts) sehingga toggle barber, transisi
+ * lifecycle (serving/available), dan aksi admin semuanya realtime.
+ */
+export const emitBarberStatusChanged = (data: BarberStatusEvent) => {
+  io.to(`branch:presence:${data.branch_id}`).emit('barber:status_changed', data);
 };
 
 export const startSocketServer = (port: number) => {

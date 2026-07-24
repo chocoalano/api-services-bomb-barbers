@@ -18,6 +18,15 @@ import { barbers } from '../../db/schema';
 import { redis, getBarberStatusKey } from '../../lib/redis';
 import { logger } from '../../lib/logger';
 import { normalizeLiveStatus, type BarberLiveStatus } from '../../config/booking';
+import { emitBarberStatusChanged } from '../../lib/socket';
+
+/**
+ * Saklar fitur presence realtime. Bila mati, status barber tetap tersimpan ke
+ * DB/Redis seperti biasa tetapi tidak dipancarkan lewat socket (klien lama /
+ * rollout bertahap). Default: mati kecuali di-set 'true'.
+ */
+const isRealtimePresenceEnabled = () =>
+  process.env.REALTIME_BARBER_PRESENCE === 'true';
 
 /**
  * Tulis status kehadiran barber ke DB (otoritas) lalu ke Redis (cache).
@@ -39,6 +48,30 @@ export const setBarberLiveStatus = async (
     await redis.set(getBarberStatusKey(barberId), canonical);
   } catch (err: any) {
     logger.error({ err, barberId, status: canonical }, '[Presence] Gagal menulis cache status barber');
+  }
+
+  // [Realtime presence] Pancarkan perubahan status ke customer yang sedang
+  // melihat daftar barber cabang ini (room `branch:presence:<branchId>`).
+  // Non-kritis: kegagalan emit / lookup TIDAK menggagalkan operasi — DB sudah
+  // benar dan pembaca punya fallback (fetch ulang / polling).
+  if (isRealtimePresenceEnabled()) {
+    try {
+      const [row] = await db
+        .select({ branchId: barbers.branchId })
+        .from(barbers)
+        .where(eq(barbers.id, barberId))
+        .limit(1);
+      if (row?.branchId) {
+        emitBarberStatusChanged({
+          barber_id: barberId,
+          branch_id: row.branchId,
+          live_status: canonical,
+          timestamp: new Date().toISOString()
+        });
+      }
+    } catch (err: any) {
+      logger.error({ err, barberId, status: canonical }, '[Presence] Gagal emit status barber realtime');
+    }
   }
 
   return canonical;
