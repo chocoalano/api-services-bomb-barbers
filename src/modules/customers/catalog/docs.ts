@@ -31,6 +31,7 @@ const barberExample = {
   rating_avg: 4.85,
   rating_count: 124,
   live_status: 'available',
+  is_online: true,
   created_at: '2026-01-10T03:00:00.000Z',
   deleted_at: null
 };
@@ -97,7 +98,7 @@ export const catalogDocs = {
     detail: customerDetail({
       tag: CUSTOMER_TAGS.catalog,
       summary: 'Daftar Barber pada Cabang',
-      description: 'Mengambil barber yang terdaftar pada cabang tertentu. Setiap data diperkaya dengan live_status dari Redis; apabila status realtime belum tersedia, backend menggunakan nilai available.',
+      description: 'Mengambil SELURUH barber yang terdaftar & disetujui pada cabang tertentu, termasuk yang sedang offline atau melayani, beserta status kehadirannya (live_status kanonik dari DB + is_online). Daftar ini adalah katalog, bukan penentu ketersediaan: barber yang benar-benar bisa dipesan pada sebuah jam ada di available_barber_ids pada endpoint slot. Perubahan status disiarkan realtime lewat event socket barber:status_changed (room branch:presence:<branch_id>).',
       required: ['path.id'],
       successMessage: 'Daftar barber berhasil diambil',
       successData: [barberExample],

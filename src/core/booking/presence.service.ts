@@ -22,11 +22,17 @@ import { emitBarberStatusChanged } from '../../lib/socket';
 
 /**
  * Saklar fitur presence realtime. Bila mati, status barber tetap tersimpan ke
- * DB/Redis seperti biasa tetapi tidak dipancarkan lewat socket (klien lama /
- * rollout bertahap). Default: mati kecuali di-set 'true'.
+ * DB/Redis seperti biasa tetapi tidak dipancarkan lewat socket.
+ *
+ * Default: HIDUP (opt-out lewat REALTIME_BARBER_PRESENCE=false). Dulu default-nya
+ * mati sehingga server produksi — yang env-nya tidak pernah menyetel variabel ini
+ * — tidak pernah memancarkan `barber:status_changed`: badge kehadiran barber di
+ * form Buat Pesanan diam sampai customer memuat ulang cabang. Emisi ini
+ * non-kritis dan payload-nya non-sensitif, jadi menyala secara default adalah
+ * perilaku yang benar.
  */
 const isRealtimePresenceEnabled = () =>
-  process.env.REALTIME_BARBER_PRESENCE === 'true';
+  String(process.env.REALTIME_BARBER_PRESENCE ?? 'true').toLowerCase() !== 'false';
 
 /**
  * Tulis status kehadiran barber ke DB (otoritas) lalu ke Redis (cache).

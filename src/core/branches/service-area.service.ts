@@ -26,6 +26,13 @@ async function loadBarbersWithStaff(cond: SQL) {
       approval_status: barbersTable.approvalStatus,
       live_status: barbersTable.liveStatus,
       deleted_at: barbersTable.deletedAt,
+      // Profil ringkas. Dulu jalur ber-koordinat (satu-satunya yang dipakai app
+      // customer) tidak memilih kolom ini, sehingga kartu barber kehilangan
+      // rating & bio yang dikirim jalur tanpa koordinat — dua bentuk response
+      // untuk satu endpoint yang sama.
+      bio: barbersTable.bio,
+      rating_avg: barbersTable.ratingAvg,
+      rating_count: barbersTable.ratingCount,
       staffId: staffUsers.id,
       staffIsActive: staffUsers.isActive,
       staffDeletedAt: staffUsers.deletedAt
@@ -42,6 +49,9 @@ async function loadBarbersWithStaff(cond: SQL) {
     approval_status: r.approval_status,
     live_status: r.live_status,
     deleted_at: r.deleted_at,
+    bio: r.bio,
+    rating_avg: r.rating_avg,
+    rating_count: r.rating_count,
     staff_users: { id: r.staffId, is_active: r.staffIsActive, deleted_at: r.staffDeletedAt }
   }));
 }
@@ -75,6 +85,9 @@ type BarberRecord = {
   approval_status?: string | null;
   live_status?: string | null;
   deleted_at?: string | null;
+  bio?: string | null;
+  rating_avg?: number | string | null;
+  rating_count?: number | null;
   staff_users?: any;
 };
 
@@ -443,20 +456,29 @@ export class BranchServiceAreaService {
     results.forEach((result) => this.logBranchSelected(result, context));
     return results
       .filter((result) => result.isWithinRadius && result.barber)
-      // Barber yang live_status-nya tidak idle DITOLAK `evaluateBarber`
-      // (core/booking/rules/barber-eligibility.ts) sehingga tidak pernah masuk
-      // `available_barber_ids` dan mustahil di-booking. Menampilkannya di daftar
-      // hanya menawarkan pilihan yang pasti gagal saat submit — filter di sini
-      // memakai predikat yang sama supaya katalog dan aturan slot tidak berbeda.
-      .filter((result) => isIdleLiveStatus(result.barber!.live_status))
+      // JANGAN memfilter berdasarkan `live_status` di sini. Endpoint ini adalah
+      // KATALOG (siapa saja barber cabang ini), bukan penentu ketersediaan slot.
+      // Sebelumnya barber non-idle dibuang, sehingga di produksi — di mana
+      // `barbers.live_status` default 'offline' sampai barber menyalakan
+      // switch-nya, dan berubah 'serving' selama melayani — daftar barber datang
+      // KOSONG dan app customer menampilkan "Barber tidak tersedia". Filter itu
+      // juga membuat badge realtime Online/Offline mustahil: barber offline tak
+      // pernah ada di daftar untuk diberi badge.
+      //
+      // Ketersediaan tetap ditegakkan di tempatnya: `evaluateBarber`
+      // (core/booking/rules/barber-eligibility.ts) menolak barber non-idle, jadi
+      // ia tidak masuk `available_barber_ids` slot dan tidak bisa di-booking.
       // Jarak yang dihitung adalah customer→CABANG, jadi nilainya IDENTIK untuk
-      // semua barber di cabang ini dan tidak bisa dipakai mengurutkan. Dulu sort
-      // ini no-op sehingga urutan mengikuti baris MySQL tanpa ORDER BY (tidak
-      // deterministik) — padahal frontend memberi label "TERDEKAT" dan memilih
-      // otomatis elemen pertama. Urutkan by nama agar stabil dan dapat diprediksi.
-      .sort((a, b) =>
-        String(a.barber!.display_name ?? '').localeCompare(String(b.barber!.display_name ?? ''))
-      )
+      // semua barber di cabang ini dan tidak bisa dipakai mengurutkan. Urutkan
+      // barber siap-terima-order lebih dulu, lalu by nama agar deterministik.
+      .sort((a, b) => {
+        const idleA = isIdleLiveStatus(a.barber!.live_status) ? 0 : 1;
+        const idleB = isIdleLiveStatus(b.barber!.live_status) ? 0 : 1;
+        if (idleA !== idleB) return idleA - idleB;
+        return String(a.barber!.display_name ?? '').localeCompare(
+          String(b.barber!.display_name ?? '')
+        );
+      })
       .map((result) => this.toBarberResponse(result.barber!, result));
   }
 

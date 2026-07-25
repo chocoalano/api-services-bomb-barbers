@@ -1,6 +1,6 @@
 import { createSuccessResponse, createErrorResponse } from '../../../shared/response';
 import { CatalogService } from './service';
-import { normalizeLiveStatus } from '../../../config/booking';
+import { isIdleLiveStatus, normalizeLiveStatus } from '../../../config/booking';
 
 export class CatalogController {
   static async getBranches({ query, headers, set }: any) {
@@ -34,10 +34,19 @@ export class CatalogController {
       // [E8] Dulu status dibaca dari Redis dengan fallback literal 'available',
       // sehingga barber tanpa entri cache SELALU tampak online di katalog —
       // termasuk yang offline atau sedang cuti. DB adalah sumber kebenaran.
-      const enrichedBarbers = barbers.map((b: any) => ({
-        ...b,
-        live_status: normalizeLiveStatus(b.live_status)
-      }));
+      //
+      // Daftar memuat SEMUA barber cabang (termasuk yang offline/serving) agar
+      // app bisa menampilkan badge kehadiran realtime. `is_online` diturunkan di
+      // sini dengan predikat yang sama seperti aturan booking, supaya app tidak
+      // perlu menyalin kamus status dan tidak bisa berbeda dari backend.
+      const enrichedBarbers = barbers.map((b: any) => {
+        const liveStatus = normalizeLiveStatus(b.live_status);
+        return {
+          ...b,
+          live_status: liveStatus,
+          is_online: isIdleLiveStatus(liveStatus)
+        };
+      });
 
       return createSuccessResponse('Daftar barber berhasil diambil', enrichedBarbers);
     } catch (err: any) {

@@ -138,20 +138,24 @@ export class CatalogService {
       .filter((barber: any) => {
         const staff = Array.isArray(barber.staff_users) ? barber.staff_users[0] : barber.staff_users;
         const radius = toFiniteNumber(barber.service_radius_km);
+        // Sengaja TANPA filter `live_status` — lihat catatan panjang di
+        // BranchServiceAreaService.getEligibleBarbersForBranch. Katalog memuat
+        // seluruh barber cabang beserta status kehadirannya; yang menentukan
+        // bisa/tidaknya dipesan adalah `available_barber_ids` slot.
         return (
           (!staff || (staff.is_active !== false && staff.deleted_at == null)) &&
           radius !== null &&
-          radius > 0 &&
-          // Kriteria sama dengan jalur ber-koordinat di
-          // BranchServiceAreaService.getEligibleBarbersForBranch: barber non-idle
-          // ditolak `evaluateBarber` sehingga tidak pernah bisa dipesan.
-          isIdleLiveStatus(barber.live_status)
+          radius > 0
         );
       })
       // Query di atas tanpa ORDER BY — urutkan agar hasilnya deterministik.
-      .sort((a: any, b: any) =>
-        String(a.display_name ?? '').localeCompare(String(b.display_name ?? ''))
-      );
+      // Barber yang siap menerima order tampil lebih dulu.
+      .sort((a: any, b: any) => {
+        const idleA = isIdleLiveStatus(a.live_status) ? 0 : 1;
+        const idleB = isIdleLiveStatus(b.live_status) ? 0 : 1;
+        if (idleA !== idleB) return idleA - idleB;
+        return String(a.display_name ?? '').localeCompare(String(b.display_name ?? ''));
+      });
   }
 
   static async getActiveServices() {
