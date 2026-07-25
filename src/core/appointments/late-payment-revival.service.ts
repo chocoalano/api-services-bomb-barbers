@@ -19,7 +19,7 @@ import { db } from '../../lib/db';
 import { appointments, appointmentEvents } from '../../db/schema';
 import { and, eq, desc } from 'drizzle-orm';
 import { AppointmentService } from './service';
-import { emitNewOrder } from '../../lib/socket';
+import { emitNewOrder, emitAppointmentStateChanged } from '../../lib/socket';
 import { logger } from '../../lib/logger';
 
 /**
@@ -123,6 +123,13 @@ export const revivePaidCancelledOrder = async (
       .update(appointments)
       .set({ barberId })
       .where(eq(appointments.id, appointmentId));
+
+    // Barber pengganti mengubah kartu yang dilihat customer (nama, rating,
+    // lokasi awal). Transisi status di atas sudah menyiarkan keadaan lama,
+    // jadi siarkan sekali lagi setelah barber benar-benar berganti.
+    await emitAppointmentStateChanged(appointmentId, 'revival:barber_reassigned', {
+      alsoNotifyBarberIds: apt.barber_id ? [apt.barber_id] : []
+    });
   }
 
   if (barberId) {

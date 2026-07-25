@@ -216,9 +216,20 @@ export class RealtimeTrackingService {
     }
   }
 
+  /**
+   * Satu pintu tulis `journey_status` — menulis DB LALU menyiarkan keadaan baru.
+   *
+   * Perjalanan barber (`en_route`/`arrived`) tidak mengubah status appointment,
+   * jadi tanpa emisi di sini stepper customer diam di "Dikonfirmasi" selama
+   * barber di jalan. Pola sama dengan `setBarberLiveStatus`.
+   *
+   * [emitEvent=false] dipakai pemanggil yang masih akan menulis perubahan lain
+   * dan akan menyiarkan sendiri satu kali di akhir.
+   */
   static async setJourneyStatus(
     appointmentId: string,
-    journeyStatus: 'not_started' | 'en_route' | 'arrived' | 'completed' | 'cancelled'
+    journeyStatus: 'not_started' | 'en_route' | 'arrived' | 'completed' | 'cancelled',
+    options: { emitEvent?: boolean } = {}
   ) {
     try {
       await db
@@ -230,6 +241,14 @@ export class RealtimeTrackingService {
       if (!String(error?.message ?? '').includes('journey_status')) {
         throw new Error(`Gagal memperbarui journey status: ${error?.message}`);
       }
+    }
+
+    if (options.emitEvent !== false) {
+      // Import dinamis disengaja: `lib/socket` mengimpor modul ini untuk
+      // menangani event tracking, jadi impor statis dua arah akan membentuk
+      // siklus modul. Emisi baru dibutuhkan saat runtime, bukan saat inisialisasi.
+      const { emitAppointmentStateChanged } = await import('../../lib/socket');
+      await emitAppointmentStateChanged(appointmentId, `journey:${journeyStatus}`);
     }
   }
 

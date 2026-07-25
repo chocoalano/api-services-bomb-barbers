@@ -19,7 +19,7 @@ import { appointments, payments, appointmentEvents } from '../../db/schema';
 import { and, eq, desc } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { AppointmentService } from './service';
-import { emitNewOrder, emitAppointmentStatusChanged } from '../../lib/socket';
+import { emitNewOrder, emitAppointmentStateChanged } from '../../lib/socket';
 import { logger } from '../../lib/logger';
 
 /** Maksimal berapa kali satu order boleh dipindahkan sebelum menyerah. */
@@ -156,14 +156,10 @@ export const escalatePaidPendingOrder = async (
 
   // Barber LAMA & customer: kartu berubah/hilang — tanpa pemberitahuan ini
   // pengalihan terbaca sebagai kesalahan sistem.
-  emitAppointmentStatusChanged({
-    appointment_id: appointmentId,
-    status: apt.status,
-    raw_status: apt.status,
-    barber_id: apt.barber_id ?? null,
-    customer_id: apt.customer_id ?? null,
-    branch_id: apt.branch_id ?? null,
-    timestamp: new Date().toISOString()
+  await emitAppointmentStateChanged(appointmentId, 'escalation:reassigned', {
+    // Barber lama sudah tidak tercatat pada baris appointment, jadi ia harus
+    // diberi tahu lewat room tambahan.
+    alsoNotifyBarberIds: apt.barber_id ? [apt.barber_id] : []
   });
 
   logger.info(

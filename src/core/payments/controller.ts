@@ -6,7 +6,7 @@ import { snakeKeys } from '../../db/helpers';
 import { payments, appointments, invoices, branches } from '../../db/schema';
 import { and, eq, desc, type SQL } from 'drizzle-orm';
 import { createHash, timingSafeEqual } from 'node:crypto';
-import { emitNewOrder, emitAppointmentStatusChanged } from '../../lib/socket';
+import { emitNewOrder } from '../../lib/socket';
 import { TopupService } from '../wallets/topup.service';
 import {
   enqueueCommissionCalculation,
@@ -360,19 +360,8 @@ export class CustomerPaymentController {
       // 4. Tandai payment sebagai paid
       await PaymentService.updatePaymentStatus(payment.id, 'paid', customerId, 'customer');
 
-      // Beritahu customer (room customer:<id>) agar halaman "Pesanan" refresh dan
-      // membaca status pembayaran terbaru. Tanpa ini, jika konfirmasi terjadi
-      // setelah halaman termuat, pill pembayaran akan macet di "Belum bayar".
-      emitAppointmentStatusChanged({
-        appointment_id: apt.id,
-        status: apt.status,
-        raw_status: apt.status,
-        barber_id: apt.barber_id ?? null,
-        customer_id: apt.customer_id ?? null,
-        branch_id: apt.branch_id ?? null,
-        timestamp: new Date().toISOString()
-      });
-
+      // Emisi ke customer sudah dilakukan `PaymentService.updatePaymentStatus`
+      // (satu pintu) begitu status pembayaran berubah.
       const orderIsLive = await settlePaidAppointment(apt);
 
       // Notifikasi barber bahwa pembayaran telah dikonfirmasi — barber tetap harus
@@ -621,19 +610,7 @@ export class WebhookController {
             .where(eq(appointments.id, payment.appointment_id))
             .limit(1);
 
-          // Refresh halaman "Pesanan" milik customer setelah webhook menandai lunas.
-          if (apt) {
-            emitAppointmentStatusChanged({
-              appointment_id: apt.id,
-              status: apt.status,
-              raw_status: apt.status,
-              barber_id: apt.barber_id ?? null,
-              customer_id: apt.customer_id ?? null,
-              branch_id: apt.branch_id ?? null,
-              timestamp: new Date().toISOString()
-            });
-          }
-
+          // Emisi ke customer dilakukan `PaymentService.updatePaymentStatus`.
           const orderIsLive = apt ? await settlePaidAppointment(apt) : false;
 
           if (orderIsLive && apt?.barber_id) {

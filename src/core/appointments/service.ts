@@ -14,8 +14,9 @@ import {
 } from '../../lib/queue';
 import { getTrackingRouteKey, redis } from '../../lib/redis';
 import { logger } from '../../lib/logger';
-import { io, emitNewOrder } from '../../lib/socket';
+import { io, emitNewOrder, emitAppointmentStateChanged } from '../../lib/socket';
 import { AppointmentLifecycleService } from './lifecycle.service';
+import { resolveOrderStage } from './stage';
 import { PaymentService } from '../payments/service';
 import { OpenOrderService } from './open-order.service';
 import {
@@ -304,6 +305,31 @@ const formatCustomerAppointment = (appointment: any) => {
     total_duration_min: items.reduce((sum: number, item: any) => sum + Number(item.duration_min || 0), 0),
     created_at: appointment.created_at,
     updated_at: appointment.updated_at,
+    // ── Tahapan pesanan (stepper) ─────────────────────────────────────────
+    // Diturunkan HANYA di `core/appointments/stage.ts`. Klien merender apa
+    // adanya; jangan menurunkan ulang tahapan dari `status` di sisi klien.
+    stage: resolveOrderStage({
+      status: appointment.status,
+      journey_status: appointment.journey_status ?? 'not_started',
+      payment_status: (paidPayment?.status ?? primaryPayment?.status) ?? 'unpaid',
+      fulfillment_type: appointment.fulfillment_type ?? 'in_store',
+      source: appointment.source,
+      checked_in_at: appointment.checked_in_at ?? null,
+      started_at: appointment.started_at ?? null,
+      completed_at: appointment.completed_at ?? null,
+      status_timestamps: appointment.status_timestamps ?? null,
+      paid_at: paidPayment?.paid_at ?? null
+    }),
+    // Waktu perubahan tahap terakhir + jam server, agar klien dapat menampilkan
+    // kesegaran data dan menolak event socket yang datang tidak berurutan tanpa
+    // bergantung pada jam perangkat.
+    stage_updated_at: appointment.updated_at,
+    server_time: new Date().toISOString(),
+    // Antrean in-store dihitung ulang saat serialisasi (lihat
+    // `attachLiveQueuePositions`) — kolom `queue_position` hanya diberi nomor
+    // sekali saat order dibuat dan tidak pernah maju.
+    queue_position_live: appointment.queue_position_live ?? null,
+    people_ahead: appointment.people_ahead ?? null,
     branch: branch ? {
       id: branch.id,
       name: branch.name,
@@ -427,7 +453,19 @@ export const formatBarberQueueOrder = async (appointment: any) => {
     journey_status: appointment.journey_status ?? 'not_started',
     payment_status: payment?.status ?? 'unpaid',
     payment_method: payment?.method ?? null,
-    payment_id: payment?.id ?? null
+    payment_id: payment?.id ?? null,
+    // Kamus tahapan yang SAMA PERSIS dengan yang dilihat customer — barber dan
+    // customer tidak boleh punya definisi langkah yang berbeda.
+    stage: resolveOrderStage({
+      status: appointment.status,
+      journey_status: appointment.journey_status ?? 'not_started',
+      payment_status: payment?.status ?? 'unpaid',
+      fulfillment_type: fulfillmentType,
+      source: appointment.source,
+      checked_in_at: appointment.checked_in_at ?? null,
+      started_at: appointment.started_at ?? null,
+      completed_at: appointment.completed_at ?? null
+    })
   };
 };
 
@@ -879,7 +917,7 @@ async function hydrateCustomerAppointments(baseRows: any[]): Promise<any[]> {
   const branchIds = [...new Set(baseRows.map((r) => r.branch_id).filter(Boolean))] as string[];
   const barberIds = [...new Set(baseRows.map((r) => r.barber_id).filter(Boolean))] as string[];
 
-  const [svcRows, branchRows, barberRows, payRows, reviewRows] = await Promise.all([
+  const [svcRows, branchRows, barberRows, payRows, reviewRows, eventRows] = await Promise.all([
     db
       .select({
         appointmentId: appointmentServices.appointmentId,
@@ -912,14 +950,27 @@ async function hydrateCustomerAppointments(baseRows: any[]): Promise<any[]> {
         service_fee: payments.serviceFee,
         delivery_fee: payments.deliveryFee,
         discount_amount: payments.discountAmount,
-        method: payments.method
+        method: payments.method,
+        paid_at: payments.paidAt
       })
       .from(payments)
       .where(inArray(payments.appointmentId, ids)),
     db
       .select({ appointmentId: reviews.appointmentId, rating: reviews.rating, comment: reviews.comment })
       .from(reviews)
-      .where(inArray(reviews.appointmentId, ids))
+      .where(inArray(reviews.appointmentId, ids)),
+    // Waktu transisi per status — dipakai stepper untuk menampilkan jam tiap
+    // langkah dan untuk menentukan sejauh mana pesanan yang batal sempat
+    // berjalan. Satu query agregat untuk seluruh halaman.
+    db
+      .select({
+        appointmentId: appointmentEvents.appointmentId,
+        toStatus: appointmentEvents.toStatus,
+        firstAt: sql<string>`MIN(${appointmentEvents.createdAt})`
+      })
+      .from(appointmentEvents)
+      .where(inArray(appointmentEvents.appointmentId, ids))
+      .groupBy(appointmentEvents.appointmentId, appointmentEvents.toStatus)
   ]);
 
   const svcByAppt: Record<string, any[]> = {};
@@ -945,15 +996,112 @@ async function hydrateCustomerAppointments(baseRows: any[]): Promise<any[]> {
   for (const r of reviewRows) {
     (revByAppt[r.appointmentId] ??= []).push({ rating: r.rating, comment: r.comment });
   }
+  const eventsByAppt: Record<string, Record<string, string>> = {};
+  for (const e of eventRows as any[]) {
+    if (!e.toStatus || !e.firstAt) continue;
+    (eventsByAppt[e.appointmentId] ??= {})[e.toStatus] = String(e.firstAt);
+  }
 
-  return baseRows.map((r) => ({
+  const enriched = baseRows.map((r) => ({
     ...r,
     appointment_services: svcByAppt[r.id] ?? [],
     branches: r.branch_id ? branchMap[r.branch_id] ?? null : null,
     barbers: r.barber_id ? barberMap[r.barber_id] ?? null : null,
     payments: payByAppt[r.id] ?? [],
-    reviews: revByAppt[r.id] ?? []
+    reviews: revByAppt[r.id] ?? [],
+    status_timestamps: eventsByAppt[r.id] ?? {}
   }));
+
+  return attachLiveQueuePositions(enriched);
+}
+
+/** Status yang benar-benar menempati antrean layanan hari itu. */
+const QUEUEING_STATUSES = ['confirmed', 'in_queue', 'in_service'] as const;
+
+/**
+ * Hitung ulang posisi antrean in-store saat serialisasi.
+ *
+ * Kolom `queue_position` diberi nomor SEKALI saat order dibuat (`MAX+1`) dan
+ * tidak pernah maju saat antrean berjalan, sehingga "ada N orang di depan Anda"
+ * bisa salah permanen. Di sini posisi dihitung dari keadaan sekarang: berapa
+ * banyak order yang masih aktif dan dijadwalkan lebih dulu pada hari (WIB) yang
+ * sama, pada barber yang sama (atau cabang yang sama bila barber belum ada).
+ *
+ * Order yang sudah selesai/batal tidak dihitung — itulah inti perbaikannya.
+ */
+async function attachLiveQueuePositions(rows: any[]): Promise<any[]> {
+  const targets = rows.filter(
+    (r) =>
+      (r.fulfillment_type ?? 'in_store') !== 'home_service' &&
+      ['pending', 'confirmed', 'in_queue'].includes(r.status) &&
+      r.scheduled_at
+  );
+  if (!targets.length) return rows;
+
+  const branchIds = [...new Set(targets.map((r) => r.branch_id).filter(Boolean))] as string[];
+  if (!branchIds.length) return rows;
+
+  const scheduleTimes = targets
+    .map((r) => parseDbTime(r.scheduled_at).getTime())
+    .filter((t) => Number.isFinite(t));
+  if (!scheduleTimes.length) return rows;
+
+  // Jendela ±1 hari cukup untuk mencakup seluruh hari WIB dari jadwal mana pun
+  // yang sedang ditampilkan, tanpa memindai seluruh tabel.
+  const from = toDbDate(new Date(Math.min(...scheduleTimes) - 24 * 60 * 60 * 1000));
+  const to = toDbDate(new Date(Math.max(...scheduleTimes) + 24 * 60 * 60 * 1000));
+
+  const peers = snakeKeys(
+    await db
+      .select({
+        id: appointments.id,
+        branch_id: appointments.branchId,
+        barber_id: appointments.barberId,
+        scheduled_at: appointments.scheduledAt,
+        created_at: appointments.createdAt
+      })
+      .from(appointments)
+      .where(
+        and(
+          inArray(appointments.branchId, branchIds),
+          inArray(appointments.status, QUEUEING_STATUSES as any),
+          eq(appointments.fulfillmentType, 'in_store'),
+          gte(appointments.scheduledAt, from!),
+          lte(appointments.scheduledAt, to!)
+        )
+      )
+  ) as any[];
+
+  const dayKey = (value: string) => configJakartaParts(parseDbTime(value)).date;
+  const groupKey = (row: any) =>
+    `${row.branch_id}|${row.barber_id ?? '-'}|${dayKey(row.scheduled_at)}`;
+
+  const groups: Record<string, any[]> = {};
+  for (const peer of peers) {
+    if (!peer.scheduled_at) continue;
+    (groups[groupKey(peer)] ??= []).push(peer);
+  }
+
+  const targetIds = new Set(targets.map((r) => r.id));
+  for (const row of rows) {
+    if (!targetIds.has(row.id)) continue;
+    const group = groups[groupKey(row)] ?? [];
+    const selfAt = parseDbTime(row.scheduled_at).getTime();
+    const selfCreated = row.created_at ? parseDbTime(row.created_at).getTime() : 0;
+    const ahead = group.filter((peer) => {
+      if (peer.id === row.id) return false;
+      const peerAt = parseDbTime(peer.scheduled_at).getTime();
+      if (peerAt !== selfAt) return peerAt < selfAt;
+      // Jadwal identik (kapasitas paralel) → yang memesan lebih dulu didahulukan.
+      const peerCreated = peer.created_at ? parseDbTime(peer.created_at).getTime() : 0;
+      return peerCreated < selfCreated;
+    }).length;
+
+    row.people_ahead = ahead;
+    row.queue_position_live = ahead + 1;
+  }
+
+  return rows;
 }
 
 // Hidrasi relasi untuk order barber (queue & history): customers{full_name},
@@ -982,9 +1130,9 @@ async function hydrateBarberOrders(
       : Promise.resolve([] as any[]),
     opts.withPayments
       ? db
-          .select({ appointmentId: payments.appointmentId, id: payments.id, status: payments.status, method: payments.method, gateway_reference: payments.gatewayReference })
-          .from(payments)
-          .where(inArray(payments.appointmentId, ids))
+        .select({ appointmentId: payments.appointmentId, id: payments.id, status: payments.status, method: payments.method, gateway_reference: payments.gatewayReference })
+        .from(payments)
+        .where(inArray(payments.appointmentId, ids))
       : Promise.resolve([] as any[])
   ]);
 
@@ -1335,15 +1483,7 @@ export class AppointmentService {
     // Emit khusus ke room personal customer agar tidak mengganggu alur
     // barber/branch (mereka sudah menerima `appointment:new_order` di atas).
     if (appointment.customer_id) {
-      io.to(`customer:${appointment.customer_id}`).emit('appointment:status_changed', {
-        appointment_id: appointment.id,
-        status: appointment.status,
-        raw_status: appointment.status,
-        barber_id: appointment.barber_id ?? null,
-        customer_id: appointment.customer_id,
-        branch_id: appointment.branch_id ?? null,
-        timestamp: new Date().toISOString(),
-      });
+      await emitAppointmentStateChanged(appointment.id, 'order:created');
     }
 
     // Sertakan id order lama yang di-auto-replace agar UI dapat memberi tahu customer.
@@ -1734,17 +1874,20 @@ export class AppointmentService {
     actor: AppointmentActor;
     reason: string;
     event_type?:
-      | 'STATUS_TRANSITION'
-      | 'ORDER_ACCEPTANCE_TIMEOUT'
-      | 'APPOINTMENT_NO_SHOW_TIMEOUT'
-      | 'PAYMENT_LATE_REVIVAL';
+    | 'STATUS_TRANSITION'
+    | 'ORDER_ACCEPTANCE_TIMEOUT'
+    | 'APPOINTMENT_NO_SHOW_TIMEOUT'
+    | 'PAYMENT_LATE_REVIVAL';
     customer_media_urls?: string[];
+    /** Emisi socket ditunda ke pemanggil (lihat `TransitionMetadata.defer_emit`). */
+    defer_emit?: boolean;
   }) {
     const updated = await AppointmentLifecycleService.transition(id, newStatus, {
       actor: metadata.actor,
       reason: metadata.reason,
       event_type: metadata.event_type,
-      customer_media_urls: metadata.customer_media_urls
+      customer_media_urls: metadata.customer_media_urls,
+      defer_emit: metadata.defer_emit
     });
 
     // Order selesai → catat komisi otomatis. Dijadwalkan sebagai job (bukan

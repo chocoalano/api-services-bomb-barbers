@@ -7,7 +7,7 @@ import { snakeKeys, toDbDate } from '../../db/helpers';
 import { barbers, appointments, payments, appointmentServices, services, branches, customers } from '../../db/schema';
 import { and, eq } from 'drizzle-orm';
 import { settleProviderFaultRefund } from '../../lib/queue';
-import { emitBarberLocation, emitAppointmentStatusChanged } from '../../lib/socket';
+import { emitBarberLocation } from '../../lib/socket';
 import { RealtimeTrackingService } from '../tracking/service';
 import { redis, getBarberStatusKey, getTrackingRouteKey, getTrackingCustomerKey } from '../../lib/redis';
 import { setBarberLiveStatus } from '../booking/presence.service';
@@ -249,11 +249,16 @@ export class BarberAppointmentController {
         await RealtimeTrackingService.validateArriveGeofence(params.id, Number(body.lat), Number(body.lng));
       }
 
+      // Urutan penting: `journey_status` ditulis LEBIH DULU dan emisi transisi
+      // ditunda, sehingga klien menerima TEPAT SATU event yang sudah memuat
+      // keadaan lengkap. Sebelumnya transisi menyiarkan duluan lalu journey
+      // menyusul, dan klien yang menambal saat event tiba membaca 'en_route'
+      // yang sudah basi tanpa pernah menerima koreksi.
+      await RealtimeTrackingService.setJourneyStatus(params.id, 'arrived', { emitEvent: false });
       const res = await AppointmentService.updateAppointmentStatus(params.id, 'in_queue', {
         actor: { type: 'staff', id: staffId, role: 'barber' },
         reason: 'Barber menandai sudah tiba di lokasi'
       });
-      await RealtimeTrackingService.setJourneyStatus(params.id, 'arrived');
       await RealtimeTrackingService.completeSession(params.id, 'completed');
       return createSuccessResponse('Barber tiba di lokasi', {
         ...res,
@@ -294,19 +299,9 @@ export class BarberAppointmentController {
         return createErrorResponse('Order baru dapat dimulai 1 jam sebelum waktu booking.');
       }
 
+      // `setJourneyStatus` sendiri yang menyiarkan keadaan baru (satu pintu),
+      // termasuk tahapan kanonik "Menuju Lokasi" untuk stepper customer.
       await RealtimeTrackingService.setJourneyStatus(params.id, 'en_route');
-
-      // Beritahu customer (realtime) bahwa barber sudah menuju lokasi — status
-      // appointment tetap 'confirmed', hanya journey_status yang berubah.
-      emitAppointmentStatusChanged({
-        appointment_id: params.id,
-        status: 'on_the_way',
-        raw_status: apt.status,
-        barber_id: barber.id,
-        customer_id: (apt as any).customer_id ?? null,
-        branch_id: (apt as any).branch_id ?? null,
-        timestamp: new Date().toISOString()
-      });
 
       return createSuccessResponse('Barber menuju lokasi customer', {
         journey_status: 'en_route',

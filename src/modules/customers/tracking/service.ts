@@ -108,6 +108,14 @@ export class TrackingService {
       .where(eq(appointments.id, appointmentId));
 
     await RealtimeTrackingService.completeSession(appointmentId, 'completed');
+
+    // Check-in tidak mengubah status pesanan (kebijakan: hanya barber yang
+    // memasukkan ke antrean), tetapi ia MENGUBAH tahapan yang terlihat —
+    // stepper menampilkannya sebagai setengah langkah menuju "Antrean".
+    // Tanpa emisi ini, aksi customer sendiri tidak menghasilkan umpan balik.
+    const { emitAppointmentStateChanged } = await import('../../../lib/socket');
+    await emitAppointmentStateChanged(appointmentId, 'customer:checked_in');
+
     return checkIn;
   }
 

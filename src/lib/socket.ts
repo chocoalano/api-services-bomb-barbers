@@ -2,8 +2,12 @@ import { Server, Socket } from 'socket.io';
 import { createAdapter } from '@socket.io/redis-adapter';
 import { verifyAccessToken } from '../middleware/auth';
 import { db } from './db';
-import { customers, staffUsers, barbers } from '../db/schema';
-import { and, eq, isNull } from 'drizzle-orm';
+import { customers, staffUsers, barbers, appointments, payments } from '../db/schema';
+import { and, eq, gte, inArray, isNull, lte } from 'drizzle-orm';
+import { toDbDate } from '../db/helpers';
+import { parseDbTime } from '../db/procedures';
+import { jakartaParts } from '../config/booking';
+import { resolveOrderStage, CUSTOMER_STATUS_ALIASES } from '../core/appointments/stage';
 import { socketPubClient, socketSubClient } from './redis';
 import {
   LocationInput,
@@ -346,6 +350,17 @@ export type AppointmentStatusEvent = {
   customer_id: string | null;
   branch_id: string | null;
   timestamp: string;
+  /** Versi baris appointment — klien menolak event yang lebih tua. */
+  version?: number;
+  /** Tahapan kanonik hasil `resolveOrderStage`; absen pada emit legacy. */
+  stage?: unknown;
+  journey_status?: string;
+  payment_status?: string;
+  queue_position?: number | null;
+  updated_at?: string | null;
+  server_time?: string;
+  /** Penyebab emisi — untuk penelusuran, bukan untuk logika klien. */
+  reason?: string;
 };
 
 export type BarberLocationEvent = {
@@ -383,7 +398,10 @@ export type ChatMessageEvent = {
   barber_id?: string | null;
 };
 
-export const emitAppointmentStatusChanged = (data: AppointmentStatusEvent) => {
+export const emitAppointmentStatusChanged = (
+  data: AppointmentStatusEvent,
+  extraRooms: string[] = []
+) => {
   const { appointment_id, barber_id, customer_id, branch_id } = data;
 
   // Gabungkan seluruh room ke dalam SATU emit (deduped) agar socket yang
@@ -395,7 +413,203 @@ export const emitAppointmentStatusChanged = (data: AppointmentStatusEvent) => {
   if (barber_id) target = target.to(`barber:${barber_id}`);
   if (customer_id) target = target.to(`customer:${customer_id}`);
   if (branch_id) target = target.to(`branch:${branch_id}`);
+  // Room tambahan untuk pihak yang TIDAK lagi tercatat pada baris appointment —
+  // mis. barber lama saat order dialihkan; tanpa ini kartunya lenyap diam-diam.
+  for (const room of extraRooms) target = target.to(room);
   target.emit('appointment:status_changed', data);
+};
+
+/**
+ * SATU PINTU emisi perubahan keadaan pesanan.
+ *
+ * Sebelumnya payload hanya berisi `{id, status}` sehingga setiap klien wajib
+ * melakukan refetch penuh, dan setiap alur baru (perubahan `journey_status`,
+ * pembayaran lunas lewat verifikasi barber, dsb.) harus ingat memanggil emit
+ * sendiri — beberapa di antaranya memang terlupa. Fungsi ini membaca keadaan
+ * terkini satu kali lalu menyiarkan tahapan kanonik yang lengkap, sehingga
+ * klien cukup menambal satu kartu tanpa memuat ulang seluruh daftar.
+ *
+ * Kegagalan memuat state TIDAK boleh menggagalkan aksi yang memicunya; error
+ * dicatat dan emisi dilewati (polling klien tetap menjadi jaring pengaman).
+ */
+export const emitAppointmentStateChanged = async (
+  appointmentId: string,
+  reason: string,
+  options: { alsoNotifyBarberIds?: string[] } = {}
+): Promise<void> => {
+  try {
+    const [row] = await db
+      .select({
+        id: appointments.id,
+        status: appointments.status,
+        journey_status: appointments.journeyStatus,
+        barber_id: appointments.barberId,
+        customer_id: appointments.customerId,
+        branch_id: appointments.branchId,
+        queue_position: appointments.queuePosition,
+        fulfillment_type: appointments.fulfillmentType,
+        source: appointments.source,
+        scheduled_at: appointments.scheduledAt,
+        checked_in_at: appointments.checkedInAt,
+        started_at: appointments.startedAt,
+        completed_at: appointments.completedAt,
+        version: appointments.version,
+        updated_at: appointments.updatedAt
+      })
+      .from(appointments)
+      .where(eq(appointments.id, appointmentId))
+      .limit(1);
+
+    if (!row) {
+      logger.warn({ appointmentId, reason }, '[Socket] Appointment tidak ditemukan saat emit state');
+      return;
+    }
+
+    const [payment] = await db
+      .select({ status: payments.status, paid_at: payments.paidAt })
+      .from(payments)
+      .where(eq(payments.appointmentId, appointmentId))
+      .limit(1);
+
+    const paymentStatus = payment?.status ?? 'unpaid';
+    const stage = resolveOrderStage({
+      status: row.status,
+      journey_status: row.journey_status,
+      payment_status: paymentStatus,
+      fulfillment_type: row.fulfillment_type,
+      source: row.source,
+      checked_in_at: row.checked_in_at,
+      started_at: row.started_at,
+      completed_at: row.completed_at,
+      paid_at: payment?.paid_at ?? null
+    });
+
+    emitAppointmentStatusChanged({
+      appointment_id: appointmentId,
+      status: CUSTOMER_STATUS_ALIASES[row.status] ?? row.status,
+      raw_status: row.status,
+      barber_id: row.barber_id ?? null,
+      customer_id: row.customer_id ?? null,
+      branch_id: row.branch_id ?? null,
+      timestamp: new Date().toISOString(),
+      version: Number(row.version ?? 1),
+      stage,
+      journey_status: row.journey_status ?? 'not_started',
+      payment_status: paymentStatus,
+      queue_position: row.queue_position ?? null,
+      updated_at: row.updated_at ?? null,
+      server_time: new Date().toISOString(),
+      reason
+    }, (options.alsoNotifyBarberIds ?? [])
+      .filter((id) => id && id !== row.barber_id)
+      .map((id) => `barber:${id}`));
+
+    // Perubahan status satu pesanan in-store menggeser antrean pesanan lain di
+    // hari & barber yang sama. Perubahan pembayaran tidak menggeser apa pun,
+    // jadi tidak perlu menghitung ulang antrean untuk itu.
+    if (row.fulfillment_type !== 'home_service' && !reason.startsWith('payment:')) {
+      await emitQueuePositionsForBranch({
+        branchId: row.branch_id,
+        barberId: row.barber_id ?? null,
+        scheduledAt: row.scheduled_at ?? null
+      });
+    }
+  } catch (error) {
+    logger.error({ err: error, appointmentId, reason }, '[Socket] Gagal menyiarkan perubahan pesanan');
+  }
+};
+
+export type QueuePositionEvent = {
+  appointment_id: string;
+  branch_id: string;
+  queue_position: number;
+  people_ahead: number;
+  timestamp: string;
+};
+
+/** Status yang benar-benar menempati antrean layanan (samakan dengan serializer). */
+const QUEUE_OCCUPYING_STATUSES = ['confirmed', 'in_queue', 'in_service'];
+
+/**
+ * Siarkan posisi antrean terbaru ke SETIAP customer yang antreannya bergeser.
+ *
+ * Saat satu pesanan selesai/batal, seluruh pesanan di belakangnya maju — tetapi
+ * hanya pemilik pesanan yang berubah statuslah yang selama ini menerima event.
+ * Customer lain baru tahu setelah polling, sehingga "ada N orang di depan Anda"
+ * tertinggal. Emisi dikirim ke room personal masing-masing (`customer:<id>`)
+ * agar tidak ada data pesanan orang lain yang bocor.
+ */
+export const emitQueuePositionsForBranch = async (params: {
+  branchId: string;
+  barberId: string | null;
+  scheduledAt: string | null;
+}): Promise<void> => {
+  const { branchId, barberId, scheduledAt } = params;
+  if (!branchId || !scheduledAt) return;
+
+  try {
+    const anchor = parseDbTime(scheduledAt);
+    if (Number.isNaN(anchor.getTime())) return;
+    const day = jakartaParts(anchor).date;
+    const from = toDbDate(new Date(anchor.getTime() - 24 * 60 * 60 * 1000))!;
+    const to = toDbDate(new Date(anchor.getTime() + 24 * 60 * 60 * 1000))!;
+
+    const rows = await db
+      .select({
+        id: appointments.id,
+        customer_id: appointments.customerId,
+        barber_id: appointments.barberId,
+        status: appointments.status,
+        scheduled_at: appointments.scheduledAt,
+        created_at: appointments.createdAt
+      })
+      .from(appointments)
+      .where(
+        and(
+          eq(appointments.branchId, branchId),
+          eq(appointments.fulfillmentType, 'in_store'),
+          inArray(appointments.status, ['pending', ...QUEUE_OCCUPYING_STATUSES] as any),
+          gte(appointments.scheduledAt, from),
+          lte(appointments.scheduledAt, to)
+        )
+      );
+
+    // Antrean dikelompokkan per barber: pesanan barber lain tidak menghalangi.
+    const group = rows.filter(
+      (r) =>
+        r.scheduled_at &&
+        jakartaParts(parseDbTime(r.scheduled_at)).date === day &&
+        (r.barber_id ?? null) === (barberId ?? null)
+    );
+    if (!group.length) return;
+
+    const timestamp = new Date().toISOString();
+    for (const row of group) {
+      if (!row.customer_id || !row.scheduled_at) continue;
+      const selfAt = parseDbTime(row.scheduled_at).getTime();
+      const selfCreated = row.created_at ? parseDbTime(row.created_at).getTime() : 0;
+      const ahead = group.filter((peer) => {
+        if (peer.id === row.id) return false;
+        if (!QUEUE_OCCUPYING_STATUSES.includes(peer.status)) return false;
+        if (!peer.scheduled_at) return false;
+        const peerAt = parseDbTime(peer.scheduled_at).getTime();
+        if (peerAt !== selfAt) return peerAt < selfAt;
+        const peerCreated = peer.created_at ? parseDbTime(peer.created_at).getTime() : 0;
+        return peerCreated < selfCreated;
+      }).length;
+
+      const event: QueuePositionEvent = {
+        appointment_id: row.id,
+        branch_id: branchId,
+        queue_position: ahead + 1,
+        people_ahead: ahead,
+        timestamp
+      };
+      io.to(`customer:${row.customer_id}`).emit('appointment:queue_changed', event);
+    }
+  } catch (error) {
+    logger.error({ err: error, branchId }, '[Socket] Gagal menyiarkan pergeseran antrean');
+  }
 };
 
 export const emitBarberLocation = (data: BarberLocationEvent) => {

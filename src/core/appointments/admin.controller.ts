@@ -9,7 +9,7 @@ import { and, eq, inArray, isNull, asc } from 'drizzle-orm';
 import { AuditService } from '../../modules/admin/audit/service';
 import { settleProviderFaultRefund } from '../../lib/queue';
 import { listStuckPaidOrders } from './paid-order-escalation.service';
-import { emitNewOrder } from '../../lib/socket';
+import { emitNewOrder, emitAppointmentStateChanged } from '../../lib/socket';
 
 export class AdminAppointmentController {
   static async createWalkIn({ params, body, staffId, headers, set }: any) {
@@ -229,6 +229,11 @@ export class AdminAppointmentController {
         if (apt.barber_id) {
           emitNewOrder(apt.barber_id, { appointment_id: params.id, timestamp });
         }
+        // Customer juga melihat barber yang berbeda pada kartunya — tanpa ini
+        // pergantian baru muncul setelah polling berikutnya.
+        await emitAppointmentStateChanged(params.id, 'admin:barber_reassigned', {
+          alsoNotifyBarberIds: apt.barber_id ? [apt.barber_id] : []
+        });
       }
 
       await AuditService.logAction(

@@ -505,6 +505,21 @@ export class PaymentService {
       newPayment.branch_id ?? null
     );
 
+    // Setiap perubahan status pembayaran mengubah tahapan pesanan yang dilihat
+    // customer (pill "Belum bayar" & langkah "Bayar" pada stepper). Emisi
+    // dilakukan di sini — satu pintu — karena sebelumnya hanya 2 dari 5
+    // pemanggil yang ingat menyiarkannya, sehingga pembayaran yang dikonfirmasi
+    // lewat verifikasi barber atau kas admin baru terlihat setelah polling.
+    if (newPayment?.appointment_id && oldPayment.status !== newPayment.status) {
+      // Import dinamis: `lib/socket` berada di lapisan yang mengimpor modul
+      // pembayaran secara tidak langsung; impor statis akan membentuk siklus.
+      const { emitAppointmentStateChanged } = await import('../../lib/socket');
+      await emitAppointmentStateChanged(
+        newPayment.appointment_id,
+        `payment:${newPayment.status}`
+      );
+    }
+
     return {
       ...newPayment,
       invoice_number: invoiceNumber,

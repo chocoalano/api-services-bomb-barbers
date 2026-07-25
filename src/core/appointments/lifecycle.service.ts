@@ -5,18 +5,8 @@ import { eq } from 'drizzle-orm';
 import { asRpcResult } from '../../db/procedures';
 import { transitionAppointmentStatusAtomic } from '../../db/appointment-procedures';
 import { setBarberLiveStatus } from '../booking/presence.service';
-import { emitAppointmentStatusChanged } from '../../lib/socket';
+import { emitAppointmentStateChanged } from '../../lib/socket';
 import { RealtimeTrackingService } from '../tracking/service';
-
-const STATUS_ALIASES: Record<string, string> = {
-  pending: 'pending',
-  confirmed: 'accepted',
-  in_queue: 'arrived',
-  in_service: 'in_progress',
-  completed: 'completed',
-  cancelled: 'cancelled',
-  no_show: 'no_show'
-};
 
 type TransitionMetadata = {
   actor: {
@@ -33,6 +23,15 @@ type TransitionMetadata = {
     // [A4] Menghidupkan kembali order yang dibatalkan sistem karena batas bayar.
     | 'PAYMENT_LATE_REVIVAL';
   customer_media_urls?: string[];
+  /**
+   * Tunda emisi socket ke pemanggil.
+   *
+   * Dipakai alur yang masih menulis kolom lain SETELAH transisi status (mis.
+   * `arrive` yang menyusulkan `journey_status = 'arrived'`). Tanpa ini klien
+   * menerima event lebih dulu lalu membaca keadaan yang belum lengkap, dan
+   * tidak ada event kedua yang memperbaikinya.
+   */
+  defer_emit?: boolean;
 };
 
 const toLifecycleError = (error: any) => {
@@ -112,15 +111,9 @@ export class AppointmentLifecycleService {
       );
     }
 
-    emitAppointmentStatusChanged({
-      appointment_id: appointmentId,
-      status: STATUS_ALIASES[targetStatus] || targetStatus,
-      raw_status: targetStatus,
-      barber_id: updated.barber_id ?? null,
-      customer_id: updated.customer_id ?? null,
-      branch_id: updated.branch_id ?? null,
-      timestamp: new Date().toISOString()
-    });
+    if (!metadata.defer_emit) {
+      await emitAppointmentStateChanged(appointmentId, `transition:${targetStatus}`);
+    }
 
     return updated;
   }
