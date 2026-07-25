@@ -42,8 +42,6 @@ const CURRENT_ORDER_STATUS_PRIORITY: Record<string, number> = {
   pending: 3
 };
 
-const unwrapRelation = (value: any) => Array.isArray(value) ? value[0] : value;
-
 const getJakartaDateParts = (date: Date) => {
   const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone: JAKARTA_TIME_ZONE,

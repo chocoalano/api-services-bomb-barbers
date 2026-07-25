@@ -1,5 +1,5 @@
 import { t } from 'elysia';
-import { ADMIN_EXAMPLES, ADMIN_TAGS, adminDetail, commonAuthErrors, isoDateField, uuidField } from '../swagger';
+import { ADMIN_EXAMPLES, ADMIN_TAGS, adminDetail, commonAuthErrors, uuidField } from '../swagger';
 
 const barberItem = {
   id: ADMIN_EXAMPLES.barberId,

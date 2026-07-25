@@ -15,7 +15,6 @@ describe('End-to-End Transaction Loop & Unit Tests', () => {
   let service2Id = '';
   let ruleId = '';
 
-  let hqToken = '';
   let adminToken = '';
   let barberToken = '';
   let customerToken = '';
@@ -103,7 +102,7 @@ describe('End-to-End Transaction Loop & Unit Tests', () => {
         throw new Error(`Login failed for ${email}: ${text}`);
       }
     };
-    hqToken = await login(`hq${suffix}@test.com`);
+    await login(`hq${suffix}@test.com`);
     adminToken = await login(`ad${suffix}@test.com`);
     barberToken = await login(`bb${suffix}@test.com`);
     customerToken = await login(`081${suffix}`, true);
@@ -115,7 +114,6 @@ describe('End-to-End Transaction Loop & Unit Tests', () => {
   }, 30_000);
 
   describe('Integration Loop: Walk-In', () => {
-    let invoiceNumber = '';
     let paymentId = '';
 
     it('1. Walk-in membuat appointment source walk_in dan menyimpan harga', async () => {
@@ -178,7 +176,6 @@ describe('End-to-End Transaction Loop & Unit Tests', () => {
       const body = await res.json();
       expect(res.status).toBe(201);
       expect(body.data.invoice_number).toContain('INV-');
-      invoiceNumber = body.data.invoice_number;
       paymentId = body.data.id;
       
       // Tunggu BullMQ / Background Task

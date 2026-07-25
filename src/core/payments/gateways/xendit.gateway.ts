@@ -13,7 +13,7 @@ export class XenditGateway implements IPaymentGateway {
     };
   }
 
-  verifyWebhookSignature(signature: string, body: any): boolean {
+  verifyWebhookSignature(signature: string, _body: any): boolean {
     // Xendit mengirim callback token statis pada header `x-callback-token`.
     // Bandingkan dengan token yang dikonfigurasi di env secara timing-safe.
     const expected = process.env.XENDIT_CALLBACK_TOKEN || '';

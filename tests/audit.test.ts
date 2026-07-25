@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeAll, afterAll } from 'bun:test';
+import { describe, expect, it, beforeAll } from 'bun:test';
 import { app } from '../src/app';
 import { testDb } from '../src/lib/test-db';
 import * as argon2 from 'argon2';
@@ -10,11 +10,8 @@ describe('Audit Full Flow: 50/50 Commission Split', () => {
   let customerId = '';
   let barberId = '';
   let adminToken = '';
-  let customerToken = '';
   let serviceId = '';
-  let ruleId = '';
   let appointmentId = '';
-  let paymentId = '';
 
   const password = 'Password123!';
   const PRICE = 100000;
@@ -64,7 +61,7 @@ describe('Audit Full Flow: 50/50 Commission Split', () => {
     }
 
     // 6. Setup 50/50 Commission Rule for this Barber
-    const { data: rule, error: ruleErr } = await testDb.from('commission_rules').insert({
+    const { error: ruleErr } = await testDb.from('commission_rules').insert({
       scope: 'barber',
       scope_ref_id: barberId,
       barber_pct: 50,
@@ -74,7 +71,6 @@ describe('Audit Full Flow: 50/50 Commission Split', () => {
       effective_from: new Date(Date.now() - 86400000).toISOString()
     }).select('id').single();
     if (ruleErr) throw new Error("Rule Insert Error: " + ruleErr.message);
-    if (rule) ruleId = rule.id;
 
     // Login Admin & Customer
     const loginA = await app.handle(new Request(`http://localhost${API_PREFIX}/staff/auth/login`, {
@@ -83,11 +79,10 @@ describe('Audit Full Flow: 50/50 Commission Split', () => {
     })).then(r => r.json());
     adminToken = loginA.data?.accessToken;
 
-    const loginC = await app.handle(new Request(`http://localhost${API_PREFIX}/customer/auth/login`, {
+    await app.handle(new Request(`http://localhost${API_PREFIX}/customer/auth/login`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ phone: `888${suffix}`, password })
     })).then(r => r.json());
-    customerToken = loginC.data?.accessToken;
   });
 
   it('1. Booking / Walk-in: Membuat Antrian Terpadu', async () => {

@@ -1,15 +1,13 @@
-import { randomUUID } from 'crypto';
 import { db } from '../../lib/db';
 import { snakeKeys, toDbDate } from '../../db/helpers';
 import { appointments, barbers, services, payments, appointmentServices, appointmentEvents, customers, branches, reviews } from '../../db/schema';
-import { and, or, eq, ne, inArray, notInArray, gte, lte, lt, desc, asc, isNull, sql, type SQL } from 'drizzle-orm';
+import { and, eq, inArray, notInArray, gte, lte, lt, desc, asc, isNull, sql, type SQL } from 'drizzle-orm';
 import { asRpcResult, parseDbTime } from '../../db/procedures';
 import { createAppointmentAtomic } from '../../db/appointment-procedures';
 import {
   scheduleAppointmentTimeouts,
   scheduleAppointmentReminder,
   enqueueCommissionCalculation,
-  enqueueAppointmentRefund,
   UNPAID_ORDER_EXPIRY_MINUTES
 } from '../../lib/queue';
 import { getTrackingRouteKey, redis } from '../../lib/redis';

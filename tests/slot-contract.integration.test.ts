@@ -36,7 +36,6 @@ describe('Kontrak slot: yang ditawarkan harus bisa dipesan', () => {
 
   /** Barber utama — dipakai sebagian besar skenario. */
   let barberId = '';
-  let barberStaffId = '';
 
   const createdAppointmentIds: string[] = [];
   const createdBarberIds: string[] = [];
@@ -314,7 +313,6 @@ describe('Kontrak slot: yang ditawarkan harus bisa dipesan', () => {
 
     const main = await newBarber({ label: 'main' });
     barberId = main.id;
-    barberStaffId = main.staffId;
   });
 
   afterAll(async () => {

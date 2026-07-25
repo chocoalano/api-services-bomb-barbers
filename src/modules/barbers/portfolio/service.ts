@@ -1,6 +1,5 @@
 import { randomUUID } from 'crypto';
 import { db } from '../../../lib/db';
-import { snakeKeys } from '../../../db/helpers';
 import { barbers, barberPortfolios } from '../../../db/schema';
 import { and, eq, isNull, desc, sql } from 'drizzle-orm';
 import { MediaService } from '../../../core/media/service';

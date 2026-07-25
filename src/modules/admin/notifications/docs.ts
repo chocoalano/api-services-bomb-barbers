@@ -2,8 +2,7 @@ import { t } from 'elysia';
 import {
   ADMIN_TAGS,
   adminDetail,
-  commonAuthErrors,
-  requestExamples
+  commonAuthErrors
 } from '../swagger';
 
 const notificationSettingsExample = {

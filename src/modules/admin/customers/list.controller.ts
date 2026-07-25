@@ -1,6 +1,5 @@
 import { createSuccessResponse, createErrorResponse } from '../../../shared/response';
 import { db } from '../../../lib/db';
-import { snakeKeys } from '../../../db/helpers';
 import { customers, appointments, payments } from '../../../db/schema';
 import { and, or, eq, isNull, isNotNull, inArray, like, asc, desc, gte, sql, type SQL } from 'drizzle-orm';
 import { getRbacProfile } from '../../../middleware/rbac';

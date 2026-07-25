@@ -125,7 +125,7 @@ export const setupAuth = new Elysia()
 export const customerAuthMiddleware = (app: Elysia) =>
   app
     .use(setupAuth)
-    .derive(async ({ jwtAccess, headers: { authorization } }) => {
+    .derive(async ({ headers: { authorization } }) => {
       let customerId = null;
       let authError = 'Missing or invalid token';
       let authCode: string | null = null;
@@ -170,7 +170,7 @@ export const customerAuthMiddleware = (app: Elysia) =>
 export const staffAuthMiddleware = (app: Elysia) =>
   app
     .use(setupAuth)
-    .derive(async ({ jwtAccess, headers, query }: any) => {
+    .derive(async ({ headers, query }: any) => {
       let staffId = null;
       let authError = 'Missing or invalid token';
       let authCode: string | null = null;

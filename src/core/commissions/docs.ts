@@ -1,5 +1,3 @@
-import { t } from 'elysia';
-
 export const commissionDocs = {
   calculateCommission: {
     detail: { tags: ['Commissions'], summary: 'Hitung dan terbitkan komisi untuk pesanan' }

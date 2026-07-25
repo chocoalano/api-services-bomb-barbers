@@ -29,9 +29,6 @@ let customerId = '';
 
 // Test appointments
 let homeServiceAptId = '';     // confirmed, home_service
-let inStoreAptId = '';         // confirmed, in_store
-let completedAptId = '';       // completed (for history)
-let cancelledAptId = '';       // cancelled (for history)
 const allAptIds: string[] = [];
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -109,7 +106,7 @@ beforeAll(async () => {
     journey_status: 'en_route'
   });
 
-  inStoreAptId = await insertApt({
+  await insertApt({
     status: 'in_queue',
     fulfillment_type: 'in_store'
   });
@@ -118,9 +115,8 @@ beforeAll(async () => {
   for (let i = 0; i < 4; i++) {
     await insertApt({ status: 'completed' });
   }
-  completedAptId = allAptIds[allAptIds.length - 1];
 
-  cancelledAptId = await insertApt({ status: 'cancelled' });
+  await insertApt({ status: 'cancelled' });
 });
 
 afterAll(async () => {

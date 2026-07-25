@@ -17,7 +17,7 @@
 
 import { db } from '../../lib/db';
 import { appointments, appointmentEvents } from '../../db/schema';
-import { and, eq, desc } from 'drizzle-orm';
+import { eq, desc } from 'drizzle-orm';
 import { AppointmentService } from './service';
 import { emitNewOrder, emitAppointmentStateChanged } from '../../lib/socket';
 import { logger } from '../../lib/logger';

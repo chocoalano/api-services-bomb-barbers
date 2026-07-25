@@ -6,8 +6,6 @@ import * as argon2 from 'argon2';
 const API_PREFIX = '/api/v1';
 
 describe('Auth Module', () => {
-  let staffId = '';
-  let inactiveStaffId = '';
   const testPhone = '081234567000';
   const testCustomerEmail = 'testcustomer@bombbarbershop.com';
   const testStaffEmail = 'teststaff@bombbarbershop.com';
@@ -26,22 +24,20 @@ describe('Auth Module', () => {
     const password_hash = await argon2.hash(password);
 
     // Create staff user
-    const { data: staff } = await testDb.from('staff_users').insert({
+    await testDb.from('staff_users').insert({
       full_name: 'Test Staff',
       email: testStaffEmail,
       is_active: true,
       password_hash
     }).select('id').single();
-    if(staff) staffId = staff.id;
 
     // Create inactive staff user
-    const { data: inactiveStaff } = await testDb.from('staff_users').insert({
+    await testDb.from('staff_users').insert({
       full_name: 'Inactive Staff',
       email: testInactiveEmail,
       is_active: false,
       password_hash
     }).select('id').single();
-    if(inactiveStaff) inactiveStaffId = inactiveStaff.id;
   });
 
   it('1. Register customer sukses', async () => {

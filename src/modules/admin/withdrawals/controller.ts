@@ -34,7 +34,7 @@ export class AdminWithdrawalController {
     }
   }
 
-  static async approveCustomerWithdrawal({ params, staffId, set }: any) {
+  static async approveCustomerWithdrawal({ params, set }: any) {
     try {
       // Transisi status atomik: hanya sukses bila masih pending (cegah proses ganda).
       const { error: rpcErr } = await asRpcResult(() =>
@@ -53,7 +53,7 @@ export class AdminWithdrawalController {
     }
   }
 
-  static async rejectCustomerWithdrawal({ params, body, staffId, set }: any) {
+  static async rejectCustomerWithdrawal({ params, body, set }: any) {
     try {
       const reason = (body?.reason ?? '').trim();
       if (!reason) { set.status = 400; return createErrorResponse('Alasan penolakan wajib diisi'); }

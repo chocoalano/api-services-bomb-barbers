@@ -97,7 +97,7 @@ beforeAll(async () => {
   });
 
   // Login this scoped staff
-  const sr = await app.handle(new Request(`http://localhost/api/v1/admin/auth/login`, {
+  await app.handle(new Request(`http://localhost/api/v1/admin/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email: `p0scope_${Date.now()}@test.com`, password: 'irrelevant' })

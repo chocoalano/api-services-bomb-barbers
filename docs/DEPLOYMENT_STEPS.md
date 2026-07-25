@@ -96,9 +96,10 @@ RUN_WORKERS_IN_PROCESS=false
 JWT_ACCESS_SECRET=GANTI_openssl_rand_hex_32
 JWT_REFRESH_SECRET=GANTI_openssl_rand_hex_32_LAIN
 
-# WAJIB di produksi: origin frontend yang diizinkan
-CORS_ORIGINS=https://app.domainanda.com
-SOCKET_CORS_ORIGINS=https://app.domainanda.com
+# WAJIB di produksi: SEMUA origin frontend yang diizinkan, dipisah koma
+# (termasuk subdomain admin/backoffice — yang tak terdaftar diblokir browser)
+CORS_ORIGINS=https://app.domainanda.com,https://admin.domainanda.com
+SOCKET_CORS_ORIGINS=https://app.domainanda.com,https://admin.domainanda.com
 SOCKET_WEBSOCKET_ONLY=true
 
 # true karena di belakang Nginx
@@ -275,6 +276,23 @@ ln -s /etc/nginx/sites-available/bomb /etc/nginx/sites-enabled/bomb
 nginx -t
 systemctl reload nginx
 ```
+
+> **JANGAN menambahkan header CORS di Nginx.** CORS sepenuhnya ditangani aplikasi
+> (`src/app.ts`). Blok seperti `add_header Access-Control-Allow-Methods ...` atau
+> `if ($request_method = OPTIONS) { return 204; }` akan:
+>
+> 1. **Membajak preflight** — Nginx menjawab `OPTIONS` sendiri sehingga daftar
+>    method-nya yang hardcoded dipakai browser, bukan milik aplikasi. Method yang
+>    tidak ikut tertulis (mis. `PATCH`) langsung diblokir browser.
+> 2. **Menduplikasi header** — response biasa mendapat dua
+>    `Access-Control-Allow-Origin` / `Access-Control-Allow-Methods`; browser
+>    menolak nilai ganda.
+> 3. **Bentrok dengan credentials** — `Access-Control-Allow-Origin: *` dari Nginx
+>    tidak valid berpasangan dengan `Access-Control-Allow-Credentials: true` dari
+>    aplikasi.
+>
+> Kalau CORS terasa "tidak jalan", perbaiki `CORS_ORIGINS` di `.env` — bukan
+> dengan menambal di Nginx.
 
 ## Langkah 13 — Pasang HTTPS (TLS)
 

@@ -10,7 +10,7 @@
  *  6. /staff/* dan /barber/* keduanya deprecated ke /barbers/*
  *  7. /branches/* deprecated ke /customers/catalog/branches/*
  */
-import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
+import { beforeAll, describe, expect, it } from 'bun:test';
 import { app } from '../src/app';
 import { testDb } from '../src/lib/test-db';
 import { SUNSET_DATE } from '../src/shared/deprecation';

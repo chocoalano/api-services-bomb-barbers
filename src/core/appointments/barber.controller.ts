@@ -1,15 +1,14 @@
 import { createSuccessResponse, createErrorResponse } from '../../shared/response';
 import { handleControllerError } from '../../shared/controller-error';
-import { logger } from '../../lib/logger';
 import { AppointmentService } from './service';
 import { db } from '../../lib/db';
-import { snakeKeys, toDbDate } from '../../db/helpers';
+import { snakeKeys } from '../../db/helpers';
 import { barbers, appointments, payments, appointmentServices, services, branches, customers } from '../../db/schema';
 import { and, eq } from 'drizzle-orm';
 import { settleProviderFaultRefund } from '../../lib/queue';
 import { emitBarberLocation } from '../../lib/socket';
 import { RealtimeTrackingService } from '../tracking/service';
-import { redis, getBarberStatusKey, getTrackingRouteKey, getTrackingCustomerKey } from '../../lib/redis';
+import { redis, getTrackingRouteKey, getTrackingCustomerKey } from '../../lib/redis';
 import { setBarberLiveStatus } from '../booking/presence.service';
 import { GatewayFactory } from '../payments/gateways/factory';
 import { PaymentService } from '../payments/service';

@@ -1,6 +1,5 @@
 import { randomUUID } from 'crypto';
 import { db } from '../../lib/db';
-import { snakeKeys } from '../../db/helpers';
 import { appointments, barbers, chatMessages } from '../../db/schema';
 import { and, eq, gt, asc } from 'drizzle-orm';
 import { emitChatMessage } from '../../lib/socket';
@@ -91,7 +90,6 @@ export class ChatService {
     const page = normalizePage(query.page);
     const limit = normalizeLimit(query.limit);
     const from = (page - 1) * limit;
-    const to = from + limit - 1;
 
     const conds = [eq(chatMessages.appointmentId, appointmentId)];
     // Barber yang baru di-reassign tidak boleh melihat riwayat chat sebelum ia

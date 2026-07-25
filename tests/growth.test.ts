@@ -9,9 +9,7 @@ describe('Growth Features Module (Reviews & Expenses)', () => {
   let branchId = '';
   let otherBranchId = '';
   let customerId = '';
-  let otherCustomerId = '';
   let barberId = '';
-  let adminStaffId = '';
   
   let customerToken = '';
   let otherCustomerToken = '';
@@ -36,11 +34,9 @@ describe('Growth Features Module (Reviews & Expenses)', () => {
     const { data: customer } = await testDb.from('customers').insert({ full_name: 'CGrowth', email: `cg${suffix}@test.com`, phone: `444${suffix}`, password_hash: pwHash }).select('id').single();
     if (customer) customerId = customer.id;
 
-    const { data: customer2 } = await testDb.from('customers').insert({ full_name: 'OtherGrowth', email: `og${suffix}@test.com`, phone: `555${suffix}`, password_hash: pwHash }).select('id').single();
-    if (customer2) otherCustomerId = customer2.id;
+    await testDb.from('customers').insert({ full_name: 'OtherGrowth', email: `og${suffix}@test.com`, phone: `555${suffix}`, password_hash: pwHash }).select('id').single();
 
     const { data: adminStaff } = await testDb.from('staff_users').insert({ full_name: 'AGrowth', email: `ag${suffix}@test.com`, password_hash: pwHash }).select('id').single();
-    if (adminStaff) adminStaffId = adminStaff.id;
 
     // Beri adminStaff akses ke branch 1
     const { data: roleAdmin } = await testDb.from('roles').select('id').eq('name', 'branch_admin').single();

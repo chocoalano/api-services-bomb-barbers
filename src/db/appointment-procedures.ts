@@ -16,9 +16,7 @@ import {
   toSqlUtc,
   toJakartaLocal,
   haversineMeters,
-  timeToMinutes,
-  parseDbTime,
-  ACTIVE_STATUSES
+  parseDbTime
 } from './procedures';
 // [E1–E11] Predikat & konstanta yang sama dengan generator slot dan pre-flight.
 // Prosedur ini tetap wasit terakhir (dijalankan di dalam GET_LOCK), tapi kini

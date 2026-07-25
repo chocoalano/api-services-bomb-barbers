@@ -16,7 +16,6 @@ describe('Commission & Revenue Share Module', () => {
   let aptId = '';
   let apt2Id = '';
   let apt3Id = '';
-  let paymentId = '';
   let adminToken = '';
   let branchAdminRoleId = '';
 
@@ -113,11 +112,10 @@ describe('Commission & Revenue Share Module', () => {
 
     await testDb.from('appointment_services').insert({ appointment_id: aptId, service_id: serviceId, price_amount: 100000, duration_min: 30 });
 
-    const { data: pay, error: pErr } = await testDb.from('payments').insert({
+    const { error: pErr } = await testDb.from('payments').insert({
       appointment_id: aptId, branch_id: branchId, service_amount: 100000, product_amount: 0, discount_amount: 0, tip_amount: 15000, total_amount: 115000, method: 'cash', status: 'paid', paid_at: now
     }).select('id').single();
     if (pErr) throw new Error('Payment Insert Error: ' + pErr.message);
-    paymentId = pay.id;
   });
 
   afterAll(async () => {

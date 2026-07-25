@@ -8,7 +8,6 @@ const API_PREFIX = '/api/v1';
 describe('Payment Gateways Module (Midtrans & Xendit)', () => {
   let branchId = '';
   let customerId = '';
-  let adminStaffId = '';
   let serviceId = '';
   let aptMidtransId = '';
   let aptXenditId = '';
@@ -28,7 +27,6 @@ describe('Payment Gateways Module (Midtrans & Xendit)', () => {
     if (customer) customerId = customer.id;
 
     const { data: adminStaff } = await testDb.from('staff_users').insert({ full_name: 'AGateway', email: `ag${suffix}@test.com`, password_hash: pwHash }).select('id').single();
-    if (adminStaff) adminStaffId = adminStaff.id;
 
     let { data: role } = await testDb.from('roles').select('id').eq('name', 'super_admin').maybeSingle();
     if (!role) {

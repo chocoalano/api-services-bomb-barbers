@@ -195,8 +195,10 @@ JWT_REFRESH_SECRET=<hasil openssl rand -hex 32 yang berbeda>
 JWT_REFRESH_TTL_SECONDS=604800
 
 # ── CORS: WAJIB di produksi, isi origin frontend yang diizinkan ─
-CORS_ORIGINS=https://app.domainanda.com
-SOCKET_CORS_ORIGINS=https://app.domainanda.com
+# Daftar SEMUA origin browser yang memanggil API, dipisah koma — termasuk
+# subdomain backoffice/admin. Origin yang tidak terdaftar akan diblokir browser.
+CORS_ORIGINS=https://app.domainanda.com,https://admin.domainanda.com
+SOCKET_CORS_ORIGINS=https://app.domainanda.com,https://admin.domainanda.com
 # Set true HANYA jika transport polling dipakai tanpa sticky session:
 SOCKET_WEBSOCKET_ONLY=true
 
@@ -464,6 +466,19 @@ sudo certbot --nginx -d api.domainanda.com -d app.domainanda.com
 Certbot otomatis menambah blok `listen 443 ssl` + redirect 80→443. Karena Nginx
 menulis `X-Forwarded-*`, pastikan `TRUST_PROXY=true` di `.env`.
 
+> **JANGAN menambahkan header CORS di Nginx.** CORS ditangani aplikasi
+> (`src/app.ts`) berdasarkan `CORS_ORIGINS`. Blok `add_header
+> Access-Control-Allow-*` atau `if ($request_method = OPTIONS) { return 204; }`
+> membajak preflight: Nginx menjawab `OPTIONS` lebih dulu, sehingga daftar method
+> hardcoded miliknya yang dipakai browser. Method yang tidak ikut tertulis
+> (mis. `PATCH`) langsung diblokir — gejalanya *"Method PATCH is not allowed by
+> Access-Control-Allow-Methods in preflight response"*. Efek samping lain: header
+> CORS ganda pada response biasa, dan `Allow-Origin: *` yang bentrok dengan
+> `Allow-Credentials: true`.
+>
+> Perbaikannya: hapus seluruh direktif CORS dari blok `server`/`location`, lalu
+> daftarkan origin frontend di `CORS_ORIGINS`.
+
 > **Fullstack (topologi B):** cukup satu `server {}` dengan satu `server_name`;
 > `location /` → `127.0.0.1:3000` dan `location /socket.io/` → `127.0.0.1:3001`.
 > Sticky session tidak diperlukan bila `SOCKET_WEBSOCKET_ONLY=true`.
@@ -567,6 +582,9 @@ Nginx bergiliran (blue-green) — di luar cakupan panduan dasar ini.
 | `/ready` 503, `database:false` | MySQL tak terjangkau / kredensial salah / migrasi belum jalan. |
 | `/ready` 503, `auth_schema` atau `media_schema` false | Jalankan `bun run db:migrate`. |
 | `/ready` 503, `redis:false` | Redis mati atau `REDIS_URL` salah. |
+| CORS: *"Method PATCH is not allowed by Access-Control-Allow-Methods in preflight response"* | Nginx punya blok CORS sendiri yang membajak preflight `OPTIONS`. Hapus semua `add_header Access-Control-*` dan `if ($request_method = OPTIONS)` dari config Nginx, lalu `nginx -t && systemctl reload nginx`. Verifikasi: `curl -i -X OPTIONS <url> -H 'Origin: <origin>' -H 'Access-Control-Request-Method: PATCH'` harus membalas `Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS`. |
+| CORS: origin diblokir walau Nginx bersih | Origin browser belum terdaftar di `CORS_ORIGINS`. Isi **semua** origin frontend (mis. `https://admin.…`, `https://app.…`) dipisah koma, lalu restart service. Ciri khasnya: response membawa `Vary: Origin` tanpa `Access-Control-Allow-Origin`. |
+| Header CORS muncul dua kali di response | Nginx dan aplikasi sama-sama menulis header CORS. Sisakan hanya milik aplikasi. |
 | Socket.IO tak konek dari browser | Blok `location /socket.io/` di Nginx belum ada / tanpa header Upgrade. |
 | Job (timeout/no-show/reminder) tak jalan | `bomb-worker` mati, atau `RUN_WORKERS_IN_PROCESS` masih `true` (double-process). |
 | Rate-limit login mudah di-bypass | `TRUST_PROXY` tidak sesuai — set `true` HANYA di belakang proxy tepercaya. |

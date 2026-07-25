@@ -32,13 +32,25 @@ if (process.env.NODE_ENV === 'production' && corsOrigins.length === 0) {
 // terekspos publik di prod. (HB1)
 const docsEnabled = process.env.NODE_ENV !== 'production';
 
+// Daftar method ditulis eksplisit (bukan mengandalkan default plugin yang
+// meng-echo `Access-Control-Request-Method`) supaya jawaban preflight tidak
+// bergantung pada perilaku default versi plugin. PATCH dipakai antara lain oleh
+// PATCH /api/v1/admin/branches/:branchId/barbers/:barberId/status.
+const CORS_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'];
+
 export const app = new Elysia()
   .use(cors({
     origin: corsOrigins.length > 0
       ? corsOrigins
       // 5174 = web server backoffice (asal request browser), 5173 = Vite dev assets.
       : ['http://localhost:3000', 'http://localhost:5173', 'http://localhost:5174'],
-    credentials: true
+    credentials: true,
+    methods: CORS_METHODS,
+    // `exposeHeaders: true` (default plugin) meng-echo daftar *request* header —
+    // tidak berguna bagi klien dan membocorkan header internal proxy
+    // (x-real-ip, x-forwarded-for). Tidak ada klien yang membaca header response
+    // custom, jadi dikosongkan.
+    exposeHeaders: []
   }))
   .use(securityHeaders)
   .use(requestLogger)

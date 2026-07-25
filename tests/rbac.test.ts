@@ -7,7 +7,6 @@ const API_PREFIX = '/api/v1';
 
 describe('RBAC Module', () => {
   let superAdminToken = '';
-  let branchAdminToken = '';
   let barberToken = '';
   let noPermsToken = '';
 
@@ -81,7 +80,7 @@ describe('RBAC Module', () => {
     };
 
     superAdminToken = await login('sa@test.com');
-    branchAdminToken = await login('ba@test.com');
+    await login('ba@test.com');
     barberToken = await login('barber@test.com');
     noPermsToken = await login('noperms@test.com');
   });

@@ -12,7 +12,7 @@ if (process.env.LOG_ROTATE === '1' || process.env.LOG_ROTATE === 'true') {
   const interval = process.env.LOG_ROTATE_INTERVAL || '1d';
   const compress = process.env.LOG_ROTATE_COMPRESS || 'gzip';
 
-  const generator = (time: Date | null, index: number) => {
+  const generator = (time: Date | null, _index: number) => {
     if (!time) return 'app.log';
     const date = time.toISOString().slice(0, 10);
     return `${date}-app.log`;

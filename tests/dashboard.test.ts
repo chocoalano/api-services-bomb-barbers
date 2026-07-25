@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeAll, afterAll } from 'bun:test';
+import { describe, expect, it, beforeAll } from 'bun:test';
 import { app } from '../src/app';
 import { testDb } from '../src/lib/test-db';
 import { redis } from '../src/lib/redis';
