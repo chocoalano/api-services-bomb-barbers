@@ -8,6 +8,7 @@ import {
   normalizeLocation,
   toFiniteNumber
 } from '../../../core/branches/service-area.service';
+import { isIdleLiveStatus } from '../../../config/booking';
 
 type BranchServicesQuery = {
   limit?: number | string;
@@ -133,15 +134,24 @@ export class CatalogService {
       staff_users: { id: r.staffId, is_active: r.staffIsActive, deleted_at: r.staffDeletedAt }
     }));
 
-    return data.filter((barber: any) => {
-      const staff = Array.isArray(barber.staff_users) ? barber.staff_users[0] : barber.staff_users;
-      const radius = toFiniteNumber(barber.service_radius_km);
-      return (
-        (!staff || (staff.is_active !== false && staff.deleted_at == null)) &&
-        radius !== null &&
-        radius > 0
+    return data
+      .filter((barber: any) => {
+        const staff = Array.isArray(barber.staff_users) ? barber.staff_users[0] : barber.staff_users;
+        const radius = toFiniteNumber(barber.service_radius_km);
+        return (
+          (!staff || (staff.is_active !== false && staff.deleted_at == null)) &&
+          radius !== null &&
+          radius > 0 &&
+          // Kriteria sama dengan jalur ber-koordinat di
+          // BranchServiceAreaService.getEligibleBarbersForBranch: barber non-idle
+          // ditolak `evaluateBarber` sehingga tidak pernah bisa dipesan.
+          isIdleLiveStatus(barber.live_status)
+        );
+      })
+      // Query di atas tanpa ORDER BY — urutkan agar hasilnya deterministik.
+      .sort((a: any, b: any) =>
+        String(a.display_name ?? '').localeCompare(String(b.display_name ?? ''))
       );
-    });
   }
 
   static async getActiveServices() {

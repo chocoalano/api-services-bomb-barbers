@@ -3,6 +3,7 @@ import { snakeKeys } from '../../db/helpers';
 import { branches as branchesTable, barbers as barbersTable, staffUsers } from '../../db/schema';
 import { and, eq, isNull, inArray, type SQL } from 'drizzle-orm';
 import { logger } from '../../lib/logger';
+import { isIdleLiveStatus } from '../../config/booking';
 
 const BRANCH_SELECT = {
   id: branchesTable.id,
@@ -442,7 +443,20 @@ export class BranchServiceAreaService {
     results.forEach((result) => this.logBranchSelected(result, context));
     return results
       .filter((result) => result.isWithinRadius && result.barber)
-      .sort((a, b) => (a.distanceMeter ?? Infinity) - (b.distanceMeter ?? Infinity))
+      // Barber yang live_status-nya tidak idle DITOLAK `evaluateBarber`
+      // (core/booking/rules/barber-eligibility.ts) sehingga tidak pernah masuk
+      // `available_barber_ids` dan mustahil di-booking. Menampilkannya di daftar
+      // hanya menawarkan pilihan yang pasti gagal saat submit — filter di sini
+      // memakai predikat yang sama supaya katalog dan aturan slot tidak berbeda.
+      .filter((result) => isIdleLiveStatus(result.barber!.live_status))
+      // Jarak yang dihitung adalah customer→CABANG, jadi nilainya IDENTIK untuk
+      // semua barber di cabang ini dan tidak bisa dipakai mengurutkan. Dulu sort
+      // ini no-op sehingga urutan mengikuti baris MySQL tanpa ORDER BY (tidak
+      // deterministik) — padahal frontend memberi label "TERDEKAT" dan memilih
+      // otomatis elemen pertama. Urutkan by nama agar stabil dan dapat diprediksi.
+      .sort((a, b) =>
+        String(a.barber!.display_name ?? '').localeCompare(String(b.barber!.display_name ?? ''))
+      )
       .map((result) => this.toBarberResponse(result.barber!, result));
   }
 
