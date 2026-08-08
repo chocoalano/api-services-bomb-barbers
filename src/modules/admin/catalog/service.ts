@@ -342,8 +342,89 @@ export class AdminCatalogService {
       .limit(1);
     return barber;
   }
+  /**
+   * Perbarui profil barber sekaligus data akun staff-nya.
+   *
+   * Field di-whitelist per tabel: `barbers` dan `staff_users` adalah dua tabel
+   * berbeda, jadi menyalurkan seluruh body apa adanya (perilaku lama) membuat
+   * kolom akun seperti `full_name`/`email`/`phone` gagal — Drizzle menolak kolom
+   * yang tidak ada pada `barbers`. Karena itu identitas kepster dulu tidak bisa
+   * diedit sama sekali dari backoffice.
+   */
   static async updateBarber(id: string, data: any) {
-    await db.update(barbers).set(camelKeys(data)).where(eq(barbers.id, id));
+    const barberFields: Record<string, any> = {};
+    if (data.staff_user_id !== undefined) barberFields.staffUserId = data.staff_user_id;
+    if (data.branch_id !== undefined) barberFields.branchId = data.branch_id;
+    if (data.display_name !== undefined) {
+      const displayName = String(data.display_name).trim();
+      if (!displayName) throw new Error('Nama tampilan wajib diisi');
+      barberFields.displayName = displayName;
+    }
+    if (data.bio !== undefined) {
+      barberFields.bio = typeof data.bio === 'string' ? data.bio.trim() || null : null;
+    }
+    if (data.service_radius_km !== undefined && data.service_radius_km !== null) {
+      const radius = Number(data.service_radius_km);
+      if (!Number.isFinite(radius) || radius < 0) {
+        throw new Error('Radius layanan harus berupa angka minimal 0');
+      }
+      barberFields.serviceRadiusKm = Math.round(radius);
+    }
+    if (data.live_status !== undefined) barberFields.liveStatus = data.live_status;
+    if (data.default_commission_rule_id !== undefined) {
+      barberFields.defaultCommissionRuleId = data.default_commission_rule_id;
+    }
+
+    const staffFields: Record<string, any> = {};
+    if (data.full_name !== undefined) {
+      const fullName = String(data.full_name).trim();
+      if (!fullName) throw new Error('Nama lengkap wajib diisi');
+      staffFields.fullName = fullName;
+    }
+    if (data.email !== undefined) {
+      const email = String(data.email).trim().toLowerCase();
+      if (!email) throw new Error('Email wajib diisi');
+      staffFields.email = email;
+    }
+    if (data.phone !== undefined) {
+      staffFields.phone = data.phone === null ? null : String(data.phone).trim() || null;
+    }
+
+    if (Object.keys(staffFields).length > 0) {
+      const [barber] = await db
+        .select({ staffUserId: barbers.staffUserId })
+        .from(barbers)
+        .where(and(eq(barbers.id, id), isNull(barbers.deletedAt)))
+        .limit(1);
+
+      if (!barber?.staffUserId) {
+        const err = new Error('Akun kepster tidak ditemukan') as Error & { status?: number };
+        err.status = 404;
+        throw err;
+      }
+
+      // Email unik lintas staff: tanpa cek ini, update menabrak unique index dan
+      // pulang sebagai error 500 yang tidak bisa ditindaklanjuti admin.
+      if (staffFields.email) {
+        const [taken] = await db
+          .select({ id: staffUsers.id })
+          .from(staffUsers)
+          .where(and(eq(staffUsers.email, staffFields.email), isNull(staffUsers.deletedAt)))
+          .limit(1);
+        if (taken && taken.id !== barber.staffUserId) {
+          const err = new Error('Email sudah dipakai akun staff lain') as Error & { status?: number };
+          err.status = 409;
+          throw err;
+        }
+      }
+
+      await db.update(staffUsers).set(staffFields).where(eq(staffUsers.id, barber.staffUserId));
+    }
+
+    if (Object.keys(barberFields).length > 0) {
+      await db.update(barbers).set(barberFields).where(eq(barbers.id, id));
+    }
+
     return selectOneSnake(barbers, id);
   }
   static async deleteBarber(id: string) {

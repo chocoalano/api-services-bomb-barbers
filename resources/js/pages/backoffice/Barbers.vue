@@ -337,28 +337,68 @@ const openWhatsApp = (row: BarberRow) => {
 /* -- Edit barber (super_admin) -- */
 const editOpen = ref(false);
 const editRow = ref<BarberRow | null>(null);
-const editForm = reactive({ display_name: '', bio: '', branch_id: '' });
+const editForm = reactive({
+  full_name: '',
+  email: '',
+  phone: '',
+  display_name: '',
+  bio: '',
+  branch_id: '',
+  service_radius_km: 5,
+  live_status: 'offline' as BarberLiveStatus
+});
 const editBusy = ref(false);
 const openEdit = (row: BarberRow) => {
   editRow.value = row;
+  editForm.full_name = row.staff?.full_name ?? '';
+  editForm.email = row.staff?.email ?? '';
+  editForm.phone = row.staff?.phone ?? '';
   editForm.display_name = row.display_name;
   editForm.bio = row.bio ?? '';
   editForm.branch_id = row.branch_id;
+  editForm.service_radius_km = Number(row.service_radius_km ?? 5);
+  editForm.live_status = row.live_status;
   editOpen.value = true;
 };
+const editRadiusValid = computed(() => {
+  const radius = Number(editForm.service_radius_km);
+  return Number.isFinite(radius) && radius >= 0;
+});
+const canSaveEdit = computed(
+  () =>
+    editForm.display_name.trim().length >= 2 &&
+    editForm.full_name.trim().length >= 2 &&
+    /.+@.+\..+/.test(editForm.email.trim()) &&
+    editRadiusValid.value
+);
 const saveEdit = async () => {
   const row = editRow.value;
-  if (!row || !editForm.display_name.trim()) return;
+  if (!row || !canSaveEdit.value) return;
   editBusy.value = true;
   try {
     await updateBarber(row.id, {
       display_name: editForm.display_name.trim(),
+      full_name: editForm.full_name.trim(),
+      email: editForm.email.trim(),
+      phone: editForm.phone.trim() || null,
       bio: editForm.bio.trim() || null,
-      branch_id: editForm.branch_id
+      branch_id: editForm.branch_id,
+      service_radius_km: Math.round(Number(editForm.service_radius_km))
     });
+
+    // Status kehadiran punya endpoint sendiri karena ikut menyetel presence
+    // (Redis + socket). Menulisnya lewat PUT profil hanya mengubah baris DB dan
+    // membuat status admin berbeda dari yang dilihat mesin booking.
+    if (editForm.live_status !== row.live_status) {
+      await setBarberStatus(row.branch_id, row.id, editForm.live_status);
+    }
+
     flash('success', `Data ${editForm.display_name.trim()} berhasil diperbarui.`);
     editOpen.value = false;
     await load();
+    if (detailRow.value?.id === row.id) {
+      detailRow.value = rows.value.find((r) => r.id === row.id) ?? detailRow.value;
+    }
   } catch (err) {
     flash('error', err instanceof Error ? err.message : 'Gagal memperbarui barber.');
   } finally {
@@ -868,25 +908,72 @@ const rangeLabel = computed(() => {
     <UModal v-model:open="editOpen" title="Edit Barber">
       <template #body>
         <div v-if="editRow" class="space-y-3 text-sm">
+          <p class="text-xs text-zinc-500">
+            Mengubah akun kepster (nama, email, telepon) sekaligus profil barbernya.
+            Password tidak diatur di sini — kepster mereset lewat admin.
+          </p>
           <div>
-            <label class="mb-1 block text-xs font-medium text-zinc-500">Nama tampilan</label>
-            <UInput v-model="editForm.display_name" placeholder="Nama tampilan" class="w-full" />
+            <label class="mb-1 block text-xs font-medium text-zinc-500">Nama lengkap *</label>
+            <UInput v-model="editForm.full_name" placeholder="Nama sesuai identitas" class="w-full" />
           </div>
-          <div>
-            <label class="mb-1 block text-xs font-medium text-zinc-500">Cabang</label>
-            <USelect
-              v-model="editForm.branch_id"
-              :items="createBranchItems"
-              value-key="value"
-              label-key="label"
-              class="w-full"
-              icon="i-lucide-store"
-            />
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="mb-1 block text-xs font-medium text-zinc-500">Email *</label>
+              <UInput v-model="editForm.email" type="email" placeholder="email@bomb.com" class="w-full" />
+            </div>
+            <div>
+              <label class="mb-1 block text-xs font-medium text-zinc-500">Telepon</label>
+              <UInput v-model="editForm.phone" placeholder="62811…" class="w-full" />
+            </div>
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="mb-1 block text-xs font-medium text-zinc-500">Nama tampilan *</label>
+              <UInput v-model="editForm.display_name" placeholder="Nama tampilan" class="w-full" />
+            </div>
+            <div>
+              <label class="mb-1 block text-xs font-medium text-zinc-500">Radius layanan (km)</label>
+              <UInput
+                v-model.number="editForm.service_radius_km"
+                type="number"
+                min="0"
+                step="1"
+                class="w-full"
+                icon="i-lucide-radius"
+              />
+            </div>
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="mb-1 block text-xs font-medium text-zinc-500">Cabang</label>
+              <USelect
+                v-model="editForm.branch_id"
+                :items="createBranchItems"
+                value-key="value"
+                label-key="label"
+                class="w-full"
+                icon="i-lucide-store"
+              />
+            </div>
+            <div>
+              <label class="mb-1 block text-xs font-medium text-zinc-500">Status</label>
+              <USelect
+                v-model="editForm.live_status"
+                :items="STATUS_OPTIONS"
+                value-key="value"
+                label-key="label"
+                class="w-full"
+                icon="i-lucide-activity"
+              />
+            </div>
           </div>
           <div>
             <label class="mb-1 block text-xs font-medium text-zinc-500">Bio</label>
             <UTextarea v-model="editForm.bio" :rows="3" placeholder="Deskripsi singkat…" class="w-full" />
           </div>
+          <p v-if="!editRadiusValid" class="text-xs text-red-500">
+            Radius layanan harus berupa angka minimal 0.
+          </p>
         </div>
       </template>
       <template #footer>
@@ -896,7 +983,7 @@ const rangeLabel = computed(() => {
             color="primary"
             icon="i-lucide-save"
             :loading="editBusy"
-            :disabled="!editForm.display_name.trim()"
+            :disabled="!canSaveEdit"
             @click="saveEdit"
           >
             Simpan

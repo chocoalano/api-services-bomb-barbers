@@ -98,6 +98,7 @@ export class AdminBarberListController {
             rating_avg: barbers.ratingAvg,
             rating_count: barbers.ratingCount,
             branch_id: barbers.branchId,
+            service_radius_km: barbers.serviceRadiusKm,
             created_at: barbers.createdAt,
             staffFullName: staffUsers.fullName,
             staffPhone: staffUsers.phone,
@@ -128,6 +129,8 @@ export class AdminBarberListController {
           rating_avg: Number(b.rating_avg ?? 0),
           rating_count: b.rating_count ?? 0,
           branch_id: b.branch_id,
+          // Dipakai form edit backoffice untuk mem-prefill radius layanan.
+          service_radius_km: Number(b.service_radius_km ?? 0),
           created_at: b.created_at,
           staff: { full_name: b.staffFullName, phone: b.staffPhone, email: b.staffEmail },
           branches: b.branchId2 ? { id: b.branchId2, name: b.branchName } : null,

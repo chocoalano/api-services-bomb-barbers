@@ -428,6 +428,10 @@ export const adminCatalogDocs = {
       staff_user_id: t.Optional(uuidField('UUID staff user pengganti.', ADMIN_EXAMPLES.staffId)),
       branch_id: t.Optional(uuidField('UUID cabang penempatan baru.', ADMIN_EXAMPLES.branchId)),
       display_name: t.Optional(t.String({ minLength: 2, examples: ['Budi The Barber'] })),
+      // Identitas akun kepster (tabel staff_users) — ikut diperbarui bila dikirim.
+      full_name: t.Optional(t.String({ minLength: 2, examples: ['Budi Santoso'] })),
+      email: t.Optional(t.String({ format: 'email', examples: ['budi@bomb.com'] })),
+      phone: t.Optional(t.Union([t.String({ examples: ['6281234567890'] }), t.Null()])),
       // Boleh string atau null: null/kosong berarti mengosongkan bio pada profil.
       bio: t.Optional(t.Union([t.String({ maxLength: 1000, examples: ['Spesialis modern fade.'] }), t.Null()])),
       service_radius_km: t.Optional(t.Numeric({ minimum: 0, examples: [8] })),
@@ -445,6 +449,9 @@ export const adminCatalogDocs = {
         staff_user_id: ADMIN_EXAMPLES.staffId,
         branch_id: ADMIN_EXAMPLES.branchId,
         display_name: 'Budi The Barber',
+        full_name: 'Budi Santoso',
+        email: 'budi@bomb.com',
+        phone: '6281234567890',
         bio: 'Spesialis modern fade.',
         service_radius_km: 8,
         live_status: 'available',
@@ -454,9 +461,10 @@ export const adminCatalogDocs = {
     detail: adminDetail({
       tag: ADMIN_TAGS.barbers,
       summary: 'Perbarui Profil Barber',
-      description: 'Memperbarui profil, penempatan cabang, radius layanan, atau aturan komisi barber.',
+      description:
+        'Memperbarui profil barber (nama tampilan, bio, cabang, radius layanan, aturan komisi) sekaligus identitas akunnya (nama lengkap, email, telepon). Email wajib unik lintas staff — bentrok dijawab 409.',
       required: ['path id', 'minimal satu field body', 'Authorization: Bearer <access_token>', "permission 'manage_barber'"],
-      optional: ['staff_user_id', 'branch_id', 'display_name', 'bio', 'service_radius_km', 'live_status', 'default_commission_rule_id'],
+      optional: ['staff_user_id', 'branch_id', 'display_name', 'full_name', 'email', 'phone', 'bio', 'service_radius_km', 'live_status', 'default_commission_rule_id'],
       successMessage: 'Barber diupdate',
       successData: { ...barberExample, display_name: 'Budi The Barber', service_radius_km: 8 },
       errors: commonMutationErrors

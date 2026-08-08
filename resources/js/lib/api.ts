@@ -563,6 +563,7 @@ export type BarberRow = {
   rating_avg: number;
   rating_count: number;
   branch_id: string;
+  service_radius_km: number;
   created_at: string;
   staff: { full_name: string; phone: string | null; email: string | null } | null;
   branches: { id: string; name: string } | null;
@@ -657,6 +658,11 @@ export type UpdateBarberPayload = {
   display_name?: string;
   bio?: string | null;
   branch_id?: string;
+  service_radius_km?: number;
+  // Identitas akun kepster (staff_users) — backend memperbaruinya sekalian.
+  full_name?: string;
+  email?: string;
+  phone?: string | null;
 };
 
 export const updateBarber = (id: string, payload: UpdateBarberPayload) =>

@@ -183,6 +183,72 @@ describe('PUT /hq/barbers/:id — update scoping + regresi bio', () => {
     const { data } = await testDb.from('barbers').select('branch_id').eq('id', b.id).single();
     expect(data!.branch_id).toBe(ANCOL_BRANCH);
   });
+
+  // Identitas kepster ada di `staff_users`, bukan `barbers`. Sebelum ini seluruh
+  // body dialirkan apa adanya ke UPDATE barbers sehingga field akun tidak pernah
+  // bisa diubah dari backoffice.
+  it('update identitas akun (full_name/email/phone) + radius layanan → 200', async () => {
+    const b = await mkBarber(ANCOL_BRANCH, 'acc_upd');
+    const email = `bm_acc_upd_${suffix}@test.com`;
+    const { status, body } = await req('PUT', `${API}/hq/barbers/${b.id}`, hqToken, {
+      display_name: 'Akun Updated',
+      full_name: 'Nama Baru Kepster',
+      email,
+      phone: '6281234567890',
+      service_radius_km: 9
+    });
+    expect(status).toBe(200);
+    expect(body.data.display_name).toBe('Akun Updated');
+    expect(Number(body.data.service_radius_km)).toBe(9);
+
+    const { data: barber } = await testDb.from('barbers').select('staff_user_id').eq('id', b.id).single();
+    const { data: staff } = await testDb
+      .from('staff_users')
+      .select('full_name, email, phone')
+      .eq('id', barber!.staff_user_id)
+      .single();
+    expect(staff!.full_name).toBe('Nama Baru Kepster');
+    expect(staff!.email).toBe(email);
+    expect(staff!.phone).toBe('6281234567890');
+  });
+
+  it('email yang sudah dipakai staff lain → 409 dan data lama tidak berubah', async () => {
+    const target = await mkBarber(ANCOL_BRANCH, 'email_dup_a');
+    const other = await mkBarber(ANCOL_BRANCH, 'email_dup_b');
+
+    const { data: otherBarber } = await testDb
+      .from('barbers').select('staff_user_id').eq('id', other.id).single();
+    const { data: otherStaff } = await testDb
+      .from('staff_users').select('email').eq('id', otherBarber!.staff_user_id).single();
+
+    const { status } = await req('PUT', `${API}/hq/barbers/${target.id}`, hqToken, {
+      full_name: 'Bentrok Email',
+      email: otherStaff!.email
+    });
+    expect(status).toBe(409);
+
+    const { data: targetBarber } = await testDb
+      .from('barbers').select('staff_user_id').eq('id', target.id).single();
+    const { data: targetStaff } = await testDb
+      .from('staff_users').select('full_name, email').eq('id', targetBarber!.staff_user_id).single();
+    expect(targetStaff!.email).not.toBe(otherStaff!.email);
+    expect(targetStaff!.full_name).not.toBe('Bentrok Email');
+  });
+
+  it('radius layanan negatif ditolak → 400', async () => {
+    const b = await mkBarber(ANCOL_BRANCH, 'radius_neg');
+    const { status } = await req('PUT', `${API}/hq/barbers/${b.id}`, hqToken, { service_radius_km: -3 });
+    expect(status).toBe(400);
+  });
+
+  it('daftar barber HQ menyertakan service_radius_km untuk prefill form edit', async () => {
+    const b = await mkBarber(ANCOL_BRANCH, 'radius_list');
+    await req('PUT', `${API}/hq/barbers/${b.id}`, hqToken, { service_radius_km: 7 });
+    const { body } = await req('GET', `${API}/admin/barbers?per_page=100&branch_id=${ANCOL_BRANCH}`, hqToken);
+    const row = (body.data ?? []).find((r: any) => r.id === b.id);
+    expect(row).toBeDefined();
+    expect(Number(row.service_radius_km)).toBe(7);
+  });
 });
 
 describe('DELETE /hq/barbers/:id — soft delete + scoping', () => {
